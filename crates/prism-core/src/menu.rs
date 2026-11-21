@@ -1,13 +1,15 @@
 //! Menus, alerts and system tray items — one model, native everywhere.
 //!
 //! - **Context menus** (`div().context_menu(menu)`): long press on iOS
-//!   (`UIContextMenuInteraction`), right-click / ⌃-click on macOS, right-click,
-//!   long touch and the Menu key on the web.
+//!   (`UIContextMenuInteraction`) and Android, right-click / ⌃-click on macOS,
+//!   right-click or a long press on Linux, right-click, Shift+F10 or a long
+//!   press on Windows, right-click, long touch and the Menu key on the web.
 //! - **Alerts & confirmation dialogs** (`cx.show_alert(...)`):
-//!   `UIAlertController`, `NSAlert`, `<dialog role=alertdialog>`.
-//! - **Tray / menu bar extras** (`cx.set_tray(...)`): `NSStatusItem` on macOS;
-//!   the system tray on Windows and Linux later. iOS and the web report
-//!   `capabilities().tray == false`.
+//!   `UIAlertController`, `NSAlert`, Android's `AlertDialog`, a modal GTK
+//!   window, a WinUI `ContentDialog`, `<dialog role=alertdialog>`.
+//! - **Tray / menu bar extras** (`cx.set_tray(...)`): `NSStatusItem` on macOS,
+//!   a StatusNotifierItem on Linux, `Shell_NotifyIcon` on Windows. iOS,
+//!   Android and the web report `capabilities().tray == false`.
 //! - **App menu** (`cx.set_app_menu(...)`): the macOS menu bar (and Windows
 //!   menu bars later), with keyboard shortcuts.
 //! - **Pop-up menus** (`cx.show_menu(...)`, `cx.show_menu_on(...)`,
@@ -817,8 +819,8 @@ impl App {
     /// Opens `menu` as the platform's pop-up menu at `at`, in points from
     /// the top-left corner of the window's content (#247), after the next
     /// render: `NSMenu` on macOS, `UIMenu` on iOS, iPadOS and visionOS
-    /// (17.4+), a `PopupMenu` on Android, a `GtkPopoverMenu` on Linux, the
-    /// page's own menu on the web. Nothing on tvOS and watchOS. Its items
+    /// (17.4+), a `PopupMenu` on Android, a `GtkPopoverMenu` on Linux, a
+    /// `MenuFlyout` on Windows, the page's own menu on the web. Nothing on tvOS and watchOS. Its items
     /// run their handlers like a context menu's; showing another pop-up
     /// menu replaces this one's.
     pub fn show_menu(&mut self, menu: Menu, at: crate::events::Point) {

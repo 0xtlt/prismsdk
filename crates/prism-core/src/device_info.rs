@@ -15,14 +15,14 @@
 //! Everything re-renders when it changes (rotation, fold, split view);
 //! `on_device_info_change` runs on every change.
 //!
-//! | | iOS / iPadOS | macOS | Web |
-//! |---|---|---|---|
-//! | kind | idiom | desktop | user agent + touch |
-//! | os / model | `systemVersion`, `hw.machine` | `operatingSystemVersion`, `hw.model` | user agent (client hints when available) |
-//! | inches / ppi | screen pixels and the model's ppi (table from Xcode's simulator profiles) | `CGDisplayScreenSize` | estimated |
-//! | orientation | interface orientation | screen shape | `screen.orientation` |
-//! | posture / fold | `UIHingeInteraction` (iOS 27.1+), division reserved regions | – | `devicePosture`, viewport segments |
-//! | window mode | split view / slide over | fullscreen or windowed | standalone (installed) or browser |
+//! | | iOS / iPadOS | macOS | Web | Android | Linux | Windows |
+//! |---|---|---|---|---|---|---|
+//! | kind | idiom | desktop | user agent + touch | `uiType`, smallest width | desktop | desktop |
+//! | os / model | `systemVersion`, `hw.machine` | `operatingSystemVersion`, `hw.model` | user agent (client hints when available) | `Build.VERSION.RELEASE`, `Build.MODEL` | `/etc/os-release`, no model | `RtlGetVersion`, no model |
+//! | inches / ppi | screen pixels and the model's ppi (table from Xcode's simulator profiles) | `CGDisplayScreenSize` | estimated | real pixels ÷ `xdpi` | the monitor's size in mm (GDK) | not yet: the window's starting size |
+//! | orientation | interface orientation | screen shape | `screen.orientation` | screen shape | monitor shape | window shape |
+//! | posture / fold | `UIHingeInteraction` (iOS 27.1+), division reserved regions | – | `devicePosture`, viewport segments | – | – | – |
+//! | window mode | split view / slide over | fullscreen or windowed | standalone (installed) or browser | split (multi-window) or fullscreen | windowed | windowed |
 
 use std::fmt;
 use std::rc::Rc;

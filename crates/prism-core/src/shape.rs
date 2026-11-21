@@ -1,5 +1,6 @@
 //! Vector drawing: lines, curves, arcs, filled or stroked, drawn natively
-//! (UIKit/AppKit Bézier paths, Android `Canvas`, cairo, SVG). Charts are
+//! (UIKit/AppKit Bézier paths, Android `Canvas`, cairo, XAML `Path`s on
+//! Windows, SVG). Charts are
 //! built on it (see `prism-ui`).
 //!
 //! Coordinates are fractions of the shape's frame (`0..=1`, top-left

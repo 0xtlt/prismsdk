@@ -17,6 +17,7 @@
 //! | macOS | none | buttons in the header bar |
 //! | Linux | none | buttons packed in the header |
 //! | Android | none | buttons in the header |
+//! | Windows | none | buttons in the header |
 //! | watchOS | none | toolbar items |
 //! | Web | none | buttons in `.prism-header` |
 

@@ -4,8 +4,8 @@ Write a UI once in Rust; ship it as a web server (HTML/CSS/JS) or a native app.
 
 Write a UI once in Rust (GPUI-style API), ship it as a server-rendered web
 app (HTML/CSS + a small JS client, no WASM) or a native app: AppKit on macOS,
-UIKit on iOS, tvOS and visionOS, SwiftUI on watchOS, GTK 4 on Linux and real
-Android views on phones, tablets, Wear OS and Android TV.
+UIKit on iOS, tvOS and visionOS, SwiftUI on watchOS, GTK 4 on Linux, WinUI 3
+on Windows and real Android views on phones, tablets, Wear OS and Android TV.
 
 ```rust,no_run
 use prism::prelude::*;

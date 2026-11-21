@@ -33,11 +33,11 @@ cx.scroll_to("list", 0., 0., true);                             // back to the t
 - **Coordinates** are points in the element, from its top-left corner (whatever the layout direction). A drag's `start` is where the pointer went down and `translation` how far it moved since, so moving the element while it is dragged (drag to reorder) does not disturb them; `position()` is their sum.
 - **Click and drag** combine: a tap reports its position through `on_click`, a drag starts once the pointer moved past the platform's slop and then does not click. Together they make a custom slider or a « level » bar; add `on_key_down` (arrows) and an `accessibility_role(Role::Slider)` with a value so it works without a pointer.
 - **Hover** needs a pointer: a mouse, a trackpad, an iPad pointer, Apple Vision Pro's gaze. Phones report `on_pointer_move` while a finger touches the element, and no hover. Don't hide anything essential behind hover.
-- **Keys** use the web's `KeyboardEvent.key` names everywhere: characters (`"a"`, `"A"`, `" "`), `"Escape"`, `"Enter"`, `"Tab"`, `"Backspace"`, `"Delete"`, `"ArrowUp"`…, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `"F1"`… with `e.modifiers` (`shift`, `control`, `alt`, `meta`, `command()` for ⌘ on Apple platforms and Ctrl elsewhere). A view with `on_key_down` can take the focus (Tab, a click, `cx.focus`, the tvOS focus engine, a D-pad). The handlers of the focused element and its ancestors run first, then every `on_global_key_down`, newest first; `cx.stop_propagation()` stops there. While a text field has the focus, global handlers only get keys that do not type (Escape, arrows, Enter, Tab, function keys) or come with Control / Command.
+- **Keys** use the web's `KeyboardEvent.key` names everywhere: characters (`"a"`, `"A"`, `" "`), `"Escape"`, `"Enter"`, `"Tab"`, `"Backspace"`, `"Delete"`, `"ArrowUp"`…, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `"F1"`… with `e.modifiers` (`shift`, `control`, `alt`, `meta`, `command()` for ⌘ on Apple platforms and Ctrl elsewhere). A view with `on_key_down` can take the focus (Tab, a click, `cx.focus`, the tvOS focus engine, a D-pad); on Windows only controls and clickable views take it for now. The handlers of the focused element and its ancestors run first, then every `on_global_key_down`, newest first; `cx.stop_propagation()` stops there. While a text field has the focus, global handlers only get keys that do not type (Escape, arrows, Enter, Tab, function keys) or come with Control / Command.
 - **TV remotes and D-pads**: the Siri Remote and Android TV / D-pad report their arrows and `"Enter"` (select / center), `"MediaPlayPause"`, and Menu / Back as `"Escape"` when the app listens for keys.
 - **Ids**: `.id("name")` names an element for `cx.focus` and `cx.scroll_into_view` (the last element given a name wins). Unknown names are ignored.
-- **Scrolling from the app** (#193): `cx.scroll_by(id, dx, dy)` moves a `scroll()` with that `.id()` by points from where it is, at once (call it each frame or timer tick while a drag stays in an edge zone); `cx.scroll_to(id, x, y, animated)` puts its content's point (`x`, `y`) at its top-left corner (`f32::MAX`: the end). Both stay within the content and do nothing on other elements. `cx.scroll_offset(id)` is the last offset it reported, along its axis, once it has `on_scroll`. Web: `scrollBy` / `scrollTo`; macOS: the clip view's origin; iOS: `setContentOffset(_:animated:)`; Linux: the scrolled window's adjustments (not animated); Android: `scrollBy` / `smoothScrollTo`. `.autofocus()` focuses an element when it appears (a dialog's first field).
-- **Dismissing the keyboard**: `cx.dismiss_keyboard()` takes the focus away from whatever has it, after the next render, and the on-screen keyboard hides: after a submit, or before swapping the root (`cx.set_root`) away from a sign-in form. UIKit: the window ends editing; Android: the focused view clears its focus and the IME hides; macOS: the window's first responder lets go; GTK: the window's focus is unset; watchOS: SwiftUI's focus state is cleared; web: `document.activeElement.blur()`. On iOS the room made for the keyboard also goes when the root is swapped while it is up.
+- **Scrolling from the app** (#193): `cx.scroll_by(id, dx, dy)` moves a `scroll()` with that `.id()` by points from where it is, at once (call it each frame or timer tick while a drag stays in an edge zone); `cx.scroll_to(id, x, y, animated)` puts its content's point (`x`, `y`) at its top-left corner (`f32::MAX`: the end). Both stay within the content and do nothing on other elements. `cx.scroll_offset(id)` is the last offset it reported, along its axis, once it has `on_scroll`. Web: `scrollBy` / `scrollTo`; macOS: the clip view's origin; iOS: `setContentOffset(_:animated:)`; Linux: the scrolled window's adjustments (not animated); Android: `scrollBy` / `smoothScrollTo`; Windows: `ScrollViewer.ChangeView`. `.autofocus()` focuses an element when it appears (a dialog's first field).
+- **Dismissing the keyboard**: `cx.dismiss_keyboard()` takes the focus away from whatever has it, after the next render, and the on-screen keyboard hides: after a submit, or before swapping the root (`cx.set_root`) away from a sign-in form. UIKit: the window ends editing; Android: the focused view clears its focus and the IME hides; macOS: the window's first responder lets go; GTK: the window's focus is unset; Windows: the root view takes the focus; watchOS: SwiftUI's focus state is cleared; web: `document.activeElement.blur()`. On iOS the room made for the keyboard also goes when the root is swapped while it is up.
 - **Overflowing children** (#213): a child drawn outside its parent (absolutely positioned with a negative offset, a handle on a grid's edge) takes clicks, hovers and drags everywhere it is drawn, unless the parent clips (`.clip()`), like on the web. macOS and iOS hit-test the overflow themselves (AppKit and UIKit only look inside a view's bounds); before macOS 14, hover tracking covers it with an explicit rect. Android only delivers touches inside a view's parent: keep touch targets inside it there.
 - **Hit testing**: `.hit_test(false)` lets clicks, taps and hovers through the element and everything in it (CSS `pointer-events: none`: a label drawn over a bar, a decorative scrim). `.inert(true)` also takes the subtree out of the keyboard focus and the accessibility tree while keeping it visible.
 
@@ -49,6 +49,7 @@ cx.scroll_to("list", 0., 0., true);                             // back to the t
 | tvOS | — | — | — | Siri Remote presses | focus engine, `scrollRectToVisible` |
 | Linux | `GestureClick` | `EventControllerMotion` | `GestureDrag` | `EventControllerKey` | `grab_focus`, scrolled window adjustment |
 | Android | touch up | hover events; touches | touch listener with touch slop | key events, D-pad | `requestFocus`, `requestRectangleOnScreen` |
+| Windows | not reported yet (`Tapped`) | `PointerEntered` / `PointerMoved` | pointer capture past the system's drag distance | the message loop's `WM_KEYDOWN`, before XAML | `Focus`, `StartBringIntoView` |
 | watchOS | `SpatialTapGesture` | — (moves while touching) | `DragGesture` | — | `@FocusState`, `ScrollViewReader` |
 
 tvOS has no pointer over views, the watch neither hover nor keys: those handlers simply never run there. On tvOS, a focused view with `on_key_down` keeps left / right for the app while up / down still move the focus.
@@ -76,6 +77,7 @@ While the focus is in the element, those keys reach its `on_key_down` (and its a
 | iOS, iPadOS, visionOS | `UIKeyCommand`s with priority over the system's behaviour on the root controller (named keys: arrows, Enter, Tab, Escape, Space, Home, End, Page Up / Down) |
 | Android | `dispatchKeyEvent` consumes the press and its release |
 | Linux (GTK) | the window's capture-phase key controller stops it |
+| Windows | the message loop drops the key message before XAML sees it |
 
 ### Leaving a field at its edges
 
@@ -103,6 +105,7 @@ div()
 | iOS, iPadOS, visionOS | `caretRect(for:)` of the caret against `beginningOfDocument` and `endOfDocument` |
 | Android | `Layout.getLineForOffset` against `getLineCount` |
 | Linux (GTK) | `GtkTextView` iterator locations of the caret, the start and the end |
+| Windows | not yet: no edges are reported, so a declared key is always taken |
 
 ## Middle, back and forward clicks
 
@@ -117,7 +120,7 @@ tab.on_aux_click(cx.listener(move |this, e: &ClickEvent, cx| {
 
 - `ClickEvent::button` says which: `Middle`, `PointerButton::BACK` (`Other(3)`) or `FORWARD` (`Other(4)`), numbered like the web on every platform. `on_click` stays the primary button's (its `button` is `Primary`), the context menu the secondary one's.
 - A press that moves into a drag (`drag_buttons(&[Middle])`) is a drag, not a click.
-- Web: `auxclick`; the middle button's autoscroll and the back and forward buttons' navigation are kept from starting over the element. macOS: `otherMouseDown` / `otherMouseUp` (button numbers 2, 3, 4). Linux: `GtkGestureClick` (buttons 2, 8, 9). Touch screens have no such buttons; iPadOS and Android mice are not reported yet.
+- Web: `auxclick`; the middle button's autoscroll and the back and forward buttons' navigation are kept from starting over the element. macOS: `otherMouseDown` / `otherMouseUp` (button numbers 2, 3, 4). Linux: `GtkGestureClick` (buttons 2, 8, 9). Windows: `PointerReleased` (middle, `XButton1`, `XButton2`). Touch screens have no such buttons; iPadOS and Android mice are not reported yet.
 
 ## Click keys and count, key releases
 
@@ -150,12 +153,13 @@ never sticks.
 | Linux (GTK) | `GestureClick`'s `n_press` and the event's state | `EventControllerKey` releases, matched to their press by hardware key; the window turning inactive releases held keys |
 | iOS, iPadOS, visionOS | `UITouch.tapCount`, the tap's `modifierFlags` (a hardware keyboard, an iPad pointer) | `pressesEnded:` / `pressesCancelled:`; the app turning inactive releases held keys |
 | Android | taps counted with the system's double-tap timeout and slop; the event's meta state | `KeyEvent.ACTION_UP`; the window losing the focus releases held keys |
+| Windows | not yet: a click has no keys and counts 1 | `WM_KEYUP`; held keys are not released yet when the window turns inactive |
 
 tvOS counts presses of the remote's select button as single clicks; watchOS reports count 1 and no keys.
 
 ## Keys during a drag, and no click after it
 
-A shape editor's ⇧ (keep proportions) and ⌥ (from the centre, duplicate) act live (#223): `DragEvent::modifiers` holds the keys held now, updated on every move, and pressing or releasing a modifier alone mid-drag sends a `Move` where the drag is, with the new keys (the web and macOS; Linux updates them as the pointer moves). Once a drag has started, the release that ends it makes no click on the element or around it: on the web the click is swallowed before any handler or link until the next press; natively the drag takes the press.
+A shape editor's ⇧ (keep proportions) and ⌥ (from the centre, duplicate) act live (#223): `DragEvent::modifiers` holds the keys held now, updated on every move, and pressing or releasing a modifier alone mid-drag sends a `Move` where the drag is, with the new keys (the web and macOS; Linux and Windows update them as the pointer moves). Once a drag has started, the release that ends it makes no click on the element or around it: on the web the click is swallowed before any handler or link until the next press; natively the drag takes the press.
 
 ## Dragging with other buttons
 
@@ -182,6 +186,7 @@ it). Fingers and pens are the primary button.
 | Linux (GTK) | `GestureDrag` on any button (`BUTTON_MIDDLE`), claimed past the drag threshold | `BUTTON_SECONDARY`; the menu opens on a release that did not move |
 | iPadOS (pointer) | the pan's `buttonMask` (button 3) | `buttonMask` `.secondary` |
 | Android (mouse) | `BUTTON_TERTIARY` | `BUTTON_SECONDARY`; a drag cancels the long press's menu |
+| Windows | `MiddleButtonPressed`, the pointer captured past the drag distance | `RightButtonPressed` |
 
 tvOS and watchOS have no pointer buttons. Fingers and pens drag with the primary button everywhere.
 
@@ -215,6 +220,7 @@ as without it. `DragEvent::start` is where the finger went down;
 | Android | a timer from `ACTION_DOWN`, cancelled past the touch slop (`ViewConfiguration`); a mouse drags at once | `HapticFeedbackConstants.LONG_PRESS`; `requestDisallowInterceptTouchEvent` keeps the scroll view off |
 | Web | touch and pen pointers: a timer from `pointerdown`, cancelled past 8 px; meanwhile `touch-action: pan-x pan-y` lets the browser scroll | pointer capture, `navigator.vibrate` where there is one, and non-passive `touchmove`s prevented so the page stops scrolling; no callout or long-touch menu |
 | Linux (GTK) | touchscreen and pen devices: the `GestureDrag` waits (denied past the drag threshold) | the gesture is claimed: the `GtkScrolledWindow` lets go |
+| Windows | touches: a timer from the press, cancelled past the slop | the pointer is captured, so the scroll view around stops panning; no haptic |
 
 macOS has no touch screen (its drags start on movement); tvOS and watchOS
 have no drags on views. A long touch can only be one thing: don't give the
@@ -279,6 +285,7 @@ drags one in tests.
 | iOS, iPadOS, visionOS | `hitTest:withEvent:` | `snapshotViewAfterScreenUpdates:` | `UIScrollView.contentOffset` |
 | Linux (GTK) | `gtk_widget_pick` | a `GtkWidgetPaintable` of the widget | the `ScrolledWindow`'s adjustments |
 | Android | the view tree, children drawn last first | a bitmap of the view in the window's decor | `ScrollView` / `HorizontalScrollView.scrollBy` |
+| Windows | the backend's model of the tree (frames, clips, paint order) | a `RenderTargetBitmap` of the element | `ScrollViewer.ChangeView` |
 
 Native backends share the work in `prism_native::dnd`: they report the drag
 as any drag and the renderer finds the target, sets its state and the

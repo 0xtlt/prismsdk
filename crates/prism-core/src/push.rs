@@ -24,6 +24,7 @@
 //! | Android | FCM (opt-in, `[push] fcm_*` in Prism.toml) or UnifiedPush | registration token / endpoint | data messages |
 //! | Web | Web Push (VAPID) | endpoint + keys | – (browsers always show) |
 //! | Linux | UnifiedPush over D-Bus, when a distributor runs | endpoint + keys | yes |
+//! | Windows | none: WNS needs package identity (`Unavailable`) | – | – |
 //!
 //! Payloads sent with `prism-push` use the same keys everywhere: `title`,
 //! `subtitle`, `body`, `link` (a deep link opened on tap), and custom `data`.

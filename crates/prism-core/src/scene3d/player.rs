@@ -2,8 +2,8 @@
 //! the orbiting camera, spinning nodes, transitions, animation clips and
 //! skins, culling, shadows, and hit testing.
 //!
-//! [`ScenePlayer`] is the reference implementation: the Linux backend uses
-//! it as is; the web (JavaScript), Android (Java) and Apple (Swift) backends
+//! [`ScenePlayer`] is the reference implementation: the Linux and Windows
+//! backends use it as is; the web (JavaScript), Android (Java) and Apple (Swift) backends
 //! port it, so every platform moves, animates and picks the same way.
 //!
 //! ## Protocol

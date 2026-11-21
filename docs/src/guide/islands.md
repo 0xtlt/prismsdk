@@ -167,7 +167,7 @@ Islands work under the strict nonce policy ([Web › Content-Security-Policy](..
 
 ## Native apps
 
-Native backends see an island as a plain container with its children, so they show the fallback. The demo's fallback is a `ui::line_chart`, drawn natively on macOS, iOS, Android and Linux. Use `.native(element)` for something else on native only. No other backend changes: islands are web-only by design.
+Native backends see an island as a plain container with its children, so they show the fallback. The demo's fallback is a `ui::line_chart`, drawn natively on macOS, iOS, Android, Linux and Windows. Use `.native(element)` for something else on native only. No other backend changes: islands are web-only by design.
 
 ## Limitations
 

@@ -6,11 +6,11 @@
 //! [`SNode`] snapshots (compact JSON) that a platform renders natively, even
 //! when the app is not running:
 //!
-//! | Surface | iOS | macOS | Web | Android (planned) |
-//! |---|---|---|---|---|
-//! | Widgets | WidgetKit (SwiftUI) | WidgetKit | — | Glance |
-//! | Live Activities | ActivityKit: lock screen + Dynamic Island | menu bar item | in-page live region | Live Updates notification |
-//! | Notifications | UserNotifications | UserNotifications | Notification API / toast | NotificationCompat |
+//! | Surface | iOS | macOS | Web | Android | Linux | Windows |
+//! |---|---|---|---|---|---|---|
+//! | Widgets | WidgetKit (SwiftUI) | WidgetKit | — | `RemoteViews` | — | — |
+//! | Live Activities | ActivityKit: lock screen + Dynamic Island | menu bar item | in-page live region | ongoing notification | — | — |
+//! | Notifications | UserNotifications | UserNotifications | Notification API / toast | `Notification.Builder` | `GNotification` | App SDK notifications |
 //!
 //! Code never branches on the OS: it asks [`App::capabilities`] what the
 //! current platform supports, and every request has a sensible fallback.
@@ -727,7 +727,7 @@ pub fn json_str(s: &str) -> String {
 // Widgets
 // ---------------------------------------------------------------------------
 
-/// Widget sizes (WidgetKit families; Android maps them to Glance sizes).
+/// Widget sizes (WidgetKit families; Android gives each a size in dp).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WidgetFamily {
     /// Small square (`systemSmall`).
@@ -2279,8 +2279,9 @@ impl App {
     /// `None` (or 0) clears it. The Dock tile on macOS, the home screen on
     /// iOS, iPadOS, tvOS and visionOS (it needs the notification permission,
     /// badges included), the Badging API (`navigator.setAppBadge`) on the
-    /// web where the browser has it (installed web apps). Nothing on
-    /// Android, Linux and watchOS, whose badges come from notifications.
+    /// web where the browser has it (installed web apps), an overlay on the
+    /// taskbar button on Windows. Nothing on Android, Linux and watchOS,
+    /// whose badges come from notifications.
     pub fn set_badge(&mut self, count: Option<u32>) {
         self.surfaces
             .requests

@@ -18,7 +18,7 @@
 //! |---|---|---|
 //! | Apple | `ASWebAuthenticationSession` | its callback scheme (`prism-<package>:/oauth`: the cargo package, `_` written `-`; or the provider's) |
 //! | Android | Custom Tab (or the default browser) | the app's deep-link scheme |
-//! | Linux | the default browser | a loopback server (`http://127.0.0.1:<port>/callback`) |
+//! | Linux, Windows | the default browser | a loopback server (`http://127.0.0.1:<port>/callback`) |
 //! | Web | a popup | the server (`<base>/_prism/auth/callback`) |
 //!
 //! The code is exchanged at the token endpoint from the app (public client,

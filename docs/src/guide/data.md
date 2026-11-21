@@ -21,6 +21,8 @@ cx.spawn(async move |this, cx| {
 | macOS | Application Support | iCloud KVS (needs a Mac provisioning profile) | on the device |
 | Web | server, per browser | server, per browser | **on the server, shared by every user**: the app runs there, so this is your backend |
 | Android | app files | backed up by Android Backup (key/value), restored on a new device or a reinstall | on the device |
+| Linux | `$XDG_DATA_HOME/<app>` (`~/.local/share`) | local only: no desktop sync service | on the device |
+| Windows | `%LOCALAPPDATA%\<app>` | local only: no sync yet | on the device |
 
 `prism::db` is sqlx 0.9 with a bundled SQLite (3.54 or later; prism-db does not build with an older one). sqlx 0.9 runs a query string only if it is a literal (`&'static str`) or wrapped in `sqlx::AssertSqlSafe(..)`, its reminder that a string built at run time must not carry user input: put values in `?` parameters with `.bind(..)`. Migrations are the app's own SQL and take any `&str`.
 

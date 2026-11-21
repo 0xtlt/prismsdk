@@ -81,8 +81,9 @@ thread_local! {
 /// so it reorders its data the same way.
 ///
 /// Built on Prism's drag and key events, it works wherever they do: the web,
-/// macOS, iOS, iPadOS, visionOS, Android, Linux (tvOS and watchOS have no
-/// drag; the keys still move rows on tvOS). Screen readers hear the handle
+/// macOS, iOS, iPadOS, visionOS, Android, Linux, and Windows by drag only
+/// (its views with keys take no focus yet). tvOS and watchOS have no drag;
+/// the keys still move rows on tvOS. Screen readers hear the handle
 /// as a button labelled "Reorder", with the row's position and a hint, all
 /// in the app's language.
 pub struct ReorderList {

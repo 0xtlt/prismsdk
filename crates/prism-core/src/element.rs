@@ -96,8 +96,8 @@ pub enum NodeKind {
 
     // --- Web views (#62) ---
     /// Another web page shown inside the app: an `<iframe>` on the web,
-    /// `WKWebView` on Apple platforms, `android.webkit.WebView` on Android
-    /// (see [`web_view`](crate::web_view())). Its text is the URL, its
+    /// `WKWebView` on Apple platforms, `android.webkit.WebView` on Android,
+    /// WinUI's `WebView2` on Windows (see [`web_view`](crate::web_view())). Its text is the URL, its
     /// config a [`WebViewConfig`](crate::web_view::WebViewConfig). No
     /// natural size: give it one. Reports `UiEvent::WebMessage` and
     /// `UiEvent::WebLoad`.
@@ -106,7 +106,8 @@ pub enum NodeKind {
     // --- Editable rich text (#115) ---
     /// An editable paragraph of styled runs and inline objects
     /// ([`rich_input`]): a `contenteditable` on the web, an `NSTextView`
-    /// with attributes and attachments on macOS. Its text is the plain
+    /// with attributes and attachments on macOS, a `RichEditBox` on
+    /// Windows. Its text is the plain
     /// value (a chip is [`OBJECT_CHAR`](crate::OBJECT_CHAR)), its runs come
     /// in [`Patch::SetRichValue`](crate::Patch::SetRichValue), its config is
     /// an [`InputConfig`](crate::controls::InputConfig). Backends without
@@ -649,7 +650,8 @@ pub struct VNode {
     /// Deep link (`/todos/1`): navigates in the app, opens it from widgets,
     /// Live Activities and notifications.
     pub link: Option<String>,
-    /// Long press (iOS), right-click (macOS, web) menu.
+    /// Long press (iOS, Android), right-click (macOS, Linux, Windows, web)
+    /// menu.
     pub context_menu: Option<crate::menu::Menu>,
     /// A menu opened below the element when it is clicked (#247), in
     /// place of `on_click`.
@@ -1029,7 +1031,8 @@ macro_rules! builder {
             /// Called when a key is pressed while this element, or
             /// something in it, has the focus. A view with this handler can
             /// take the focus (Tab, a click, [`App::focus`], the tvOS focus
-            /// engine, an Android D-pad).
+            /// engine, an Android D-pad); not yet on Windows, where only
+            /// controls and clickable views take it.
             pub fn on_key_down(mut self, handler: Handler<crate::events::KeyEvent>) -> Self {
                 self.0.on_key_down = Some(handler);
                 self
@@ -1313,8 +1316,9 @@ impl Div {
         self.child(crate::keyboard_toolbar(bar))
     }
 
-    /// A context menu: long press on iOS, right-click on macOS and the web
-    /// (plus the Menu key / Shift+F10). Exposed to assistive technologies.
+    /// A context menu: long press on iOS and Android, right-click on macOS,
+    /// Linux, Windows and the web (plus the Menu key / Shift+F10 on the web
+    /// and Windows). Exposed to assistive technologies.
     pub fn context_menu(mut self, menu: crate::menu::Menu) -> Self {
         self.0.context_menu = Some(menu);
         self
@@ -1491,9 +1495,9 @@ macro_rules! text_entry {
             /// selection, laid out with the field's own text (wrapping and
             /// scrolling included) and above it. They are never editable
             /// and updating them leaves the user's caret, selection and IME
-            /// composition alone. An empty list removes them. Native
-            /// backends, the web, iOS and iPadOS, Android and Linux; tvOS
-            /// and watchOS fields show none.
+            /// composition alone. An empty list removes them. The web,
+            /// macOS, iOS, iPadOS, visionOS, Android, Linux and Windows;
+            /// tvOS and watchOS fields show none.
             pub fn remote_carets(mut self, carets: impl IntoIterator<Item = RemoteCaret>) -> Self {
                 self.0.remote_carets = carets.into_iter().collect();
                 self
@@ -1553,8 +1557,8 @@ text_entry!(RichInput);
 ///
 /// Styles come from the app: the field has no formatting commands of its
 /// own (⌘B is yours, with [`restyle_spans`](crate::restyle_spans)), and
-/// pasted text arrives plain. Rich editing runs on the web and macOS;
-/// iOS, GTK, Android and watchOS show a plain multi-line field of the
+/// pasted text arrives plain. Rich editing runs on the web, macOS and
+/// Windows; iOS, GTK, Android and watchOS show a plain multi-line field of the
 /// value instead (styles not drawn, a chip shown as `U+FFFC`), whose edits
 /// still come back as spans that keep the styles of the text around them.
 pub fn rich_input(spans: impl IntoIterator<Item = crate::spans::Span>) -> RichInput {
@@ -1627,8 +1631,8 @@ impl RichInput {
     /// Web: the selection's client rectangles; macOS: the layout manager's
     /// glyph box, the caret's `firstRectForCharacterRange`; iOS, iPadOS,
     /// visionOS: `UITextView`'s `caretRect` and `selectionRects`; Linux:
-    /// the text view's iter locations; Android: the `Layout`'s line bounds.
-    /// A selection over several lines is the box around them. tvOS and
+    /// the text view's iter locations; Android: the `Layout`'s line bounds;
+    /// Windows: RichEdit's `ITextRange::GetRect`. A selection over several lines is the box around them. tvOS and
     /// watchOS report none.
     pub fn on_selection_rect(mut self, handler: Handler<crate::SelectionRectEvent>) -> Self {
         self.0.edit.on_selection_rect = Some(handler);
@@ -1661,7 +1665,8 @@ impl RichInput {
     /// (`NSPasteboard`, every type); iOS, iPadOS, visionOS: `copy:`
     /// (`UIPasteboard`, every type); Linux: the text view's `copy-clipboard`
     /// (every type); Android: the text field's copy action (plain text and
-    /// HTML). tvOS and watchOS have no clipboard.
+    /// HTML); Windows: the `RichEditBox`'s `CopyingToClipboard` (every
+    /// type). tvOS and watchOS have no clipboard.
     pub fn on_copy(mut self, handler: Handler<crate::CopyEvent>) -> Self {
         self.0.edit.on_copy = Some(handler);
         self
@@ -1686,8 +1691,9 @@ impl RichInput {
     /// general pasteboard (every type's text data); iOS, iPadOS, visionOS:
     /// `paste:` and `UIPasteboard`; Linux: the text view's `paste-clipboard`
     /// (plain text and the clipboard's types, no HTML); Android: the text
-    /// field's paste action (plain text, HTML, types). tvOS and watchOS
-    /// have no clipboard.
+    /// field's paste action (plain text, HTML, types); Windows: the
+    /// `RichEditBox`'s `Paste` (text, HTML, types). tvOS and watchOS have
+    /// no clipboard.
     pub fn on_paste(mut self, handler: Handler<crate::PasteEvent>) -> Self {
         self.0.edit.on_paste = Some(handler);
         self
@@ -1699,7 +1705,8 @@ impl RichInput {
     /// spans given to [`rich_input`]. A plain click still places the caret;
     /// with this handler a modifier-click is the app's, instead of moving
     /// the caret or running a link's own handler. Web: ⌘, Ctrl or ⌥;
-    /// macOS: ⌘ or ⌥ (⌃-click stays the context menu); Linux: Ctrl or Alt.
+    /// macOS: ⌘ or ⌥ (⌃-click stays the context menu); Linux and Windows:
+    /// Ctrl or Alt.
     /// Touch screens have no modifier-click: iOS, iPadOS, Android, tvOS and
     /// watchOS report none.
     pub fn on_span_click(mut self, handler: Handler<crate::SpanClickEvent>) -> Self {
@@ -1711,8 +1718,8 @@ impl RichInput {
     /// the pointer (`e.text_offset`), the keys held and the click count;
     /// the field still places its caret. A ⇧-click on a field that is not
     /// focused can extend a selection to that point from another field of a
-    /// [`text_flow`](crate::text_flow). The web, macOS and Linux; touch
-    /// screens report none.
+    /// [`text_flow`](crate::text_flow). The web, macOS, Linux and Windows;
+    /// touch screens report none.
     pub fn on_click(mut self, handler: Handler<ClickEvent>) -> Self {
         self.0.edit.on_click = Some(handler);
         self
@@ -2079,7 +2086,9 @@ impl Scroll {
     }
 
     /// Pull to refresh (iOS refresh control; pull gesture and a Refresh
-    /// button on the web). Show progress with [`Scroll::refreshing`].
+    /// button on the web; SwiftUI's `refreshable` on watchOS; F5 or Ctrl+R
+    /// on Linux). Not yet on macOS, Android and Windows. Show progress with
+    /// [`Scroll::refreshing`].
     pub fn on_refresh(mut self, handler: Handler<ClickEvent>) -> Self {
         self.0.on_click = Some(handler);
         self
@@ -2584,7 +2593,7 @@ impl Div {
     /// scrolling board, a row in a list); once lifted, the drag takes over
     /// from any scroll view around it. A mouse or a trackpad still drags on
     /// movement. iOS, iPadOS and visionOS, Android, the web on touch
-    /// screens and Linux touch screens; macOS has no touch screen.
+    /// screens, Linux and Windows touch screens; macOS has no touch screen.
     ///
     /// ```ignore
     /// card.on_drag(move_card).drag_after_long_press(Duration::from_millis(400))
@@ -2953,7 +2962,7 @@ pub fn dialog(content: impl IntoElement) -> Overlay {
 /// - Web: on touch screens (`pointer: coarse`), a bar fixed to the bottom
 ///   of the visual viewport, which the on-screen keyboard shrinks
 ///   (`VisualViewport`); presses on it do not take the focus.
-/// - macOS, Linux, tvOS, watchOS, visionOS, desktop browsers: no
+/// - macOS, Linux, Windows, tvOS, watchOS, visionOS, desktop browsers: no
 ///   on-screen keyboard bar; it is left out (its content is not built on
 ///   native desktops).
 pub fn keyboard_toolbar(content: impl IntoElement) -> Overlay {
@@ -3011,7 +3020,8 @@ impl Overlay {
     /// macOS: an `NSPopover` with the application-defined behavior; iOS:
     /// the window stays interactive around it (passthrough); Linux: a
     /// `GtkPopover` without autohide; Android: a `PopupWindow` that ignores
-    /// outside touches. Sheets and dialogs ignore it (see
+    /// outside touches; Windows: a `Flyout` that lets presses through to the
+    /// page (`OverlayInputPassThroughElement`). Sheets and dialogs ignore it (see
     /// [`dismissible`](Overlay::dismissible)).
     pub fn light_dismiss(self, light_dismiss: bool) -> Self {
         self.overlay_config(|c| c.manual = !light_dismiss)
@@ -3042,7 +3052,8 @@ impl Overlay {
     /// non-activating child panel instead of an `NSPopover`; iOS: the field
     /// stays first responder (the keyboard stays up); Linux: a `GtkPopover`
     /// without autohide that cannot take the focus; Android: a
-    /// non-focusable `PopupWindow`. Sheets and dialogs ignore it.
+    /// non-focusable `PopupWindow`; Windows: a transient `Flyout` that takes
+    /// no focus. Sheets and dialogs ignore it.
     pub fn take_focus(self, take_focus: bool) -> Self {
         self.overlay_config(|c| c.keep_focus = !take_focus)
     }
@@ -3063,7 +3074,8 @@ impl Overlay {
     /// on that edge, its arrow on the anchor (a `take_focus(false)` panel is
     /// placed exactly); iPad: the matching
     /// `permittedArrowDirections`; Linux: `GtkPopover::set_position`;
-    /// Android: the `PopupWindow` is placed beside or above the anchor.
+    /// Android: the `PopupWindow` is placed beside or above the anchor;
+    /// Windows: the `Flyout`'s placement (WinUI flips it).
     /// Phones that present popovers as sheets ignore it, as do sheets.
     ///
     /// On a dialog it places the dialog beside its anchor instead of
@@ -3088,7 +3100,8 @@ impl Overlay {
     /// Web: positioned beside the anchor, still `showModal`ed; macOS: an
     /// `NSPopover` on that edge instead of a sheet; iOS, iPadOS, visionOS:
     /// the dialog's card beside the anchor; Linux: a `GtkPopover` instead of
-    /// a window; Android: the dialog's window beside the anchor.
+    /// a window; Android: the dialog's window beside the anchor; Windows: a
+    /// `Flyout` on that side.
     pub fn side(self, side: crate::PopoverSide) -> Self {
         self.overlay_config(|c| {
             c.side = side;
@@ -3115,8 +3128,9 @@ impl Overlay {
     /// with a blur. Defaults: a blur on the web and tvOS, a dim elsewhere
     /// (macOS window sheets have none). Web: the `::backdrop`; iOS: the
     /// dialog's backdrop, and no dim under a clear sheet; Android: the
-    /// dialog's dim, the blur from Android 12; macOS and Linux show no
-    /// backdrop (sheets are windows). Popovers have none.
+    /// dialog's dim, the blur from Android 12; Windows: the smoke (clear, a
+    /// dim or an acrylic blur); macOS and Linux show no backdrop (sheets
+    /// are windows). Popovers have none.
     pub fn backdrop(self, backdrop: crate::controls::Backdrop) -> Self {
         self.overlay_config(|c| c.backdrop = Some(backdrop))
     }
@@ -3140,7 +3154,9 @@ impl Overlay {
     /// transparent panel instead of a sheet or an `NSPopover`; iOS, iPadOS,
     /// visionOS, tvOS: a clear card, shown without a cross-fade; Android: a
     /// transparent dialog window without animation; Linux: a `GtkPopover`
-    /// without arrow or background, or an undecorated transparent window.
+    /// without arrow or background, or an undecorated transparent window;
+    /// Windows: the content without the panel, its edge, shadow or
+    /// animation.
     /// Sheets and popovers keep their platform's box.
     pub fn bare(self) -> Self {
         self.overlay_config(|c| c.bare = c.kind == crate::OverlayKind::Dialog)

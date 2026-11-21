@@ -2,7 +2,8 @@
 //! focused, contains the focus, or is disabled (`.hover(|s| …)`,
 //! `.active(|s| …)`…), resolved natively by each backend (CSS
 //! pseudo-classes, AppKit tracking areas, UIKit gestures and the focus
-//! engine, GTK state flags, Android touch, hover and focus listeners).
+//! engine, GTK state flags, Android touch, hover and focus listeners, XAML
+//! pointer and focus events on Windows).
 
 use std::rc::Rc;
 

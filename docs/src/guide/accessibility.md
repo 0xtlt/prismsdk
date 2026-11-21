@@ -2,11 +2,11 @@
 
 Accessibility is built in, not opt-in. The core resolves one description per node (role, label, hint, value, checked, selected, current, disabled, hidden) and each backend maps it to the platform API:
 
-| | Web | iOS | macOS | Windows |
-|---|---|---|---|---|
-| API | ARIA + semantic HTML (`<main>`, `<h1>`, `<button>`, `role=switch`, `tablist`) | `UIAccessibility` traits, labels, values | `NSAccessibility` roles, labels, press action | UI Automation: WinUI's peers for its controls, custom automation peers for drawn views (control type, Toggle, SelectionItem and Value patterns, landmarks, dialogs) |
-| Keyboard | Tab/Enter/Space on custom buttons, arrow keys in tab bars and radio groups, visible focus | — | Full Keyboard Access, Space/Return, focus ring | Tab, Space/Enter on clickable views, focus visuals |
-| Navigation | focus moves to the new screen's title; document title follows | native | window title follows | window title follows |
+| | Web | iOS | macOS | Windows | Android | Linux |
+|---|---|---|---|---|---|---|
+| API | ARIA + semantic HTML (`<main>`, `<h1>`, `<button>`, `role=switch`, `tablist`) | `UIAccessibility` traits, labels, values | `NSAccessibility` roles, labels, press action | UI Automation: WinUI's peers for its controls, custom automation peers for drawn views (control type, Toggle, SelectionItem and Value patterns, landmarks, dialogs) | native views (`Button`, `Switch`…), `contentDescription`, `setAccessibilityHeading` | GTK accessible roles, labels and states |
+| Keyboard | Tab/Enter/Space on custom buttons, arrow keys in tab bars and radio groups, visible focus | — | Full Keyboard Access, Space/Return, focus ring | Tab, Space/Enter on clickable views, focus visuals | native controls | Tab, Space/Enter on clickable views |
+| Navigation | focus moves to the new screen's title; document title follows | native | window title follows | window title follows | activity title follows (what TalkBack reads) | window title follows |
 
 Defaults are automatic: a clickable `div` becomes a button named after its text ("Try Prism on the web, Done"), inputs use their placeholder, toggles expose their state. Refine with:
 

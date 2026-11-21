@@ -80,7 +80,7 @@ Permissions, location, motion, photos and camera, haptics, clipboard, share shee
 
 ## Security: secrets, biometrics, sign-in
 
-Secrets in the Keychain, Android Keystore or Secret Service; Face ID, Touch ID, fingerprint and WebAuthn checks; Sign in with Apple and OAuth/OpenID Connect sign-in with PKCE. → [Security](docs/src/guide/security.md)
+Secrets in the Keychain, Android Keystore, Secret Service or Windows Credential Manager; Face ID, Touch ID, fingerprint, Windows Hello and WebAuthn checks; Sign in with Apple and OAuth/OpenID Connect sign-in with PKCE. → [Security](docs/src/guide/security.md)
 
 ## Background execution
 
@@ -88,7 +88,7 @@ Lifecycle events, `finish_in_background`, periodic tasks even when the app is cl
 
 ## Dialogs, menus, tray
 
-Alerts, sheets, context menus, the macOS menu bar and tray. → [Dialogs, menus, tray](docs/src/guide/dialogs-menus.md)
+Alerts, sheets, context menus, the menu bar (macOS, Linux, Windows) and tray. → [Dialogs, menus, tray](docs/src/guide/dialogs-menus.md)
 
 ## Images, long lists, gestures
 
@@ -112,7 +112,7 @@ Line, bar and pie charts, rings, stats and sparklines in `prism::ui`, and `shape
 
 ## Accessibility
 
-Built in: one description per node, mapped to ARIA, `UIAccessibility`, `NSAccessibility`, GTK and Android. → [Accessibility](docs/src/guide/accessibility.md)
+Built in: one description per node, mapped to ARIA, `UIAccessibility`, `NSAccessibility`, GTK, Android and UI Automation. → [Accessibility](docs/src/guide/accessibility.md)
 
 ## Components (`prism::ui`)
 
@@ -196,7 +196,7 @@ An APK without Gradle; a small Java host shows real Android views. Phones, table
 
 ## Windows
 
-Real WinUI 3 controls (Windows App SDK, self-contained: its runtime goes next to the app) in a Win32 window, laid out by prism-native; UI Automation from WinUI; MSVC or MinGW. Services and packaging come next. → [Windows](docs/src/platforms/windows.md)
+Real WinUI 3 controls (Windows App SDK, self-contained: its runtime goes next to the app) in a Win32 window, laid out by prism-native; UI Automation from WinUI; MSVC or MinGW. Notifications, tray, menu bar, secrets and Windows Hello; `prism build windows` makes a zip. → [Windows](docs/src/platforms/windows.md)
 
 ## Status
 

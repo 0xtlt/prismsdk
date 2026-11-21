@@ -1,6 +1,6 @@
 //! Motion helpers: transforms, enter/exit animations, loops and animated
 //! updates, on every backend (UIKit / AppKit animations, Android property
-//! animators, CSS and the Web Animations API, GTK).
+//! animators, CSS and the Web Animations API, GTK, Composition on Windows).
 //!
 //! ```ignore
 //! div()

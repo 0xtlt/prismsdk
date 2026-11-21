@@ -817,7 +817,8 @@ impl RouterBuilder {
     /// The tint of the tab bar's selected tab and of the header bars'
     /// buttons (Back included): `UITabBar` / `UINavigationBar` `tintColor`,
     /// the selected segment on macOS, accent colors on Linux, Android and
-    /// the web. Without it they take the app's accent color
+    /// the web; not yet on Windows, which keeps the system's accent color.
+    /// Without it they take the app's accent color
     /// ([`App::set_accent_color`], which `prism_ui::set_theme` sets), else
     /// the platform's.
     pub fn tint(mut self, color: crate::style::Color) -> Self {

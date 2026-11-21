@@ -1,6 +1,6 @@
 # Charts and vector drawing
 
-`prism::ui` has charts, drawn natively with vector shapes: UIKit Bézier paths (iOS, tvOS, visionOS), Core Animation shape layers (macOS), `Canvas` (Android), SwiftUI (watchOS), SVG (web), cairo (Linux).
+`prism::ui` has charts, drawn natively with vector shapes: UIKit Bézier paths (iOS, tvOS, visionOS), Core Animation shape layers (macOS), `Canvas` (Android), SwiftUI (watchOS), SVG (web), cairo (Linux), XAML `Path`s (Windows).
 
 ```rust
 ui::line_chart()

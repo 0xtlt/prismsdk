@@ -1,6 +1,6 @@
 # Web views: another page inside the app
 
-`web_view(url)` shows a web page inside the app: an `<iframe>` on the web, a `WKWebView` on Apple platforms, an `android.webkit.WebView` on Android. The page and the app talk through messages, both ways. A content editor uses it for its live preview: the rendered page beside the form, reloaded after each change, the selection going back and forth.
+`web_view(url)` shows a web page inside the app: an `<iframe>` on the web, a `WKWebView` on Apple platforms, an `android.webkit.WebView` on Android, a WinUI `WebView2` on Windows. The page and the app talk through messages, both ways. A content editor uses it for its live preview: the rendered page beside the form, reloaded after each change, the selection going back and forth.
 
 ```rust
 use prism::prelude::*;

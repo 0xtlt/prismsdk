@@ -9,7 +9,7 @@ cx.set_tray(Tray::new("focus").title("25:00").menu(menu));         // macOS menu
 cx.set_app_menu(vec![Menu::titled("File").item(MenuItem::new("New").shortcut("cmd+n"))]);
 ```
 
-Context menus open with a long press (iOS), right click or ⌃-click (macOS), right click / Shift+F10 (web), and from VoiceOver.
+Context menus open with a long press (iOS, Android), right click or ⌃-click (macOS), right click or a long press (Linux), right click, Shift+F10 or a long press (Windows), right click / Shift+F10 (web), and from VoiceOver.
 
 ## The whole menu bar
 
@@ -43,7 +43,7 @@ cx.set_menu_bar(vec![
 
 - `MenuItem::system(SystemAction::…)` is an action the platform performs, sent like the system's own items: Cut, Copy, Paste, Select All and Undo / Redo of a text field go to the focused view (and are enabled when it can), Minimize, Zoom, full screen and Close to the window, Hide, Hide Others, Show All, About and Services to the app; Quit asks first with unsaved changes. Each has the usual shortcut unless given one, and an English title unless given `.title(…)`. A menu with Minimize is the Window menu (macOS lists the windows there).
 - An app item with a shortcut takes it from everything, focused text fields included: an `Annuler` item on ⌘Z runs the app's undo, not the field's. Use `MenuItem::system(SystemAction::Undo)` instead to keep the fields' own.
-- Web: no menu bar, but the shortcuts of the app's menus (`set_app_menu` or `set_menu_bar`) are the app's: the page takes them before the browser (⌘Z in a field, ⌘S, ⌘K; `cmd` is ⌘ on Apple devices and Ctrl elsewhere) and runs the item. Linux: `set_menu_bar` is the GTK menu bar, without the system items (GTK fields have their own). Phones, tablets and watches show no menu bar.
+- Web: no menu bar, but the shortcuts of the app's menus (`set_app_menu` or `set_menu_bar`) are the app's: the page takes them before the browser (⌘Z in a field, ⌘S, ⌘K; `cmd` is ⌘ on Apple devices and Ctrl elsewhere) and runs the item. Linux: `set_menu_bar` is the GTK menu bar, without the system items (GTK fields have their own). Windows: a WinUI `MenuBar` under the title bar; the system items Windows has no equivalent for (Hide, Show All, About, Services, full screen) are left out. Phones, tablets and watches show no menu bar.
 
 ## Shortcuts a menu only shows
 
@@ -91,6 +91,7 @@ cx.show_menu(menu, Point::new(120., 80.))                // in the window's cont
 | iOS, iPadOS, visionOS | a `UIMenu` from a transparent one-point `UIButton` at that place (`showsMenuAsPrimaryAction`, `performPrimaryAction`): iOS 17.4 and later, nothing before |
 | Android | `PopupMenu` anchored to a transparent view laid over that place |
 | Linux | `GtkPopoverMenu` pointing at the place (or the element) |
+| Windows | a `MenuFlyout` at the place (or below the element) |
 | Web | the page's menu (the one context menus use), placed at the point or below the element |
 | tvOS, watchOS | nothing |
 
@@ -125,6 +126,7 @@ dialog(picker).open(self.picking).on_dismiss(cx.listener(|this, e: &BackEvent, _
 | iOS, iPadOS, visionOS | a hardware keyboard's Escape (tvOS: Menu) | the backdrop, around an iPad popover | a sheet | a sheet's Close button |
 | Android | a hardware keyboard's Escape | a touch outside | – | the system's back |
 | Linux | Escape | a click outside a popover | – | the window's close button |
+| Windows | Escape | a click on the smoke, a popover's light dismiss | – | – |
 
 | | Sheet | Popover | Dialog |
 |---|---|---|---|
@@ -134,6 +136,7 @@ dialog(picker).open(self.picking).on_dismiss(cx.listener(|this, e: &BackEvent, _
 | tvOS | centered card over a blurred screen (Menu closes it) | same | same |
 | Linux | modal window (up to 560 pt wide; no bottom sheet without libadwaita) | `GtkPopover` | modal window |
 | Android | dialog pinned to the bottom, sliding up | `PopupWindow` | centered `Dialog` |
+| Windows | a larger dialog (Windows has no sheet) | WinUI `Flyout` | `ContentDialog`'s look: a centered panel over the smoke |
 | watchOS | `.sheet` | `.sheet` | `.sheet` |
 
 An overlay can be created already open, in the same update as its parent: it is shown as soon as it is placed.
@@ -163,6 +166,7 @@ div()
 | iOS, iPadOS, visionOS | taps around it reach the window (passthrough views) | the field stays first responder, the keyboard stays up (if UIKit moves the first responder while presenting, the field takes it back); a passive touch watcher on the window closes it once a touch outside ends |
 | Linux | `GtkPopover` without autohide | a `GtkPopover` without autohide that cannot take the focus; an unclaimed capture-phase click gesture on the window closes it |
 | Android | `PopupWindow` ignoring outside touches | a non-focusable `PopupWindow` above the keyboard; outside touches close it and reach the window below |
+| Windows | a `Flyout` letting presses through to the page (`OverlayInputPassThroughElement`) | a transient `Flyout` that takes no focus; presses outside reach the page |
 
 Sheets and dialogs ignore both options. On macOS the panel follows the anchor at each layout, not while a scroll view scrolls under it.
 
@@ -195,6 +199,7 @@ A popover can open from an item of another open popover (a submenu of a menu): e
 | iPadOS, visionOS | `permittedArrowDirections`: the side's, the opposite one without room | like the `NSPopover` |
 | Linux | `GtkPopover::set_position` (GTK flips it) | `set_pointing_to`, like the `NSPopover` |
 | Android | the `PopupWindow` placed by Prism, flipped without room | exact |
+| Windows | the `Flyout`'s placement (WinUI flips it) | the placement's edge alignment (`BottomEdgeAlignedLeft`…) |
 
 Phones that show popovers as sheets, tvOS and watchOS ignore both options, as do sheets. On a dialog, `.side(…)` places it beside its anchor (below).
 
@@ -225,6 +230,7 @@ div()
 | tvOS | centered cards (focus moves by direction) | the card's: a blur (the default), a dim or clear | popovers and dialogs |
 | Linux | a `GtkPopover` at that position | none (sheets and dialogs are windows) | popovers and dialogs |
 | Android | the dialog's window beside the anchor | the dialog's dim, off, or with a blur (Android 12+) | popovers and dialogs |
+| Windows | a `Flyout` on that side | the smoke: clear, a dim (the default) or an acrylic blur | popovers and dialogs |
 | watchOS | `.sheet` | – | – |
 
 ### A dialog without Prism's box
@@ -247,9 +253,10 @@ dialog(div().bg(rgb(0x1c1c1e)).rounded(12.).shadow_lg().child(swatches))
 | iOS, iPadOS, visionOS, tvOS | a clear card without corners or edge, shown without a cross-fade |
 | Linux | a `GtkPopover` without arrow or background, or an undecorated window |
 | Android | a transparent dialog window, without animation |
+| Windows | the content without the panel, its edge, shadow or animation |
 
 Sheets and popovers keep their platform's box; `.bare()` does nothing on them.
 
-Toasts (and any `cx.add_layer` entity) stay above overlays on the web, macOS (a transparent child window), iOS, iPadOS, tvOS and visionOS (a pass-through window). On Linux and Android, sheets and dialogs are separate windows, and on watchOS sheets cover the app: layers stay under them there. On the web, layers are in the server-rendered first paint too (see [Web](../platforms/web.md#layers-in-the-first-paint)).
+Toasts (and any `cx.add_layer` entity) stay above overlays on the web, macOS (a transparent child window), iOS, iPadOS, tvOS and visionOS (a pass-through window). On Linux and Android, sheets and dialogs are separate windows, on Windows they are drawn above the app's layers, and on watchOS sheets cover the app: layers stay under them there. On the web, layers are in the server-rendered first paint too (see [Web](../platforms/web.md#layers-in-the-first-paint)).
 
 `hit_test(false)` and `inert(true)` (see [Pointer, keyboard, focus](input.md)) let a screen draw its own scrim or decoration and keep the content under it out of reach.

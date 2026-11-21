@@ -17,6 +17,7 @@
 //! | Apple platforms | `CTFontManagerRegisterFontsForURL` (process scope) | TTF, OTF, TTC |
 //! | Android | `Typeface.Builder(File)` | TTF, OTF, TTC |
 //! | Linux | fontconfig (`FcConfigAppFontAddFile`), then Pango reloads | TTF, OTF, TTC |
+//! | Windows | a copy in the data folder that XAML loads by `ms-appx:///` URI | TTF, OTF, TTC |
 //!
 //! Natively the family is read from the font file: the name given to
 //! [`FontFace`] becomes an alias of it, so `.font_family("Brand")` finds the

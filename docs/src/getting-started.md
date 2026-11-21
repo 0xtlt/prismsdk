@@ -26,7 +26,8 @@ mise run cli                 # cargo install --path crates/prism-cli --locked
 
 Prism needs Rust 1.94 or later. Each target has its own tools: Xcode for the
 Apple platforms, the GTK 4 development files on Linux, Java and the Android
-SDK for Android (see [Android](platforms/android.md)).
+SDK for Android (see [Android](platforms/android.md)), MSVC or MinGW-w64 for
+Windows (see [Windows](platforms/windows.md)).
 
 ## Quick start
 

@@ -994,8 +994,8 @@ impl crate::i18n::Formatter for FormatterRef<'_> {
 impl App {
     /// Titles the page or the window `title` (#154), for an app that does
     /// its own navigation (a sidebar, a document's name): the web shows
-    /// « title · App » in the tab, the first paint included; macOS and Linux
-    /// title the window; iPadOS the scene (its multitasking switcher);
+    /// « title · App » in the tab, the first paint included; macOS, Linux
+    /// and Windows title the window; iPadOS the scene (its multitasking switcher);
     /// Android the activity. While set it wins over the title of a
     /// [`Stack`](crate::Stack)'s top screen. Setting the same title again
     /// does nothing. Empty: like [`clear_title`](Self::clear_title).
@@ -1031,7 +1031,8 @@ impl App {
     /// while `true`, closing the page or the window asks first. Web: the
     /// browser's own « Leave site? » question (`beforeunload`); macOS: the
     /// close button's dot, and closing the window or quitting asks « Leave
-    /// without saving? »; Linux: closing the window asks. Phones and
+    /// without saving? »; Linux: closing the window asks; Windows: closing
+    /// the window asks (a message box, in English for now). Phones and
     /// tablets close apps themselves: save as you go there. Navigation
     /// inside the app is the app's to guard.
     pub fn set_unsaved_changes(&mut self, unsaved: bool) {

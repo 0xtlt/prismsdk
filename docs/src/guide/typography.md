@@ -15,19 +15,19 @@ text(heading).text_balance()          // lines of about the same length
 text("Deprecated").strikethrough().italic()
 ```
 
-| Builder | Style field | Web | Apple (AppKit, UIKit, SwiftUI) | Android | GTK |
-|---|---|---|---|---|---|
-| `.font_family(…)`, `.font_mono()`, `.font_serif()`, `.font_rounded()` | `font_family` | `font-family` | system designs (SF Mono, New York, SF Rounded) or a family | `MONOSPACE`, `SERIF`, a bundled family | `monospace`, `serif`, a family |
-| `.font_weight(…)`, `.weight(650)`, `.bold()`… | `font_weight` (100–900) | `font-weight` | any weight (the system font is variable) | `Typeface.create(…, weight, …)` | Pango weight |
-| `.italic()` | `italic` | `font-style` | italic trait | italic typeface | Pango style |
-| `.line_height(20.)`, `.line_height(relative(1.4))`, `.leading(1.4)` | `line_height` | `line-height` | paragraph line height | `setLineHeight` | absolute line height |
-| `.letter_spacing(0.8)`, `.tracking(0.8)` | `letter_spacing` (points) | `letter-spacing` | kern | `setLetterSpacing` | letter spacing |
-| `.uppercase()`, `.lowercase()`, `.capitalize()`, `.text_transform(…)` | `text_transform` | `text-transform` | transformed text | transformed text | transformed text |
-| `.underline()`, `.strikethrough()` / `.line_through()` | `underline`, `strikethrough` | `text-decoration-line` | underline / strikethrough style | spans | Pango attributes |
-| `.tabular_nums()` | `tabular_numbers` | `font-variant-numeric` | `tnum` feature | `tnum` | `tnum` |
-| `.truncate()`, `.line_clamp(n)` | `max_lines` | `text-overflow`, `line-clamp` | number of lines, tail truncation | `maxLines` + ellipsis | lines + ellipsize |
-| `.nowrap()` | `no_wrap` | `white-space: pre` | clipping | horizontal scrolling off, clipped | ellipsized (see below) |
-| `.text_pretty()`, `.text_balance()`, `.text_wrap(…)` | `text_wrap` | `text-wrap: pretty` / `balance` | `lineBreakStrategy = .pushOut` (both) | `BREAK_STRATEGY_HIGH_QUALITY` / `BALANCED` | ignored (see below) |
+| Builder | Style field | Web | Apple (AppKit, UIKit, SwiftUI) | Android | GTK | Windows (XAML) |
+|---|---|---|---|---|---|---|
+| `.font_family(…)`, `.font_mono()`, `.font_serif()`, `.font_rounded()` | `font_family` | `font-family` | system designs (SF Mono, New York, SF Rounded) or a family | `MONOSPACE`, `SERIF`, a bundled family | `monospace`, `serif`, a family | Cascadia Mono, Georgia, a family |
+| `.font_weight(…)`, `.weight(650)`, `.bold()`… | `font_weight` (100–900) | `font-weight` | any weight (the system font is variable) | `Typeface.create(…, weight, …)` | Pango weight | `FontWeight` |
+| `.italic()` | `italic` | `font-style` | italic trait | italic typeface | Pango style | `FontStyle` |
+| `.line_height(20.)`, `.line_height(relative(1.4))`, `.leading(1.4)` | `line_height` | `line-height` | paragraph line height | `setLineHeight` | absolute line height | `LineHeight` (block line height) |
+| `.letter_spacing(0.8)`, `.tracking(0.8)` | `letter_spacing` (points) | `letter-spacing` | kern | `setLetterSpacing` | letter spacing | `CharacterSpacing` |
+| `.uppercase()`, `.lowercase()`, `.capitalize()`, `.text_transform(…)` | `text_transform` | `text-transform` | transformed text | transformed text | transformed text | transformed text |
+| `.underline()`, `.strikethrough()` / `.line_through()` | `underline`, `strikethrough` | `text-decoration-line` | underline / strikethrough style | spans | Pango attributes | `TextDecorations` |
+| `.tabular_nums()` | `tabular_numbers` | `font-variant-numeric` | `tnum` feature | `tnum` | `tnum` | not yet (ignored) |
+| `.truncate()`, `.line_clamp(n)` | `max_lines` | `text-overflow`, `line-clamp` | number of lines, tail truncation | `maxLines` + ellipsis | lines + ellipsize | `MaxLines` + ellipsis |
+| `.nowrap()` | `no_wrap` | `white-space: pre` | clipping | horizontal scrolling off, clipped | ellipsized (see below) | `NoWrap`, clipped |
+| `.text_pretty()`, `.text_balance()`, `.text_wrap(…)` | `text_wrap` | `text-wrap: pretty` / `balance` | `lineBreakStrategy = .pushOut` (both) | `BREAK_STRATEGY_HIGH_QUALITY` / `BALANCED` | ignored (see below) | ignored (see below) |
 
 Screen readers read the text as written (`uppercase()` and `capitalize()`
 only change how it looks), so put data in as it is (`text(name).capitalize()`
@@ -80,6 +80,8 @@ Every backend registers them at startup:
   in the assets folder too.
 - **Linux**: fontconfig (`FcConfigAppFontAddFile`), seen by Pango. Embedded
   fonts are written once to `~/.cache/prism-fonts/` (fontconfig reads files).
+- **Windows**: not yet. Bundled and embedded fonts are not registered at
+  startup; load them with `cx.load_font` (below).
 
 An unknown family falls back to the system font.
 
@@ -106,7 +108,7 @@ Asking for the same face again does nothing, so it can be called from
 | macOS, iOS, iPadOS, tvOS, visionOS, watchOS | `CTFontManagerRegisterFontsForURL` of a cached copy (process scope; a variable font keeps its weights) | TTF, OTF | loaded in the background, like pictures (`https://`, `file://`, assets: embedded ones on macOS, iOS and Linux) |
 | Android | `Typeface.Builder(File)` / `createFromFile` | TTF, OTF, TTC | same |
 | Linux | fontconfig (`FcConfigAppFontAddFile`), then Pango's font map reloads | TTF, OTF, TTC | same |
-| Windows | a copy in `prism-fonts\` next to the executable, named by `ms-appx:///…#Family` (XAML reads font files from the app's folder only) | TTF, OTF, TTC | same |
+| Windows | a copy in the app's data folder (`%LOCALAPPDATA%\<app>\prism-fonts`), named by `ms-appx:///prism-fonts/…#Family` (XAML reads font files only by URI; Prism's resource lookup finds them there, else in `prism-fonts\` next to the executable) | TTF, OTF, TTC | same |
 
 - **The family name**: on the web the face is registered under the name you
   give. Natively the platform knows a font by the family its file declares,
@@ -180,6 +182,7 @@ clamp…) apply to every run.
 | watchOS | `AttributedString` | tap (`openURL` action) |
 | Android | `SpannableString` | `ClickableSpan`: tap, keyboard / D-pad, TalkBack links |
 | Linux | Pango attributes and markup | GTK label links: click, keyboard; one label for screen readers (GTK 4.8) |
+| Windows | `Run`s in a `TextBlock` | `Hyperlink`: click, Tab, Enter; UI Automation links |
 
 Inline icons are SF Symbols on Apple platforms (sized and tinted like the
 text) and their fallback glyph elsewhere (see `prism::glyphs`).
@@ -209,7 +212,7 @@ rich_text([
 `UnderlineStyle` is `Single` (the default), `Thick`, `Double`, `Dotted` or
 `Dashed`. They apply in read-only text and in a
 [`rich_input`](forms.md#rich-text-input) that draws its runs (the web,
-macOS).
+macOS, Windows).
 
 | | Color | Styles |
 |---|---|---|
@@ -218,6 +221,7 @@ macOS).
 | watchOS | `Text.LineStyle` color | dotted and dashed patterns; thick and double are one line |
 | Android | drawn by a span under each line | every style (the paint's underline has no color or style) |
 | Linux | Pango underline color | single, double; dotted is Pango's « error » line; thick and dashed are single |
+| Windows | not yet: the text's color | single in read-only text; a rich input draws every style |
 
 ## Clickable text
 
@@ -251,7 +255,7 @@ still report their clicks, since links don't nest.
   no balanced breaking, so both keep a lone word off the last line there
   (`pushOut`, which UIKit labels already do for plain text). Android's
   default breaker already avoids ragged lines, so `pretty` keeps it. GTK,
-  watchOS, widgets and Live Activities have no such setting and break as
+  XAML on Windows, watchOS, widgets and Live Activities have no such setting and break as
   usual. Browsers without `text-wrap` (before Safari 17.5, Chrome 114,
   Firefox 121) ignore it; `pretty` needs Safari 26 or Chrome 117.
 - Widgets and Live Activities get the node styles (family, weight, italic,

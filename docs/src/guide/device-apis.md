@@ -17,13 +17,13 @@ cx.haptic(Haptic::Success);   cx.copy_text("Hi");   cx.share(Share::text("Look")
 
 On the web `open_url` keeps a URL of the page's own origin in the tab (the host's sign-out page, a download) and opens other origins in a new tab; `cx.open_url_in(url, UrlTarget::SameTab)` / `NewTab` chooses. Natively the system opens it either way.
 
-| | iOS | macOS | Web |
-|---|---|---|---|
-| Permissions | system prompts (location, camera, photos, microphone, motion, notifications) | same (bundled app) | Permissions API, `getUserMedia` |
-| Location | CoreLocation | CoreLocation (bundled app) | `navigator.geolocation` |
-| Motion | CoreMotion (device only) | — | `devicemotion` |
-| Photos / camera | PHPicker (no permission needed) / camera | open panel / — | `<input type=file>`, uploaded to the session |
-| Haptics, clipboard, share, URLs | UIFeedbackGenerator, UIPasteboard, share sheet | trackpad, NSPasteboard, sharing picker | `vibrate`, Clipboard API, Web Share |
+| | iOS | macOS | Web | Android | Linux | Windows |
+|---|---|---|---|---|---|---|
+| Permissions | system prompts (location, camera, photos, microphone, motion, notifications) | same (bundled app) | Permissions API, `getUserMedia` | runtime permissions (`requestPermissions`) | — | — |
+| Location | CoreLocation | CoreLocation (bundled app) | `navigator.geolocation` | `LocationManager` | GeoClue2 | — |
+| Motion | CoreMotion (device only) | — | `devicemotion` | `SensorManager` | — | — |
+| Photos / camera | PHPicker (no permission needed) / camera | open panel / — | `<input type=file>`, uploaded to the session | photo picker (`ACTION_PICK_IMAGES`) / `ACTION_IMAGE_CAPTURE` | file chooser / — | `IFileOpenDialog` / — |
+| Haptics, clipboard, share, URLs | UIFeedbackGenerator, UIPasteboard, share sheet | trackpad, NSPasteboard, sharing picker | `vibrate`, Clipboard API, Web Share | `VibrationEffect`, `ClipboardManager`, `ACTION_SEND` chooser | —, the display's clipboard, —, the default app | —, the Win32 clipboard, —, `ShellExecuteW` |
 
 Usage texts go in `Prism.toml`; `prism` writes them to Info.plist (iOS refuses to ask without them):
 

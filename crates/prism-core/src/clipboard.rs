@@ -237,6 +237,8 @@ impl AsyncApp {
     /// - Android: the primary clip (text, HTML, and an image behind a
     ///   content URI).
     /// - Linux: the display's clipboard (GDK formats; images as PNG).
+    /// - Windows: the clipboard's formats (`PNG` or a DIB as `image/png`,
+    ///   `CF_HDROP` as `text/uri-list`).
     /// - tvOS, watchOS: no clipboard, always `None`.
     pub async fn read_clipboard_item(&self) -> Option<ClipboardItem> {
         match self.device(DeviceCall::ReadClipboardItem).await {

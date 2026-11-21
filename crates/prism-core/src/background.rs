@@ -14,11 +14,11 @@
 //! );
 //! ```
 //!
-//! | | iOS | macOS | Web |
-//! |---|---|---|---|
-//! | Lifecycle | scene active/inactive/background | app active/inactive/hidden | page visibility |
-//! | Finish in background | `beginBackgroundTask` | keeps running | keeps running (server) |
-//! | Periodic tasks | `BGTaskScheduler` (app relaunched in the background) | `NSBackgroundActivityScheduler` | timer while a page is open |
+//! | | iOS | macOS | Web | Android | Linux | Windows |
+//! |---|---|---|---|---|---|---|
+//! | Lifecycle | scene active/inactive/background | app active/inactive/hidden | page visibility | active/inactive/background | window active/inactive/minimized | not yet |
+//! | Finish in background | `beginBackgroundTask` | keeps running | keeps running (server) | while the process lives | keeps running | keeps running |
+//! | Periodic tasks | `BGTaskScheduler` (app relaunched in the background) | `NSBackgroundActivityScheduler` | timer while a page is open | `JobScheduler` (app started in the background) | timer while the app runs | timer while the app runs |
 
 use std::future::Future;
 use std::pin::Pin;

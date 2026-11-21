@@ -41,11 +41,11 @@ cx.set_badge(Some(unread));   // the app icon's number, without a notification (
 
 **The app badge** (#239): `cx.set_badge(Some(n))` sets the number on the app icon on its own, when the app's unread count changes (`None` or 0 clears it): the Dock tile on macOS, the home screen on iOS, iPadOS, tvOS and visionOS (with the notification permission, badges included), the Badging API on the web where the browser has it (installed web apps), an overlay on the taskbar button on Windows. Android launchers and Linux docks badge from notifications only, and watchOS has none: nothing happens there. **Outside an app bundle** (`cargo run` on macOS), notification calls do nothing and the notification permission answers `Unavailable` instead of throwing.
 
-| | iOS | macOS | Web | Android (planned) |
-|---|---|---|---|---|
-| Widgets | WidgetKit | WidgetKit (`mise run macos-app`) | — | Glance |
-| Live Activities | lock screen + **Dynamic Island** | menu bar item with live countdown | in-page live banner (`aria-live`) | Live Updates notification |
-| Notifications | UserNotifications | UserNotifications (bundled app) | Notification API / toast | NotificationCompat |
+| | iOS | macOS | Web | Android | Linux | Windows |
+|---|---|---|---|---|---|---|
+| Widgets | WidgetKit | WidgetKit (`mise run macos-app`) | — | app widgets (`RemoteViews`) | — | — |
+| Live Activities | lock screen + **Dynamic Island** | menu bar item with live countdown | in-page live banner (`aria-live`) | ongoing notification | — | — |
+| Notifications | UserNotifications | UserNotifications (bundled app) | Notification API / toast | `Notification.Builder` | `GNotification` | Windows App SDK app notifications |
 
 How it works: Prism resolves the elements into a static snapshot (compact JSON, under ActivityKit's 4 KB limit). A **generic SwiftUI renderer** shipped with Prism (`crates/prism-apple-build/apple/Extension`) draws it in a WidgetKit extension. `crates/prism-cli/platform/scripts/ios-run.sh` generates that extension from the app's registered widgets, then builds and signs it with the App Group. Apps that register no widget and declare no Live Activity (`cx.enable_live_activities()` at startup, or a push-to-start handler `cx.on_activity_push_token`) are bundled without the extension, its provisioning profile and the App Group: on iOS, `start_activity` then fails with a log line saying so. macOS draws Live Activities in the app (a menu bar item), so there only widgets need the extension. Android adds one widget receiver per registered widget. The Rust app talks to WidgetKit/ActivityKit/UserNotifications through a small Swift bridge linked automatically (`crates/prism-apple-build`). Platforms implement `PlatformServices`; apps query `cx.capabilities()` instead of checking the OS.
 
@@ -78,7 +78,7 @@ cx.register_widget(
 |---|---|
 | iOS, iPadOS, macOS, visionOS | one timeline entry per drawing (`Timeline(entries:policy: .atEnd)`, `.never` when nothing is ahead), so WidgetKit switches drawings by itself; after the last one, it asks again and the last drawing stays |
 | Android | the latest drawing whose instant has come, each time the widget is drawn, and an inexact alarm draws it again at the next instant |
-| Web, Linux, watchOS, tvOS | no home-screen widgets |
+| Web, Linux, Windows, watchOS, tvOS | no home-screen widgets |
 
 The snapshot keeps its format for widgets that don't draw ahead: the drawings come in an `"ahead": [{"at": …, "families": …}]` list next to `"families"` (per configuration for configurable widgets), only when there are some. `WidgetSnapshot::ahead_for(config)` lists them, as `WidgetEntry { at, families }`.
 
@@ -94,7 +94,7 @@ The text replaces the countdown when it reaches `0:00`, wherever the timer is dr
 
 | | Once the end has passed |
 |---|---|
-| In the app (web, macOS, iOS, iPadOS, tvOS, visionOS, Android, Linux, watchOS) | the text, on the next tick (watchOS: drawn again at the end) |
+| In the app (web, macOS, iOS, iPadOS, tvOS, visionOS, Android, Linux, Windows, watchOS) | the text, on the next tick (watchOS: drawn again at the end) |
 | Widgets on iOS and macOS | the text, without the app: the widget's timeline gets an entry at the timer's end, and the timer compares its end with the entry's instant (WidgetKit draws entries ahead of time) |
 | Live Activities on iOS | the text once ActivityKit draws the activity again: an update, or its `stale_after(end)` |
 | Android widgets | the text, without the app: an alarm draws the widget again at the timer's end (inexact: Doze may delay it a little) |
@@ -142,7 +142,7 @@ cx.reload_widgets_on(&rooms); // new rooms show up in the sheet, every configura
 
 A choice that was not drawn yet (many options, freshly picked in the sheet) shows « Open the app to set up this widget. » rather than another configuration's content. The app redraws as soon as it becomes active again when the instances on screen changed while it was away, and on every `reload_widgets`. Options are a list in the edit sheet: keep them to what a person can scroll through.
 
-**Android** has no edit sheet for app widgets yet (a configuration activity is not generated): configurable widgets show their default configuration. Web and Linux have no home-screen widgets.
+**Android** has no edit sheet for app widgets yet (a configuration activity is not generated): configurable widgets show their default configuration. Web, Linux and Windows have no home-screen widgets.
 
 ## Widget buttons: actions without opening the app
 
@@ -180,7 +180,7 @@ The payload is a string: an id, or JSON the handler parses. The same buttons wor
 | visionOS 26 | the same intent | the same (built, not verified on a device) |
 | Android | `setOnClickPendingIntent` → a broadcast to `PrismWidget$Action` (`goAsync`) | the app's process, without an Activity when it is closed (like background jobs) |
 | macOS | a link to `/__prism/widget-action?kind=…&action=…&payload=…&token=…` | **degraded**: the tap opens the app, which runs the action instead of navigating (`Runtime::open_link`). macOS widgets run intents in the widget extension, which cannot run the app's Rust code |
-| Web, Linux, watchOS, tvOS | — | no home-screen widgets |
+| Web, Linux, Windows, watchOS, tvOS | — | no home-screen widgets |
 
 How it works on Apple platforms: `crates/prism-apple-build/apple/Shared/PrismWidgetAction.swift` declares the intent, compiled into the widget extension (the renderer turns each `wa` node of a snapshot into a `Button(intent:)`) and into the app with the Swift bridge. Because it is a `LiveActivityIntent` that the app declares as well, iOS runs `perform()` in the app: the bundler extracts the App Intents metadata of the app too (`Metadata.appintents` in the `.app`, step 6b of `ios-run.sh`) when the app calls `on_widget_action` (`PRISM_DESCRIBE=widget_actions`). In the app, `perform()` hands the action to the Rust runtime (the window's, or a headless one when iOS launched the app just for it) and returns when the job is done; the job's reload writes the new snapshots to the App Group and reloads the timelines. If `perform()` ever runs in the extension instead, it queues the action in the App Group (`prism-widgets/actions.json`) and the app runs it the next time it becomes active.
 
