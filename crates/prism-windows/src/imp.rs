@@ -830,6 +830,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         let data = system::data_dir(&config.title);
         let _ = std::fs::create_dir_all(&data);
         crate::fonts::set_data_dir(&data);
+        crate::drops::set_folder(data.join("picked"));
         let images = Images::new(prism_native::images::ImageSources {
             embedded: config.embedded_assets.clone(),
             asset_dirs: assets.into_iter().collect(),
