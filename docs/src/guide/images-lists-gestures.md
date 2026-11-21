@@ -27,7 +27,7 @@ and Windows; Android and watchOS read the bundle's folder only). See
 picture(cover).w_full().h(px(220.)).object_position(0.5, self.cover_y)   // drag to set cover_y
 ```
 
-The web sets `object-position`; macOS and iOS show the part of the image that covers the frame (`contentsRect`), Android a matrix, Linux a paintable that covers the picture around the point. Not yet on Windows: it crops around the center. It follows the frame as it resizes, and has no effect with `fit()`.
+The web sets `object-position`; macOS and iOS show the part of the image that covers the frame (`contentsRect`), Android a matrix, Linux a paintable that covers the picture around the point, Windows the image sized to cover the frame, placed around the point and clipped to it. It follows the frame as it resizes, and has no effect with `fit()`.
 
 ## Videos
 

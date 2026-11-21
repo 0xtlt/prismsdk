@@ -83,7 +83,7 @@ window asks first; `cx.has_unsaved_changes()` reads it back.
 | Web | the browser's own « Leave site? » question when the tab is closed, reloaded or left (`beforeunload`; browsers show their own text) |
 | macOS | the close button's dot (`documentEdited`); closing the window or ⌘Q asks « Leave without saving? » with Discard Changes / Cancel |
 | Linux | closing the window asks the same question |
-| Windows | closing the window asks with a message box, in English for now |
+| Windows | closing the window asks the same question (a `ContentDialog`, Escape and Enter keep the changes) |
 | iOS, iPadOS, Android, watchOS | nothing: the system closes apps itself, so save as you go |
 
 The question's texts are built in (`prism.unsaved_title`,
@@ -209,7 +209,7 @@ Router::new().tint(rgb(0xFF9500)) // wins over the accent color
 | **macOS** | the selected segment's symbol (and its bezel where the appearance draws one) | Back's and the bar buttons' `contentTintColor` |
 | **Web** | `--prism-tint` on `.prism-tabs`: the selected tab's color | `--prism-tint` on `.prism-stack`: Back and the bar buttons |
 | **Linux** | CSS: the checked tab button | CSS: the header's buttons |
-| **Windows** | not yet: the system's accent color | not yet |
+| **Windows** | the selected tab's pill (`SelectorBarItemPillFill`) | Back and the bar buttons (their foreground, pointer-over and pressed brushes); a contrast theme's highlight wins |
 | **Android, Wear OS** | the selected tab's color | Back and the bar buttons |
 | **watchOS** | `.tint` on the `TabView` | `.tint` on the `NavigationStack` |
 
