@@ -1033,8 +1033,7 @@ macro_rules! builder {
             /// Called when a key is pressed while this element, or
             /// something in it, has the focus. A view with this handler can
             /// take the focus (Tab, a click, [`App::focus`], the tvOS focus
-            /// engine, an Android D-pad); not yet on Windows, where only
-            /// controls and clickable views take it.
+            /// engine, an Android D-pad).
             pub fn on_key_down(mut self, handler: Handler<crate::events::KeyEvent>) -> Self {
                 self.0.on_key_down = Some(handler);
                 self
@@ -2091,8 +2090,9 @@ impl Scroll {
     /// Pull to refresh (iOS refresh control; pull gesture and a Refresh
     /// button on the web; SwiftUI's `refreshable` on watchOS; a trackpad
     /// pull past the top or ⌘R on macOS; a pull at the top, F5 or Ctrl+R on
-    /// Android; F5 or Ctrl+R on Linux). Not yet on Windows. Show progress
-    /// with [`Scroll::refreshing`].
+    /// Android; F5 or Ctrl+R on Linux; WinUI's `RefreshContainer`, a touch
+    /// pull, and F5 or Ctrl+R on Windows). Show progress with
+    /// [`Scroll::refreshing`].
     pub fn on_refresh(mut self, handler: Handler<ClickEvent>) -> Self {
         self.0.on_click = Some(handler);
         self

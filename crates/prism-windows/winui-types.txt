@@ -298,3 +298,25 @@ Microsoft.Windows.ApplicationModel.Resources.ResourceContext
 Microsoft.Windows.ApplicationModel.Resources.ResourceCandidate
 Microsoft.Windows.ApplicationModel.Resources.ResourceCandidateKind
 Microsoft.Windows.ApplicationModel.Resources.ResourceNotFoundEventArgs
+# A date picker's date, time and clear button side by side (controls.rs)
+Microsoft.UI.Xaml.Controls.ColumnDefinition
+Microsoft.UI.Xaml.Controls.ColumnDefinitionCollection
+Microsoft.UI.Xaml.GridLength
+Microsoft.UI.Xaml.GridUnitType
+# Text inputs' touch keyboards (controls.rs)
+Microsoft.UI.Xaml.Input.InputScope
+Microsoft.UI.Xaml.Input.InputScopeName
+Microsoft.UI.Xaml.Input.InputScopeNameValue
+# Tabular figures (text.rs)
+Microsoft.UI.Xaml.Documents.Typography
+Microsoft.UI.Xaml.FontNumeralAlignment
+# Drawn underlines (underlay.rs)
+Microsoft.UI.Xaml.Documents.TextPointer
+Microsoft.UI.Xaml.Documents.LogicalDirection
+# Pull to refresh (refresh.rs)
+Microsoft.UI.Xaml.Controls.RefreshContainer
+Microsoft.UI.Xaml.Controls.RefreshRequestedEventArgs
+Microsoft.UI.Xaml.Controls.RefreshVisualizer
+Microsoft.UI.Xaml.Controls.RefreshPullDirection
+Microsoft.UI.Xaml.Controls.RefreshVisualizerState
+Microsoft.UI.Xaml.Controls.RefreshStateChangedEventArgs

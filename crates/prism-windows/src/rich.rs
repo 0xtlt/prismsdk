@@ -35,7 +35,7 @@ use crate::winui::bindings::Microsoft::UI::Text::{
     FormatEffect, ITextRange, RichEditTextDocument, TextConstants, TextGetOptions, TextSetOptions,
     UnderlineType,
 };
-use crate::winui::xaml::Controls::{RichEditBox, TextControlPasteEventHandler};
+use crate::winui::xaml::Controls::{Canvas, RichEditBox, TextControlPasteEventHandler};
 use crate::winui::xaml::Input::KeyEventHandler;
 use crate::winui::xaml::{RoutedEventHandler, TextWrapping};
 use crate::winui::{h, win_color};
@@ -46,6 +46,7 @@ const PLAIN_TEXT: i32 = 13;
 /// A rich input node's editor and the runs it shows.
 pub struct Rich {
     pub element: RichEditBox,
+    id: NodeId,
     /// The text the app asked for (`set_text`), shown with the next runs.
     replace: RefCell<Option<String>>,
     /// The chips shown, in order.
@@ -118,6 +119,7 @@ impl Rich {
         }
         Ok(Rich {
             element: r,
+            id,
             replace: RefCell::new(None),
             chips: RefCell::new(Vec::new()),
             runs: RefCell::new(String::new()),
@@ -178,6 +180,17 @@ impl Rich {
             doc.SetDefaultCharacterFormat(&default)?;
         }
         format(&doc, &st, &runs, pal)?;
+        // Underline colors, which RichEdit lacks: drawn over the field.
+        let marks = crate::underlay::colored(crate::underline::marks(&st, true), pal, ink);
+        if let Some(outer) = self
+            .element
+            .Parent()
+            .ok()
+            .and_then(|p| p.cast::<Canvas>().ok())
+        {
+            let field = crate::carets::Field::Rich(self.element.clone());
+            crate::carets::set_underlines(self.id, &outer, field, marks, pal);
+        }
         self.place_chips(&doc, &st, &runs, pal, scale, replaced)
     }
 
@@ -207,7 +220,12 @@ impl Rich {
             .filter_map(|(i, r)| {
                 let t = runs.get(i).filter(|t| t.chip.is_some())?;
                 let color = pal.ink(r.color.unwrap_or(pal.text));
-                let family = crate::text::family_name(&r.font.family, r.font.size);
+                let family = crate::text::family_name(
+                    &r.font.family,
+                    r.font.size,
+                    r.font.weight.css(),
+                    r.font.italic,
+                );
                 let look = crate::chips::Look {
                     label: t.chip_label.clone().unwrap_or_default(),
                     icon: t.chip_icon.as_deref().and_then(crate::keys::fluent_icon),
@@ -279,7 +297,12 @@ fn format(
             let cf = doc.GetRange(start, end)?.CharacterFormat()?;
             // RichEdit takes one face (XAML a fallback list) and points
             // (XAML DIPs: 96 a inch, points 72).
-            let family = crate::text::family_name(&r.font.family, r.font.size);
+            let family = crate::text::family_name(
+                &r.font.family,
+                r.font.size,
+                r.font.weight.css(),
+                r.font.italic,
+            );
             let name = h(family.split(',').next().unwrap_or("").trim());
             if cf.Name()? != name {
                 cf.SetName(&name)?;
@@ -298,7 +321,10 @@ fn format(
             if cf.Strikethrough()? != effect(r.strikethrough) {
                 cf.SetStrikethrough(effect(r.strikethrough))?;
             }
-            let line = if r.underline || r.link.is_some() {
+            // A colored underline is drawn over the field (`carets.rs`).
+            let line = if crate::underline::drawn(r, true) {
+                UnderlineType::None
+            } else if r.underline || r.link.is_some() {
                 underline(r.underline_style)
             } else {
                 UnderlineType::None

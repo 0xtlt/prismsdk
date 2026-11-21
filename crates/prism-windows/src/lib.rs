@@ -39,9 +39,11 @@
 //! | `a11y`, `peers` | roles, states, live regions and dialogs for UI Automation; custom automation peers |
 //! | `tips` | tooltips, a truncated text's full content while it is trimmed |
 //! | `text` | `TextBlock`s from `StyledText`; measuring |
+//! | `underline`, `underlay` | underlines XAML cannot draw (colors, lines), drawn over the text |
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
 //! | `events` | clicks, hover and press, focus, scrolling, menus |
+//! | `refresh` | pull to refresh (`RefreshContainer`), F5 and Ctrl+R |
 //! | `pointer` | pointer, drags, swipes, wheel |
 //! | `edit` | a rich input's editing hooks: copy, cut, paste, clicks, the selection's rectangle |
 //! | `chips` | a rich input's chips as pictures in its text (Direct2D) |
@@ -76,10 +78,10 @@
 //! | `tray`, `icons` | notification area icons and their menus |
 //! | `menubar`, `accel` | the window's menu bar, keyboard accelerators |
 //! | `clipboard` | the clipboard in all its types |
-//! | `fonts` | run-time fonts |
+//! | `fonts`, `faces` | bundled and run-time fonts, a family's files |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `passkey`, `device`, `clicks`, `lifecycle`, `cursors`, `chrome` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `passkey`, `device`, `clicks`, `lifecycle`, `cursors`, `chrome`, `dates`, `inputs`, `monitor`, `faces`, `underline` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -114,6 +116,10 @@ mod clipboard;
 #[cfg(target_os = "windows")]
 mod controls;
 #[cfg(target_os = "windows")]
+mod datebox;
+// A date picker's arithmetic: no Win32, tested everywhere.
+mod dates;
+#[cfg(target_os = "windows")]
 mod decor;
 #[cfg(target_os = "windows")]
 mod defer;
@@ -128,6 +134,8 @@ mod dxgl;
 mod edit;
 #[cfg(target_os = "windows")]
 mod events;
+// Which file of a font family draws a weight: no Win32, tested everywhere.
+mod faces;
 #[cfg(target_os = "windows")]
 mod fieldicon;
 // Theme colors and control metrics: no Win32, tested everywhere.
@@ -146,6 +154,8 @@ mod images;
 mod imp;
 #[cfg(target_os = "windows")]
 mod inject;
+// Text inputs' scopes and suggestions: no Win32, tested everywhere.
+mod inputs;
 #[cfg(target_os = "windows")]
 mod keyboard;
 #[cfg(target_os = "windows")]
@@ -166,6 +176,8 @@ mod location;
 mod media;
 #[cfg(target_os = "windows")]
 mod menubar;
+// The screen's size, density and refresh rate: no Win32, tested everywhere.
+mod monitor;
 #[cfg(target_os = "windows")]
 mod motion;
 #[cfg(target_os = "windows")]
@@ -195,6 +207,8 @@ mod probe;
 #[cfg(target_os = "windows")]
 mod profile;
 #[cfg(target_os = "windows")]
+mod refresh;
+#[cfg(target_os = "windows")]
 mod rich;
 // The tree's model: no Win32, tested everywhere.
 mod scene;
@@ -221,6 +235,8 @@ mod stream;
 #[cfg(target_os = "windows")]
 mod style;
 #[cfg(target_os = "windows")]
+mod suggest;
+#[cfg(target_os = "windows")]
 mod system;
 // A table's grid for UI Automation: no Win32, tested everywhere.
 mod table;
@@ -238,6 +254,10 @@ mod toast;
 mod touch;
 #[cfg(target_os = "windows")]
 mod tray;
+// Underlines Prism draws (colors, lines): no Win32, tested everywhere.
+#[cfg(target_os = "windows")]
+mod underlay;
+mod underline;
 #[cfg(target_os = "windows")]
 mod view;
 #[cfg(target_os = "windows")]

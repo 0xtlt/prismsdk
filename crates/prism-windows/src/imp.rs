@@ -245,6 +245,7 @@ pub fn relayout(s: &mut State) {
                 prism_core::Backend::apply(&mut s.renderer, &patches);
             }
         }
+        screen_changed(s, false);
         crate::perf::layout(|| s.renderer.layout(w, h, Insets::default()));
         let more = prism_native::report_layout(&mut s.runtime, &mut s.renderer);
         if !more.is_empty() {
@@ -255,6 +256,18 @@ pub fn relayout(s: &mut State) {
     // A custom title bar's drag regions (`titlebar.rs`).
     crate::titlebar::update_regions(s);
     UPDATING.set(was);
+}
+
+/// The window on another monitor, at another scale, or the monitor
+/// changed (`force`): `cx.device_info().screen` follows.
+fn screen_changed(s: &mut State, force: bool) {
+    let k = s.renderer.widgets.scale();
+    if let Some(info) = system::device_info_changed(main_hwnd(), k, force) {
+        let patches = s.runtime.set_device_info(info);
+        if !patches.is_empty() {
+            prism_core::Backend::apply(&mut s.renderer, &patches);
+        }
+    }
 }
 
 fn poll() {
@@ -414,31 +427,15 @@ pub fn scrolled(id: NodeId, x: f32, y: f32) {
     }));
 }
 
-/// Unix seconds for `secs` past midnight (local) on the day the date
-/// picker shows (`TimePicker`).
-pub fn time_of_day(id: NodeId, secs: f64) -> f64 {
-    let day = with_state(|s| s.renderer.widgets.scene.get(id).map(|n| n.value))
-        .flatten()
-        .filter(|v| v.is_finite())
-        .unwrap_or_else(now);
-    let offset = local_offset();
-    let midnight = ((day + offset) / 86_400.).floor() * 86_400. - offset;
-    midnight + secs
-}
-
-/// Seconds past local midnight of a Unix time.
-pub fn seconds_of_day(unix: f64) -> f64 {
-    (unix + local_offset()).rem_euclid(86_400.)
-}
-
-fn now() -> f64 {
+/// Now, Unix seconds.
+pub fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0., |d| d.as_secs_f64())
 }
 
 /// The local time zone's offset from UTC, seconds.
-fn local_offset() -> f64 {
+pub fn local_offset() -> f64 {
     use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
     let mut tz = TIME_ZONE_INFORMATION::default();
     let r = unsafe { GetTimeZoneInformation(&mut tz) };
@@ -630,6 +627,11 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     unsafe {
         match msg {
             WM_ERASEBKGND => LRESULT(1),
+            // Moved to another monitor; a resolution or refresh rate change.
+            WM_EXITSIZEMOVE | WM_DISPLAYCHANGE => {
+                with_state(|s| screen_changed(s, msg == WM_DISPLAYCHANGE));
+                DefWindowProcW(h, msg, wp, lp)
+            }
             WM_SIZE => {
                 // Minimized, or back from it: the lifecycle follows. (Sizes
                 // of a shown window leave it: the first comes before the
@@ -823,16 +825,11 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 LRESULT(0)
             }
             WM_CLOSE => {
+                // With unsaved changes, asks first (#158): discarding
+                // closes again.
                 if UNSAVED.get() {
-                    let r = MessageBoxW(
-                        Some(h),
-                        w!("Quit without saving your changes?"),
-                        w!("Unsaved changes"),
-                        MB_OKCANCEL | MB_ICONWARNING,
-                    );
-                    if r != IDOK {
-                        return LRESULT(0);
-                    }
+                    crate::alert::ask_leave(hwnd_value(h));
+                    return LRESULT(0);
                 }
                 // The app's last chance to save (`on_lifecycle`).
                 report_lifecycle(crate::lifecycle::phase(false, false, true), true);
@@ -845,6 +842,15 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             _ => DefWindowProcW(h, msg, wp, lp),
         }
+    }
+}
+
+/// The user discarded the unsaved changes (`alert::ask_leave`): window
+/// `main` closes.
+pub fn discard_and_close(main: isize) {
+    UNSAVED.set(false);
+    unsafe {
+        let _ = PostMessageW(Some(hwnd(main)), WM_CLOSE, WPARAM(0), LPARAM(0));
     }
 }
 
@@ -935,6 +941,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         let data = system::data_dir(&config.title);
         let _ = std::fs::create_dir_all(&data);
         crate::fonts::set_data_dir(&data);
+        crate::fonts::register_bundled(assets.as_slice(), &config.embedded_assets);
         crate::drops::set_folder(data.join("picked"));
         let images = Images::new(prism_native::images::ImageSources {
             embedded: config.embedded_assets.clone(),
@@ -945,7 +952,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         trace("services");
         let target = hwnd_value(main);
         let environment = system::environment();
-        let device_info = system::device_info(width, height, k);
+        let device_info = system::device_info(main, k);
         trace("environment");
         let runtime = Runtime::with_options(
             &init,

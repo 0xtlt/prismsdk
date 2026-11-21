@@ -1273,7 +1273,7 @@ pub struct Gtk {
     swipes: Rc<RefCell<HashMap<NodeId, (bool, bool)>>>,
     scroll_events: Rc<RefCell<HashSet<NodeId>>>,
     /// Refreshable scroll views (F5 / Ctrl+R).
-    refreshable: Rc<RefCell<HashSet<NodeId>>>,
+    refreshable: Rc<RefCell<HashMap<NodeId, gtk::ScrolledWindow>>>,
     /// Each node's size from the last layout (GTK's own lags behind).
     sizes: HashMap<NodeId, (f32, f32)>,
     css: gtk::CssProvider,
@@ -2390,9 +2390,9 @@ impl Widgets for Gtk {
 
     fn set_clickable(&mut self, view: &View, clickable: bool) {
         // A "clickable" scroll view refreshes (F5 / Ctrl+R on desktops).
-        if let View::Scroll(id, ..) = view {
+        if let View::Scroll(id, sw, _) = view {
             if clickable {
-                self.refreshable.borrow_mut().insert(*id);
+                self.refreshable.borrow_mut().insert(*id, sw.clone());
             } else {
                 self.refreshable.borrow_mut().remove(id);
             }
@@ -4454,7 +4454,7 @@ fn activate(app: &gtk::Application) {
         menus: Rc::new(RefCell::new(HashMap::new())),
         swipes: Rc::new(RefCell::new(HashMap::new())),
         scroll_events: Rc::new(RefCell::new(HashSet::new())),
-        refreshable: Rc::new(RefCell::new(HashSet::new())),
+        refreshable: Rc::new(RefCell::new(HashMap::new())),
         sizes: HashMap::new(),
         css,
         sheet: Default::default(),
@@ -4546,7 +4546,9 @@ fn activate(app: &gtk::Application) {
             surface.connect_notify_local(Some("state"), move |_, _| report_lifecycle(&window));
         }
     });
-    // Refresh (pull to refresh elsewhere): F5 or Ctrl+R.
+    // Refresh (pull to refresh elsewhere): F5 or Ctrl+R, for the
+    // refreshable scroll views shown (not a hidden tab's or screen's); the
+    // key stays the app's when there is none.
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed(|_, key, _, modifiers| {
         let refresh = key == gdk::Key::F5
@@ -4557,8 +4559,17 @@ fn activate(app: &gtk::Application) {
         let mut ids = Vec::new();
         with_state(|s| {
             let w = &s.renderer.widgets;
-            ids = w.refreshable.borrow().iter().copied().collect();
+            ids = w
+                .refreshable
+                .borrow()
+                .iter()
+                .filter(|(_, sw)| sw.is_mapped())
+                .map(|(id, _)| *id)
+                .collect();
         });
+        if ids.is_empty() {
+            return glib::Propagation::Proceed;
+        }
         for id in ids {
             dispatch(UiEvent::Click(id));
         }

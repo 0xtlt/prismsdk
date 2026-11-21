@@ -1031,8 +1031,7 @@ impl App {
     /// while `true`, closing the page or the window asks first. Web: the
     /// browser's own « Leave site? » question (`beforeunload`); macOS: the
     /// close button's dot, and closing the window or quitting asks « Leave
-    /// without saving? »; Linux: closing the window asks; Windows: closing
-    /// the window asks (a message box, in English for now). Phones and
+    /// without saving? »; Linux and Windows: closing the window asks. Phones and
     /// tablets close apps themselves: save as you go there. Navigation
     /// inside the app is the app's to guard.
     pub fn set_unsaved_changes(&mut self, unsaved: bool) {

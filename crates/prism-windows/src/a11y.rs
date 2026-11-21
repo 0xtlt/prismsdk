@@ -45,7 +45,7 @@ pub fn set_content(e: &impl Interface) {
 /// else its control or text, else its canvas. `text` is the node's own
 /// (a clickable text's button is named by it).
 pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> {
-    let target: UIElement = match (&v.button, v.content.element()) {
+    let target: UIElement = match (&v.button, v.content.named()) {
         (Some(b), _) => b.cast()?,
         (None, Some(e)) => e,
         (None, None) => v.outer(),
@@ -54,6 +54,9 @@ pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> 
     let name = a.label.as_deref().or(own).unwrap_or("");
     AutomationProperties::SetName(&target, &h(name))?;
     AutomationProperties::SetHelpText(&target, &h(a.hint.as_deref().unwrap_or("")))?;
+    if let crate::controls::Content::Date(d) = &v.content {
+        d.name_time(name, a.hint.as_deref().unwrap_or(""))?;
+    }
     AutomationProperties::SetHeadingLevel(
         &target,
         match a.role {

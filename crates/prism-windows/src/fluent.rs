@@ -281,6 +281,13 @@ impl Palette {
         }
     }
 
+    /// A bar's tint (`Style::tint`: the router's, else the app's accent
+    /// color) in place of the system accent: none under a contrast theme,
+    /// whose highlight color wins.
+    pub fn tint(&self, c: Option<Color>) -> Option<Color> {
+        c.filter(|_| self.forced.is_none()).map(|c| self.resolve(c))
+    }
+
     /// A drawing's fill or stroke (shapes, charts): kept while it shows on
     /// the contrast theme's background, else the text's color.
     pub fn graphic(&self, c: Color) -> Color {
@@ -389,6 +396,22 @@ mod tests {
             Palette::new(true, Accent::default()).resolve(c),
             rgb(0x111111)
         );
+    }
+
+    #[test]
+    fn tints_resolve_and_give_way_to_contrast_themes() {
+        let c = Color::adaptive(rgb(0xAA0000), rgb(0xFF6666));
+        assert_eq!(Palette::new(false, Accent::default()).tint(None), None);
+        assert_eq!(
+            Palette::new(false, Accent::default()).tint(Some(c)),
+            Some(rgb(0xAA0000))
+        );
+        assert_eq!(
+            Palette::new(true, Accent::default()).tint(Some(c)),
+            Some(rgb(0xFF6666))
+        );
+        let dusk = SystemColors::theme("dusk").unwrap();
+        assert_eq!(Palette::high_contrast(dusk).tint(Some(c)), None);
     }
 
     #[test]

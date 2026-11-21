@@ -17,17 +17,24 @@
 //!
 //! Without the fallback (XAML asked for no resource manager), fonts go to
 //! `prism-fonts\` next to the executable, which `ms-appx:///` names.
+//!
+//! The app's bundled fonts (`assets/fonts/`, and those compiled in with
+//! `embed_assets`) take the same way at startup, before the first text.
+//! A family keeps one file per weight and style (`faces`): each text takes
+//! the closest, so a bundled bold file draws bold text.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use prism_core::FontFace;
+use prism_core::{EmbeddedAssets, FontFace};
+use prism_native::fonts::ReadyFont;
 use windows::Foundation::TypedEventHandler;
 use windows_core::{HSTRING, IInspectable, Interface, Result};
 
+use crate::faces::{self, Face};
 use crate::imp::State;
 use crate::win::log;
 use crate::winui::bindings::Microsoft::Windows::ApplicationModel::Resources::{
@@ -37,8 +44,8 @@ use crate::winui::bindings::Microsoft::Windows::ApplicationModel::Resources::{
 use crate::winui::xaml::{Application, ResourceManagerRequestedEventArgs};
 
 thread_local! {
-    /// Family (lower case) → its XAML font source.
-    static SOURCES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// Family (lower case) → its files as XAML names them.
+    static SOURCES: RefCell<HashMap<String, Vec<Face>>> = RefCell::new(HashMap::new());
 }
 
 /// The app's writable font folder (set at startup).
@@ -46,9 +53,14 @@ static DATA_FOLDER: OnceLock<PathBuf> = OnceLock::new();
 /// XAML took the resource manager with the fallback.
 static RESOLVING: AtomicBool = AtomicBool::new(false);
 
-/// The XAML source of a run-time font's family, if it is one.
-pub fn source(family: &str) -> Option<String> {
-    SOURCES.with(|s| s.borrow().get(&family.to_lowercase()).cloned())
+/// The XAML source of a bundled or run-time font's family, if it is one:
+/// its file closest to `weight` and `italic`.
+pub fn source(family: &str, weight: u16, italic: bool) -> Option<String> {
+    SOURCES.with(|s| {
+        let s = s.borrow();
+        let face = faces::pick(s.get(&family.to_lowercase())?, weight, italic)?;
+        Some(face.source.clone())
+    })
 }
 
 /// The app's data folder (`%LOCALAPPDATA%\<app>`): fonts go to its
@@ -112,6 +124,8 @@ fn folder() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("prism-fonts"))
 }
 
+/// A run-time font (`PlatformRequest::LoadFont`): texts in its family are
+/// styled and measured again.
 pub fn load(s: &mut State, face: FontFace) {
     let w = &s.renderer.widgets;
     let sources = w.images.sources.clone();
@@ -120,26 +134,71 @@ pub fn load(s: &mut State, face: FontFace) {
     let Some(font) = prism_native::fonts::prepare(&mut s.runtime.app, face, &sources) else {
         return;
     };
-    let Some(dir) = folder() else { return };
-    let Some(path) = prism_native::fonts::save(&font, &dir) else {
+    if !add(&font, &requested) {
+        return;
+    }
+    // Every text again (styled and measured anew).
+    s.renderer.restyle_all();
+    crate::imp::relayout(s);
+}
+
+/// The app's bundled fonts: the files in `<dir>/fonts/` of each asset
+/// directory, then the embedded ones. At startup, before the first text.
+/// Returns how many were registered.
+pub fn register_bundled(asset_dirs: &[PathBuf], embedded: &EmbeddedAssets) -> usize {
+    let files = prism_native::fonts::font_files(asset_dirs)
+        .into_iter()
+        .filter_map(|path| {
+            let bytes = std::fs::read(&path).ok()?;
+            Some((path.display().to_string(), Arc::<[u8]>::from(bytes)))
+        });
+    let compiled = prism_native::fonts::embedded_fonts(embedded)
+        .map(|(name, bytes)| (name.to_string(), Arc::<[u8]>::from(bytes)));
+    files
+        .chain(compiled)
+        .filter(|(name, bytes)| {
+            let Some(info) = prism_core::fonts::font_file_info(bytes) else {
+                log!("font {name}: not a TrueType or OpenType file");
+                return false;
+            };
+            let font = ReadyFont {
+                face: FontFace::bytes(info.family.clone(), bytes.clone()),
+                bytes: bytes.clone(),
+                family: info.family,
+            };
+            add(&font, &font.family)
+        })
+        .count()
+}
+
+/// Writes `font` to the font folder and names it for its family (and for
+/// `requested`, when the app asked for it by another name).
+fn add(font: &ReadyFont, requested: &str) -> bool {
+    let Some(dir) = folder() else { return false };
+    let Some(path) = prism_native::fonts::save(font, &dir) else {
         log!(
             "font {requested:?}: cannot write it under {}",
             dir.display()
         );
-        return;
+        return false;
     };
     let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
-        return;
+        return false;
     };
-    let src = format!("ms-appx:///prism-fonts/{name}#{}", font.family);
+    let info = prism_core::fonts::font_file_info(&font.bytes);
+    let face = Face {
+        weight: info.as_ref().map_or(400, |i| i.weight),
+        variable: info.as_ref().is_some_and(|i| i.variable),
+        italic: info.as_ref().is_some_and(|i| i.italic),
+        source: format!("ms-appx:///prism-fonts/{name}#{}", font.family),
+    };
     SOURCES.with(|m| {
         let mut m = m.borrow_mut();
-        m.insert(font.family.to_lowercase(), src.clone());
-        m.insert(requested.to_lowercase(), src);
+        for family in [font.family.to_lowercase(), requested.to_lowercase()] {
+            faces::add(m.entry(family).or_default(), face.clone());
+        }
     });
-    // Every text again (styled and measured anew).
-    s.renderer.restyle_all();
-    crate::imp::relayout(s);
+    true
 }
 
 #[cfg(test)]

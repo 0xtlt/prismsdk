@@ -24,7 +24,7 @@ text("Deprecated").strikethrough().italic()
 | `.letter_spacing(0.8)`, `.tracking(0.8)` | `letter_spacing` (points) | `letter-spacing` | kern | `setLetterSpacing` | letter spacing | `CharacterSpacing` |
 | `.uppercase()`, `.lowercase()`, `.capitalize()`, `.text_transform(…)` | `text_transform` | `text-transform` | transformed text | transformed text | transformed text | transformed text |
 | `.underline()`, `.strikethrough()` / `.line_through()` | `underline`, `strikethrough` | `text-decoration-line` | underline / strikethrough style | spans | Pango attributes | `TextDecorations` |
-| `.tabular_nums()` | `tabular_numbers` | `font-variant-numeric` | `tnum` feature | `tnum` | `tnum` | not yet (ignored) |
+| `.tabular_nums()` | `tabular_numbers` | `font-variant-numeric` | `tnum` feature | `tnum` | `tnum` | `Typography.NumeralAlignment` |
 | `.truncate()`, `.line_clamp(n)` | `max_lines` | `text-overflow`, `line-clamp` | number of lines, tail truncation | `maxLines` + ellipsis | lines + ellipsize | `MaxLines` + ellipsis |
 | `.nowrap()` | `no_wrap` | `white-space: pre` | clipping | horizontal scrolling off, clipped | ellipsized (see below) | `NoWrap`, clipped |
 | `.text_pretty()`, `.text_balance()`, `.text_wrap(…)` | `text_wrap` | `text-wrap: pretty` / `balance` | `lineBreakStrategy = .pushOut` (both) | `BREAK_STRATEGY_HIGH_QUALITY` / `BALANCED` | ignored (see below) | ignored (see below) |
@@ -80,8 +80,10 @@ Every backend registers them at startup:
   in the assets folder too.
 - **Linux**: fontconfig (`FcConfigAppFontAddFile`), seen by Pango. Embedded
   fonts are written once to `~/.cache/prism-fonts/` (fontconfig reads files).
-- **Windows**: not yet. Bundled and embedded fonts are not registered at
-  startup; load them with `cx.load_font` (below).
+- **Windows**: written once to the app's data folder
+  (`%LOCALAPPDATA%\<app>\prism-fonts`, named by their content) at startup,
+  which XAML reads through `ms-appx:///prism-fonts/…#Family`. A family keeps
+  one file per weight and style: each text takes the closest, as CSS does.
 
 An unknown family falls back to the system font.
 
@@ -221,7 +223,7 @@ backend but tvOS and watchOS).
 | watchOS | `Text.LineStyle` color | dotted and dashed patterns; thick and double are one line |
 | Android | drawn by a span under each line | every style (the paint's underline has no color or style) |
 | Linux | Pango underline color | single, double; dotted is Pango's « error » line; thick and dashed are single |
-| Windows | not yet: the text's color | single in read-only text; a rich input draws every style |
+| Windows | drawn: a line under each line of the run, in a canvas over the text (XAML has no underline color) | read-only text draws thick, double, dotted and dashed lines the same way; a rich input has RichEdit's own lines |
 
 ## Clickable text
 

@@ -50,17 +50,26 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Text** is `TextBlock`s: fonts and weights per run (`Run` inlines),
   colors, underline and strikethrough, inline Segoe Fluent Icons, CSS line
   heights, letter spacing, wrapping, line clamps with an ellipsis,
-  alignment. The UI font is Segoe UI Variable (Segoe UI on Windows 10).
+  alignment, tabular digits (`Typography.NumeralAlignment`). The UI font is
+  Segoe UI Variable (Segoe UI on Windows 10). XAML's underline is one thin
+  line in the text's color, so an underline with a color of its own, or
+  thick, double, dotted or dashed, is Prism's: a stroked `Path` under each
+  line of the run, on a canvas over the text, placed from XAML's character
+  boxes (`TextPointer.GetCharacterRect`) and drawn again when the text or
+  its size changes.
   Text is measured by XAML itself on a scratch `TextBlock` set up by the
   same code, so what is measured is what is drawn, wrapping included.
 - **Controls** are WinUI's, with their own hover, pressed, focus and
   disabled states, animations, keyboard handling and Windows 11 look:
   buttons, text boxes (`PasswordBox` for secure fields), toggles, check
   boxes, radio buttons, sliders, progress bars and rings, combo boxes
-  (`picker`), `CalendarDatePicker` and `TimePicker` (`date_picker`), symbol
+  (`picker`), `CalendarDatePicker` and `TimePicker` (`date_picker`: both
+  side by side for a date and time, and a ✕ button after an optional one
+  that clears it), symbol
   images (`FontIcon`, Segoe Fluent Icons for common SF Symbol names),
   pictures (`Image`, decoded by WIC, clipped to their view's rounded
-  corners) and shapes (`Path`). A button or a
+  corners; with `object_position`, sized to cover the frame, placed around
+  the point and clipped) and shapes (`Path`). A button or a
   field the app styles (a background, a border, `.border(0.)`) keeps the
   real control with its chrome made transparent (lightweight styling): the
   node's `Border` draws the app's look under it.
@@ -79,7 +88,9 @@ kinds and services come next (see [Not yet](#not-yet)).
   closed hand, the arrow for zoom, as Windows has neither).
 - **Navigation:** a `SelectorBar` (the Windows 11 top tabs) for a tab bar,
   and a header per stack with Back (`NavigationBackButtonNormalStyle`), the
-  title and the screen's bar buttons.
+  title and the screen's bar buttons. `Router::tint` colors the selected
+  tab's pill and the headers' Back and bar buttons (their pointer-over and
+  pressed brushes too); a contrast theme's highlight wins.
 - **Overlays:** dialogs and sheets have `ContentDialog`'s look: the smoke
   over the window (the page blurred for `Backdrop::Blur`), a centered panel
   with its edge, 8 px corners and deep shadow, scaling down from 1.05 and
@@ -96,7 +107,9 @@ kinds and services come next (see [Not yet](#not-yet)).
   `keep_focus` ones are transient and let the click through.
   `cx.show_alert` is a `ContentDialog` (Windows 11's style): the first two
   actions are its primary and secondary buttons, the cancel action its
-  close button (Escape); alerts wait for the one before.
+  close button (Escape); alerts wait for the one before. The runtime's
+  layers (toasts, `cx.add_layer`) stay above dialogs and sheets: their
+  canvas is above the overlays' panels.
 - **Animations:** transitions of opacity and transforms, enter and exit
   poses and loops (`repeat`) are Composition keyframe animations on the
   element's facades (`UIElement::StartAnimation`), with the transition's
@@ -111,7 +124,14 @@ kinds and services come next (see [Not yet](#not-yet)).
   typing), Enter (`on_submit`), the selection (`on_select`) and focus
   changes. A one-line field is as wide as its placeholder or text (120 at
   least, like macOS), and a `leading_icon` is its Segoe Fluent Icons glyph
-  in the field's first 24 DIPs, the text after it. Other people's carets and selections
+  in the field's first 24 DIPs, the text after it. The keyboard type, the
+  capitalization and autocorrect are the field's input scope (`Digits`,
+  `Number`, `TelephoneNumber`, `EmailSmtpAddress`, `Url`, `Search`,
+  `NameOrPhoneNumber` for words; `NumericPin` for a secure number), spell
+  checking and text prediction, as GTK's purposes and hints. Suggestions
+  are a list under the field (a transient `Flyout`, like
+  `AutoSuggestBox`'s), the ones starting with what is typed; the arrows
+  move through it, Enter takes one, Escape closes it. Other people's carets and selections
   (`remote_carets`) and a selection group's highlighted parts are drawn on
   a canvas over the field, from its own geometry
   (`GetRectFromCharacterIndex`), measured again after typing, resizing
@@ -122,7 +142,10 @@ kinds and services come next (see [Not yet](#not-yet)).
   formats, applied in place when the app's runs hold the text shown (the
   echo of typing: caret and undo untouched). Text without a color of its
   own takes the theme's text color, again when the theme changes
-  (RichEdit's automatic color is black, even in a dark theme). Edits reach the app as plain
+  (RichEdit's automatic color is black, even in a dark theme). RichEdit's
+  underlines have no color of their own: a colored one is drawn over the
+  field like the remote carets, from RichEdit's character boxes, in the
+  run's line style. Edits reach the app as plain
   text, like on macOS; Return submits, Shift+Return breaks the line,
   pastes are plain text. A chip is a picture embedded in the text
   (`InsertImage`: its Segoe Fluent icon and label in a rounded box, drawn
@@ -214,6 +237,12 @@ kinds and services come next (see [Not yet](#not-yet)).
   enters, and only a target that accepts one of them (MIME type or
   extension) shows the copy cursor and its `drop_hover` style; folders are
   left out.
+- **Scroll views** are `ScrollViewer`s; `Scrollbar::Hidden` hides the bars
+  (`ScrollBarVisibility.Hidden`: the wheel, touch and keys still scroll).
+  A scroll view with `on_refresh` is wrapped in a `RefreshContainer`: a
+  touch pull shows WinUI's spinner and refreshes, and F5 or Ctrl+R (as in
+  Edge and Explorer) does too, for the mouse and the keyboard. The spinner
+  turns while the app says `refreshing`.
 - **Accessibility:** WinUI's own UI Automation peers for its controls
   (Button, Edit, CheckBox, Slider, ComboBox, the tab bar's list items…);
   the views Prism draws itself have custom automation peers (`peers.rs`:
@@ -272,11 +301,15 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Windows and DPI:** per-monitor DPI v2 (XAML scales by itself; a move
   to a monitor of another DPI resizes the window to keep its size in
   DIPs), resizing, a minimum size, the title (`cx.set_title`), a
-  confirmation on close with unsaved changes. The lifecycle
+  confirmation on close with unsaved changes (the app's translated
+  question, a `ContentDialog` like its alerts). The lifecycle
   (`cx.on_lifecycle`) follows the window: active while it is the active
   window, inactive while another is (`WM_ACTIVATE`), background while it is
   minimized (`WM_SIZE`) and once a close is confirmed, before the window
-  goes. `PRISM_SCALE=1.5` runs the
+  goes. `device_info().screen` is the monitor showing the window: its size
+  and work area (`GetMonitorInfoW`), its size in millimeters from its EDID
+  (the registry), its refresh rate (`EnumDisplaySettingsW`), read again
+  when the window moves to another monitor. `PRISM_SCALE=1.5` runs the
   app at 150 % on any screen, through the same path as a real DPI (see
   [Development hooks](#development-hooks)).
 - **Services:** see [Services](#services) below.
@@ -301,7 +334,7 @@ kinds and services come next (see [Not yet](#not-yet)).
 | Menu bar | `cx.set_app_menu` / `set_menu_bar` put a WinUI `MenuBar` across the top of the window, under the title bar (the app's view starts under it; see [The menu bar](#the-menu-bar)): access keys (Alt+F), `KeyboardAccelerator`s that work with the menus closed, shortcut hints shown only, checkable items, submenus; platform actions do Windows' own (Cut, Copy, Paste, Select All, Undo, Redo in the focused field; Minimize, Zoom, Close, Quit with Alt+F4) |
 | Alerts | `ContentDialog`: the first action is the accent button unless it is destructive, Cancel is the close button (Escape), more than three actions are listed under the message |
 | Clipboard | text, HTML (`HTML Format`), RTF, pictures (`PNG` and `CF_DIBV5`, read back from either or from a plain DIB), files (`CF_HDROP` as `text/uri-list`), other MIME types as formats of their name |
-| Run-time fonts | written to `%LOCALAPPDATA%\<app>\prism-fonts` and named `ms-appx:///prism-fonts/<hash>.ttf#Family`. XAML loads font files by URI only, and an unpackaged app's `ms-appx:///` is its executable's folder (absolute paths, `file:` URIs and `AddFontResourceEx` are ignored): the app hands XAML its resource manager (`Application.ResourceManagerRequested`), the default one with a fallback (`ResourceManager.ResourceNotFound`) that resolves `prism-fonts/…` to the file in the data folder. So an app installed in a read-only folder (`C:\Program Files`) loads fonts too, nothing is installed, and the font is the app's alone |
+| Fonts | bundled and embedded fonts at startup, run-time ones (`cx.load_font`) when loaded: written to `%LOCALAPPDATA%\<app>\prism-fonts` (once: a file is named by its content) and named `ms-appx:///prism-fonts/<hash>.ttf#Family`. XAML loads font files by URI only, and an unpackaged app's `ms-appx:///` is its executable's folder (absolute paths, `file:` URIs and `AddFontResourceEx` are ignored): the app hands XAML its resource manager (`Application.ResourceManagerRequested`), the default one with a fallback (`ResourceManager.ResourceNotFound`) that resolves `prism-fonts/…` to the file in the data folder. So an app installed in a read-only folder (`C:\Program Files`) loads fonts too, nothing is installed, and the font is the app's alone. XAML names one file per font, so a family keeps its files by weight and style and each text takes the closest (CSS's matching); a variable font covers its weights |
 | Background tasks | timers while the app runs, like on Linux (`PRISM_BACKGROUND_INTERVAL` shortens them) |
 | Location | `Geolocator`, Windows' location service (a GNSS receiver where the PC has one, else Wi-Fi networks and the IP address). `capabilities().location` when the location service (`lfsvc`) is installed and not disabled (it starts on demand, so it need not be running), no policy turns location off and the service has a provider. The permission is Settings › Privacy & security › Location, read without asking (`AppCapability::CheckAccess`: the device's switch, the user's, the desktop apps' one); `LocationAlways` is the same permission (a desktop app has no background limit). `request_permission` asks with `RequestAccessAsync` (Windows 11 24H2 and later show a prompt, once per app). Positions with the web's settings (`Coarse`: a kilometer and ten minutes, `Balanced`: 100 m and 30 s, `Best`: the best and 30 s; 20 s at most); a watch is `PositionChanged` with a movement threshold. Refused is `Denied`, no provider `Unavailable`, no position in time "location unknown" |
 | Motion | `Windows.Devices.Sensors`, which tablets and 2-in-1s have: `Accelerometer` (its fused gravity and linear readings where Windows has them, else gravity is the accelerometer low-pass filtered), `Gyrometer`, `Inclinometer`, read every `interval` on a thread of the watch's own, in Apple's units and axes. No permission. `capabilities().motion` when the PC has an accelerometer or a gyrometer |
@@ -737,17 +770,21 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 (460 × 600 DIPs stay 460 × 600 DIPs: 690 × 900 pixels at 150 %). Text,
 1-pixel borders, icons, pictures and 3D scenes are drawn at the scale.
 
+## What Windows cannot do
+
+- **Text inputs:** no input scope capitalizes every letter
+  (`InputScopeNameValue` has none), so `Capitalize::All` capitalizes
+  sentences, as the default scope does. The touch keyboard capitalizes sentences only while spell
+  checking is on, so `capitalize(None)` turns spell checking off. The
+  touch keyboard labels its Enter key only for the `Search` scope: there
+  is no Go, Next, Send or Done key (`TextBox` has no such property).
+- **Pull to refresh:** `RefreshContainer` pulls by touch only (a mouse or
+  touchpad does not pull it), hence F5 and Ctrl+R.
+- **Underlines:** neither `TextBlock` nor RichEdit has an underline color,
+  and `TextBlock` has one line style: Prism draws those (above).
+
 ## Not yet
 
-- **Views and input:** `object_position`, `Scrollbar::Hidden`,
-  `tabular_nums` and underline colors are ignored; the runtime's layers (toasts)
-  draw under sheets and dialogs.
-- **Forms and navigation:** keyboard types, capitalization, autocorrect and
-  suggestions; clearing an optional date; a date and time picker shows the
-  date only; `Router::tint`; the unsaved-changes question is in English.
-- **Fonts and device:** bundled and embedded fonts are not registered at
-  startup (`cx.load_font` works); `device_info().screen` is the window's
-  starting size, not the monitor.
 - **Embedded content and input:** a precision touchpad's
   pinch is only handled as the Ctrl + wheel Windows sends apps (touchpads
   cannot be injected).

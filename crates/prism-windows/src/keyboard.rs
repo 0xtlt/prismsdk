@@ -81,11 +81,17 @@ pub fn key_event(
         }
         return false;
     }
-    // Escape closes the topmost sheet or dialog (`overlay.rs`).
+    // Escape closes the topmost sheet or dialog (`overlay.rs`), once a
+    // field's suggestions list is closed (the field closes it: `suggest.rs`).
     if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0
         && !repeat
+        && !crate::suggest::any_open()
         && crate::overlay::escape(&s.renderer.widgets)
     {
+        return true;
+    }
+    // F5 and Ctrl+R refresh the refreshable scroll views (`refresh.rs`).
+    if !repeat && crate::refresh::key(&s.renderer.widgets.scene, vk) {
         return true;
     }
     let Some(name) = crate::keys::key_name(vk, typed) else {

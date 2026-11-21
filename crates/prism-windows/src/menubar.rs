@@ -122,6 +122,7 @@ pub fn set(s: &mut State, menus: Vec<MenuSpec>) {
     SHOWN.set(shown);
     let _ = Canvas::SetTop(&w.app, shown as f64);
     let _ = Canvas::SetTop(&w.overlays, shown as f64);
+    let _ = Canvas::SetTop(&w.top, shown as f64);
     // The app's viewport is what the bar leaves.
     let mut client = RECT::default();
     unsafe {

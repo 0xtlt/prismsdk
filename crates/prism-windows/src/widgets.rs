@@ -31,11 +31,12 @@ pub struct Win {
     pub hwnd: HWND,
     pub scene: Scene,
     pub views: IdMap<NodeId, View>,
-    /// The island's content: the app (root view and layers), then the
-    /// open overlays above it.
+    /// The island's content: the app's root view, the open overlays
+    /// above it, then the runtime's layers (toasts) above everything.
     pub root: Canvas,
     pub app: Canvas,
     pub overlays: Canvas,
+    pub top: Canvas,
     pub island: Option<Island>,
     pub measurer: Measurer,
     pub images: Images,
@@ -87,8 +88,12 @@ impl Win {
         let app = crate::peers::canvas(crate::peers::Key::Content)?;
         crate::a11y::set_content(&app);
         let overlays = Canvas::new()?;
+        // The layers' canvas leaves UI Automation with the content while a
+        // modal panel is open (the same peer), so a reader stays inside.
+        let top = crate::peers::canvas(crate::peers::Key::Content)?;
         root.Children()?.Append(&app)?;
         root.Children()?.Append(&overlays)?;
+        root.Children()?.Append(&top)?;
         let mut w = Win {
             hwnd,
             scene: Scene::default(),
@@ -96,6 +101,7 @@ impl Win {
             root,
             app,
             overlays,
+            top,
             island: None,
             measurer: Measurer::new()?,
             images,
@@ -302,16 +308,19 @@ impl Win {
         }
     }
 
-    /// The app's root and layers in the window.
+    /// The app's root in the window, its layers above the overlays
+    /// (`Widgets::set_layers`: above sheets and dialogs too).
     fn mount(&mut self) {
-        let Ok(coll) = self.app.Children() else {
+        let (Ok(app), Ok(top)) = (self.app.Children(), self.top.Children()) else {
             return;
         };
-        let _ = coll.Clear();
+        let _ = app.Clear();
+        let _ = top.Clear();
+        let root = self.scene.root;
         for id in self.scene.roots().collect::<Vec<_>>() {
             if let Some(e) = self.outer(id) {
                 let _ = crate::view::detach(&e);
-                let _ = coll.Append(&e);
+                let _ = if Some(id) == root { &app } else { &top }.Append(&e);
             }
         }
     }
@@ -325,17 +334,24 @@ impl Win {
         let pointer = crate::pointer::wants(id);
         let keys = n.keys_local;
         let cursor = n.style.cursor;
-        let wants = n.clickable
+        // A clickable scroll view refreshes (`refresh.rs`), like Linux's.
+        let refreshes = n.kind == NodeKind::Scroll && n.clickable;
+        let clickable = n.clickable && !refreshes;
+        let wants = clickable
             || hover
             || n.menu.is_some()
             || n.pointer_mask != 0
             || pointer
             || keys
             || cursor.is_some();
-        let clickable = n.clickable;
         let Some(v) = self.views.get_mut(&id) else {
             return;
         };
+        if let Some(sv) = &v.scroll
+            && let Err(e) = crate::refresh::set(id, &v.outer, sv, refreshes)
+        {
+            log!("pull to refresh of node {id}: {e}");
+        }
         let _ = v.set_hit(wants);
         let mut made = false;
         if clickable && self.clicks.insert(id) {
@@ -437,6 +453,14 @@ impl Win {
         let bitmap = self.images.bitmap(&n.text).map(|(_, b)| b);
         if let Err(e) = controls::set_picture(&v.content, bitmap.as_ref()) {
             log!("picture {:?}: {e}", n.text);
+        }
+        self.fit_picture(id);
+    }
+
+    /// A picture's image placed for its fit and focal point (#218).
+    fn fit_picture(&mut self, id: NodeId) {
+        if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) {
+            let _ = v.fit_picture(n);
         }
     }
 
@@ -544,6 +568,8 @@ impl Widgets for Win {
         };
         let axis = n.style.scroll_axis != style.scroll_axis;
         let cursor = n.style.cursor != style.cursor;
+        // A bar's tint (`bars.rs`).
+        let tint = n.style.tint != style.tint && matches!(n.kind, NodeKind::Stack | NodeKind::Tabs);
         n.style = style.clone();
         if !matches!(n.kind, NodeKind::Text | NodeKind::Timer) {
             // A text's sizes stay while its text and font do (`Measurer`).
@@ -552,7 +578,11 @@ impl Widgets for Win {
         if (axis || n.kind == NodeKind::Scroll)
             && let Some(sv) = self.views.get(&id).and_then(|v| v.scroll.as_ref())
         {
-            let _ = scroll_axis(sv, style.scroll_axis == prism_core::ScrollAxis::Vertical);
+            let vertical = style.scroll_axis == prism_core::ScrollAxis::Vertical;
+            let _ = scroll_axis(sv, vertical, style.scrollbar);
+        }
+        if tint {
+            self.bars.insert(id);
         }
         self.restyle_tree(id);
         if cursor {
@@ -702,6 +732,8 @@ impl Widgets for Win {
         crate::drops::forget(id);
         crate::edit::forget(id);
         crate::carets::forget(id);
+        crate::underlay::forget(id);
+        crate::refresh::forget(id);
         crate::media::forget(id);
         crate::web::forget(id);
         self.typed.remove(&id);
@@ -920,6 +952,9 @@ impl Widgets for Win {
         let kind = n.kind;
         n.value = value;
         crate::defer::mark(id, crate::defer::VALUE);
+        if kind == NodeKind::Scroll {
+            crate::refresh::refreshing(id, value >= 0.5);
+        }
         if kind == NodeKind::Timer {
             n.text = prism_core::timer_text(value, &n.placeholder);
             self.measurer.forget(id);
@@ -939,6 +974,10 @@ impl Widgets for Win {
                     && let Err(e) = controls::set_value(&v.content, n, value)
                 {
                     log!("value of node {id}: {e}");
+                }
+                if kind == NodeKind::Picture {
+                    // Filled or fitted.
+                    self.fit_picture(id);
                 }
             }
         }
@@ -1080,6 +1119,18 @@ impl Widgets for Win {
     }
 
     fn set_environment(&mut self, env: &RenderEnvironment) {
+        if env.clear != self.env.clear {
+            crate::datebox::set_clear_label(&env.clear);
+            for v in self.views.values() {
+                if let Content::Date(d) = &v.content {
+                    let _ = d.label_clear(if env.clear.is_empty() {
+                        "Clear"
+                    } else {
+                        &env.clear
+                    });
+                }
+            }
+        }
         self.env = env.clone();
     }
 
@@ -1396,14 +1447,13 @@ impl Win {
                 self.replace_content(id, content);
             }
         } else if let Some(v) = self.views.get_mut(&id) {
-            let was_time = matches!(v.content, Content::Time(_));
+            let was = v.content.date_mode();
             let old = v.content.element();
             if let Err(e) = controls::configure(&mut v.content, id, kind, config) {
                 log!("config of node {id}: {e}");
             }
-            let is_time = matches!(v.content, Content::Time(_));
-            if was_time != is_time && kind == NodeKind::DatePicker {
-                // A time picker in place of the date picker.
+            if was != v.content.date_mode() && kind == NodeKind::DatePicker {
+                // Another date picker (a time, both) in its place.
                 if let Some(old) = old {
                     unmount(&v.outer, &old);
                 }
@@ -1413,6 +1463,10 @@ impl Win {
         if kind == NodeKind::Video {
             // The poster.
             self.show_video(id);
+        }
+        if kind == NodeKind::Picture {
+            // Its focal point.
+            self.fit_picture(id);
         }
         let value = self.scene.get(id).map_or(0., |n| n.value);
         if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {

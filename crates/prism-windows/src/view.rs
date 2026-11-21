@@ -17,6 +17,7 @@
 //! canvas in the tree still costs XAML a layout and a visual).
 
 use prism_core::{NodeId, NodeKind};
+use prism_native::text::StyledText;
 use windows_core::{Interface, Result};
 
 use crate::bars::{self, Header, TabBar};
@@ -25,9 +26,11 @@ use crate::fluent::Palette;
 use crate::scene::{Node, Rect};
 use crate::style::{self, Shadows};
 use crate::winui::xaml::Controls::{
-    Border, Button, Canvas, ScrollBarVisibility, ScrollMode, ScrollViewer, UIElementCollection,
+    Border, Button, Canvas, Image, ScrollBarVisibility, ScrollMode, ScrollViewer,
+    UIElementCollection,
 };
-use crate::winui::xaml::Media::Brush;
+use crate::winui::xaml::Media::Imaging::BitmapSource;
+use crate::winui::xaml::Media::{Brush, RectangleGeometry};
 use crate::winui::xaml::Shapes::Rectangle;
 use crate::winui::xaml::{FrameworkElement, UIElement, Visibility};
 use crate::winui::{transparent, ui};
@@ -40,6 +43,7 @@ pub enum Bar {
 }
 
 pub struct View {
+    pub id: NodeId,
     pub kind: NodeKind,
     pub outer: Canvas,
     pub shadows: Option<Shadows>,
@@ -109,6 +113,7 @@ impl View {
             _ => Bar::None,
         };
         Ok(View {
+            id,
             kind,
             outer,
             shadows: None,
@@ -234,6 +239,12 @@ impl View {
         };
         self.decor.apply(&self.outer, under, n, pal, text)?;
         controls::style(&self.content, n, pal)?;
+        // Underlines XAML cannot draw (a color, a thick or dotted line).
+        if let Content::Text(t) = &self.content {
+            let st = StyledText::new(&n.text, &n.config, s);
+            crate::underlay::sync(self.id, &self.outer, t, &st, pal, text)?;
+            crate::tips::restyled(self.id, t);
+        }
         crate::fieldicon::sync(&mut self.field_icon, &self.outer, n, pal)?;
         style::apply_transform(&self.outer, s, r, sticky)?;
         self.clip(n)?;
@@ -247,10 +258,33 @@ impl View {
         let clips = n.clips() && n.kind != NodeKind::Scroll;
         self.decor.clip_children(&self.kids, n, clips)?;
         if let Content::Picture(img) = &self.content {
-            let (x, y, _, _) = content_rect(n);
+            let (x, y, _, _) = picture_rect(img, n).0;
             self.decor.clip_picture(&img.cast()?, n, (x, y))?;
         }
         Ok(())
+    }
+
+    /// A picture's image placed for its fit and focal point, and clipped
+    /// (after its bitmap, its mode or its focal point changed).
+    pub fn fit_picture(&mut self, n: &Node) -> Result<()> {
+        let Content::Picture(img) = &self.content else {
+            return Ok(());
+        };
+        let ((x, y, w, h), clip) = picture_rect(img, n);
+        Canvas::SetLeft(img, x as f64)?;
+        Canvas::SetTop(img, y as f64)?;
+        img.SetWidth(w.max(0.) as f64)?;
+        img.SetHeight(h.max(0.) as f64)?;
+        match clip {
+            Some(r) => {
+                let g = RectangleGeometry::new()?;
+                g.SetRect(r)?;
+                img.SetClip(&g)?;
+            }
+            None if img.Clip().is_ok() => img.SetClip(None::<&RectangleGeometry>)?,
+            None => {}
+        }
+        self.clip(n)
     }
 
     /// The node's frame (in its parent's coordinates) and size.
@@ -271,7 +305,9 @@ impl View {
             size(sv, f.w, f.h)?;
             size(&self.kids, n.content.0.max(f.w), n.content.1.max(f.h))?;
         }
-        if let Some(e) = self.content.element() {
+        if matches!(self.content, Content::Picture(_)) {
+            self.fit_picture(n)?;
+        } else if let Some(e) = self.content.element() {
             let fe: FrameworkElement = e.cast()?;
             let (x, y, w, h) = content_rect(n);
             Canvas::SetLeft(&e, x as f64)?;
@@ -471,18 +507,59 @@ pub fn detach(e: &UIElement) -> Result<()> {
     Ok(())
 }
 
-/// The scroll view's axis.
-pub fn scroll_axis(sv: &ScrollViewer, vertical: bool) -> Result<()> {
+/// Where a picture's image goes in its node, and the clip that keeps it
+/// to its box. A filled picture with a focal point (`object_position`,
+/// #218) is as large as covering the box and placed so the box shows the
+/// part around that point (`cover_crop`, CSS `object-position`); WinUI
+/// would crop around the center. Otherwise it fills the content box.
+fn picture_rect(
+    img: &Image,
+    n: &Node,
+) -> ((f32, f32, f32, f32), Option<windows::Foundation::Rect>) {
+    let (x, y, w, h) = content_rect(n);
+    let at = prism_core::picture_position(&n.config);
+    let size = img
+        .Source()
+        .ok()
+        .and_then(|s| s.cast::<BitmapSource>().ok())
+        .and_then(|b| Some((b.PixelWidth().ok()? as f32, b.PixelHeight().ok()? as f32)));
+    let image = size.filter(|&(iw, ih)| {
+        n.value != 1. && at != (0.5, 0.5) && iw > 0. && ih > 0. && w > 0. && h > 0.
+    });
+    let Some(image) = image else {
+        return ((x, y, w, h), None);
+    };
+    let (cx, cy, cw, ch) = prism_core::cover_crop(image, (w, h), at);
+    let (iw, ih) = (w / cw, h / ch);
+    let (ox, oy) = (cx * iw, cy * ih);
+    let clip = windows::Foundation::Rect {
+        X: ox,
+        Y: oy,
+        Width: w,
+        Height: h,
+    };
+    ((x - ox, y - oy, iw, ih), Some(clip))
+}
+
+/// The scroll view's axis and its bar: WinUI's (it shows over the content
+/// while scrolling or under the pointer), or none (`Scrollbar::Hidden`,
+/// #132), the view still scrolling with the wheel, touch and the keyboard.
+pub fn scroll_axis(sv: &ScrollViewer, vertical: bool, bar: prism_core::Scrollbar) -> Result<()> {
+    let shown = if bar == prism_core::Scrollbar::Hidden {
+        ScrollBarVisibility::Hidden
+    } else {
+        ScrollBarVisibility::Auto
+    };
     if vertical {
         sv.SetHorizontalScrollMode(ScrollMode::Disabled)?;
         sv.SetHorizontalScrollBarVisibility(ScrollBarVisibility::Disabled)?;
         sv.SetVerticalScrollMode(ScrollMode::Enabled)?;
-        sv.SetVerticalScrollBarVisibility(ScrollBarVisibility::Auto)?;
+        sv.SetVerticalScrollBarVisibility(shown)?;
     } else {
         sv.SetVerticalScrollMode(ScrollMode::Disabled)?;
         sv.SetVerticalScrollBarVisibility(ScrollBarVisibility::Disabled)?;
         sv.SetHorizontalScrollMode(ScrollMode::Enabled)?;
-        sv.SetHorizontalScrollBarVisibility(ScrollBarVisibility::Auto)?;
+        sv.SetHorizontalScrollBarVisibility(shown)?;
     }
     Ok(())
 }

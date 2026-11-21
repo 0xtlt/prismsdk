@@ -6,19 +6,22 @@
 //!
 //! A text's `TextBlock` takes no pointer input (its node's canvas does):
 //! it takes it while it has a tooltip, so the pointer resting on it opens
-//! the tooltip; clicks still reach its node (routed events bubble).
+//! the tooltip; clicks still reach its node (routed events bubble). Styling
+//! the text again gives it its links' pointer input (`controls::style`),
+//! so the tooltip's is given back after (`restyled`).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use prism_core::{NodeId, Tooltip};
 use windows::Foundation::TypedEventHandler;
-use windows_core::{IInspectable, Result};
+use windows_core::{IInspectable, Interface, Result};
 
 use crate::controls::Content;
 use crate::view::View;
 use crate::winui::boxed;
 use crate::winui::xaml::Controls::{IsTextTrimmedChangedEventArgs, TextBlock, ToolTipService};
+use crate::winui::xaml::Documents::Hyperlink;
 use crate::winui::xaml::UIElement;
 
 /// A text with `tooltip_when_truncated`.
@@ -75,12 +78,18 @@ pub fn apply(
                 unwatch(id);
                 ToolTipService::SetToolTip(target, None::<&IInspectable>)?;
                 if let Some(tb) = label {
-                    tb.SetIsHitTestVisible(false)?;
+                    tb.SetIsHitTestVisible(links(tb))?;
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Whether a text has links (which take the pointer without a tooltip).
+fn links(tb: &TextBlock) -> bool {
+    tb.Inlines()
+        .is_ok_and(|i| i.into_iter().any(|i| i.cast::<Hyperlink>().is_ok()))
 }
 
 /// Shows `text` as `tb`'s tooltip while it is trimmed.
@@ -133,10 +142,22 @@ fn sync(id: NodeId) {
             tb.SetIsHitTestVisible(true)
         } else {
             ToolTipService::SetToolTip(&tb, None::<&IInspectable>)?;
-            tb.SetIsHitTestVisible(false)
+            tb.SetIsHitTestVisible(links(&tb))
         }
     })();
     if let Err(e) = r {
+        crate::win::log!("tooltip of node {id}: {e}");
+    }
+}
+
+/// Node `id`'s text `tb` was styled again, its pointer input its links':
+/// a tooltip shown on it keeps it.
+pub fn restyled(id: NodeId, tb: &TextBlock) {
+    if WATCHED.with(|w| w.borrow().contains_key(&id)) {
+        sync(id);
+    } else if TIPPED.with(|s| s.borrow().contains(&id))
+        && let Err(e) = tb.SetIsHitTestVisible(true)
+    {
         crate::win::log!("tooltip of node {id}: {e}");
     }
 }

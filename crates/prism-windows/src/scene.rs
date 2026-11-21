@@ -377,16 +377,17 @@ impl Scene {
 
     /// The innermost node under a window point that takes pointer input.
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
-        // Open overlays first (topmost last), then layers, then the root.
+        // The layers first (above sheets and dialogs too), then the open
+        // overlays (topmost last), then the root.
+        for r in self.layers.iter().rev() {
+            if let Some(hit) = self.hit_node(*r, x, y) {
+                return Some(hit);
+            }
+        }
         for o in self.open_overlays().into_iter().rev() {
             if let Some(content) = self.nodes[&o].children.first()
                 && let Some(hit) = self.hit_node(*content, x, y)
             {
-                return Some(hit);
-            }
-        }
-        for r in self.layers.iter().rev() {
-            if let Some(hit) = self.hit_node(*r, x, y) {
                 return Some(hit);
             }
         }
@@ -612,6 +613,25 @@ mod tests {
         s.nodes.get_mut(&2).unwrap().scroll = (0., 0.);
         s.nodes.get_mut(&3).unwrap().style.hit_test = false;
         assert_eq!(s.hit_test(20., 260.), Some(2));
+    }
+
+    /// A layer (a toast) is above an open sheet, and lets input through
+    /// where it has no child.
+    #[test]
+    fn layers_are_above_open_overlays() {
+        let mut s = sample();
+        node(&mut s, 5, NodeKind::Overlay, Rect::new(0., 0., 0., 0.));
+        node(&mut s, 6, NodeKind::View, Rect::new(0., 0., 400., 600.));
+        node(&mut s, 7, NodeKind::View, Rect::new(0., 0., 400., 600.));
+        node(&mut s, 8, NodeKind::Text, Rect::new(100., 500., 200., 40.));
+        s.set_children(1, &[2, 4, 5]);
+        s.set_children(5, &[6]);
+        s.set_children(7, &[8]);
+        s.nodes.get_mut(&5).unwrap().value = 1.;
+        s.layers = vec![7];
+        assert_eq!(s.hit_test(150., 520.), Some(8));
+        // Elsewhere the sheet's content, not the layer, takes it.
+        assert_eq!(s.hit_test(20., 15.), Some(6));
     }
 
     #[test]

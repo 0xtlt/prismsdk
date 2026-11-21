@@ -220,7 +220,7 @@ how long the content is.
 | macOS | `NSScrollerStyle.overlay`, kept when the setting changes; a row gets a horizontal overlay bar | no scroller |
 | iOS, iPadOS, visionOS, watchOS, Android | the usual indicators (already overlay) | indicators off |
 | Linux | GTK overlay scrolling | `PolicyType::External` |
-| Windows | WinUI's bars (thin until the pointer comes near) | not yet: the bars stay |
+| Windows | WinUI's bars (thin until the pointer comes near) | `ScrollBarVisibility.Hidden` (it still scrolls) |
 
 ## Where an element ended up
 

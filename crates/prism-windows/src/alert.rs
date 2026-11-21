@@ -6,8 +6,11 @@
 //! are buttons under the message; an alert without actions has an OK
 //! button. Only one `ContentDialog` shows at a time: alerts wait for the
 //! one before to close.
+//!
+//! Closing the window with unsaved changes (`cx.set_unsaved_changes`,
+//! #158) asks the same way, in the app's language (`prism.unsaved_*`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +20,7 @@ use prism_core::menu::{ActionRole, AlertSpec};
 use windows_core::{Interface, Result};
 
 use crate::widgets::Win;
+use crate::win::{hwnd, log};
 use crate::winui::xaml::Controls::{
     Button, ContentDialog, ContentDialogButton, ContentDialogResult, Orientation, StackPanel,
     TextBlock,
@@ -27,25 +31,100 @@ use crate::winui::xaml::{
 };
 use crate::winui::{boxed, h};
 
+/// Who answers an alert.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Asker {
+    /// The app (`UiEvent::AlertAction`).
+    App,
+    /// Leaving window `.0` with unsaved changes: its first action
+    /// discards them.
+    Leave(isize),
+}
+
 thread_local! {
     /// Alerts waiting, and whether one shows.
-    static QUEUE: RefCell<(VecDeque<AlertSpec>, bool)> = const { RefCell::new((VecDeque::new(), false)) };
+    static QUEUE: RefCell<(VecDeque<(AlertSpec, Asker)>, bool)> = const { RefCell::new((VecDeque::new(), false)) };
     static ROOT: RefCell<Option<(XamlRoot, bool)>> = const { RefCell::new(None) };
+    /// « Leave without saving? » is asked (waiting or shown).
+    static LEAVING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Shows `spec` now, or after the alerts before it.
 pub fn show(w: &Win, spec: AlertSpec) {
     let Ok(root) = w.root.XamlRoot() else {
-        crate::win::log!("alert {:?}: no window to show it in", spec.title);
+        log!("alert {:?}: no window to show it in", spec.title);
         return;
     };
     ROOT.with(|r| *r.borrow_mut() = Some((root, w.dark())));
-    QUEUE.with(|q| q.borrow_mut().0.push_back(spec));
+    QUEUE.with(|q| q.borrow_mut().0.push_back((spec, Asker::App)));
     next();
 }
 
+/// « Leave without saving? » before window `main` closes with unsaved
+/// changes (#158), like Linux's and macOS's: Discard closes it
+/// (`imp::discard_and_close`), Cancel or Escape keeps it. Without XAML to
+/// show it in (no desktop session), a message box asks.
+pub fn ask_leave(main: isize) {
+    if LEAVING.get() {
+        return;
+    }
+    match crate::imp::with_state(|s| leave_dialog(s, main)) {
+        Some(Ok(())) => {}
+        Some(Err([title, message])) => ask_plainly(main, &title, &message),
+        // Busy: once the current work is done.
+        None => crate::imp::defer(Box::new(move |s| {
+            if let Err([title, message]) = leave_dialog(s, main) {
+                ask_plainly(main, &title, &message);
+            }
+        })),
+    }
+}
+
+/// Queues the question as a `ContentDialog`; its title and message back
+/// when there is no XAML to show it in.
+fn leave_dialog(s: &mut crate::imp::State, main: isize) -> std::result::Result<(), [String; 2]> {
+    let [title, message, discard, cancel] =
+        ["unsaved_title", "unsaved_message", "discard", "cancel"]
+            .map(|k| s.runtime.app.chrome_text(k));
+    let w = &s.renderer.widgets;
+    let Ok(root) = w.root.XamlRoot() else {
+        return Err([title, message]);
+    };
+    ROOT.with(|r| *r.borrow_mut() = Some((root, w.dark())));
+    let spec = AlertSpec {
+        id: 0,
+        title,
+        message: Some(message),
+        style: Default::default(),
+        actions: vec![
+            (discard, ActionRole::Destructive),
+            (cancel, ActionRole::Cancel),
+        ],
+    };
+    LEAVING.set(true);
+    QUEUE.with(|q| q.borrow_mut().0.push_back((spec, Asker::Leave(main))));
+    next();
+    Ok(())
+}
+
+/// The question as a message box (OK discards).
+fn ask_plainly(main: isize, title: &str, message: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL, MessageBoxW};
+    let r = unsafe {
+        MessageBoxW(
+            Some(hwnd(main)),
+            &h(message),
+            &h(title),
+            MB_OKCANCEL | MB_ICONWARNING,
+        )
+    };
+    if r == IDOK {
+        crate::imp::discard_and_close(main);
+    }
+}
+
 fn next() {
-    let spec = QUEUE.with(|q| {
+    let item = QUEUE.with(|q| {
         let mut q = q.borrow_mut();
         if q.1 {
             return None;
@@ -54,13 +133,17 @@ fn next() {
         q.1 = true;
         Some(s)
     });
-    let Some(spec) = spec else { return };
+    let Some((spec, asker)) = item else { return };
     let Some((root, dark)) = ROOT.with(|r| r.borrow().clone()) else {
         return;
     };
-    if let Err(e) = present(&root, dark, &spec) {
-        crate::win::log!("alert {:?}: {e}", spec.title);
+    if let Err(e) = present(&root, dark, &spec, asker) {
+        log!("alert {:?}: {e}", spec.title);
         QUEUE.with(|q| q.borrow_mut().1 = false);
+        if let Asker::Leave(main) = asker {
+            LEAVING.set(false);
+            ask_plainly(main, &spec.title, spec.message.as_deref().unwrap_or(""));
+        }
         next();
     }
 }
@@ -97,7 +180,7 @@ pub fn buttons(actions: &[(String, ActionRole)]) -> Buttons {
     b
 }
 
-fn present(root: &XamlRoot, dark: bool, spec: &AlertSpec) -> Result<()> {
+fn present(root: &XamlRoot, dark: bool, spec: &AlertSpec, asker: Asker) -> Result<()> {
     let d = ContentDialog::new()?;
     d.SetXamlRoot(root)?;
     // Created in code, a ContentDialog takes the old style unless given
@@ -150,10 +233,11 @@ fn present(root: &XamlRoot, dark: bool, spec: &AlertSpec) -> Result<()> {
         title(b.close)
     };
     d.SetCloseButtonText(&h(&close))?;
-    d.SetDefaultButton(if b.accent {
-        ContentDialogButton::Primary
-    } else {
-        ContentDialogButton::None
+    d.SetDefaultButton(match asker {
+        _ if b.accent => ContentDialogButton::Primary,
+        // Enter keeps the changes.
+        Asker::Leave(_) => ContentDialogButton::Close,
+        Asker::App => ContentDialogButton::None,
     })?;
     let id = spec.id;
     let op = d.ShowAsync()?;
@@ -171,8 +255,15 @@ fn present(root: &XamlRoot, dark: bool, spec: &AlertSpec) -> Result<()> {
                 _ if listed.load(Ordering::SeqCst) => None,
                 _ => b.close,
             };
-            if let Some(i) = chosen {
-                crate::imp::dispatch(UiEvent::AlertAction(id, i));
+            match (asker, chosen) {
+                (Asker::App, Some(i)) => crate::imp::dispatch(UiEvent::AlertAction(id, i)),
+                (Asker::Leave(main), chosen) => {
+                    LEAVING.set(false);
+                    if chosen == Some(0) {
+                        crate::imp::discard_and_close(main);
+                    }
+                }
+                (Asker::App, None) => {}
             }
             QUEUE.with(|q| q.borrow_mut().1 = false);
             next();
