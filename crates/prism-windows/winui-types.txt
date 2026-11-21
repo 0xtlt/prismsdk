@@ -295,3 +295,7 @@ Microsoft.UI.Xaml.Controls.ColumnDefinition
 Microsoft.UI.Xaml.Controls.ColumnDefinitionCollection
 Microsoft.UI.Xaml.GridLength
 Microsoft.UI.Xaml.GridUnitType
+# Text inputs' touch keyboards (controls.rs)
+Microsoft.UI.Xaml.Input.InputScope
+Microsoft.UI.Xaml.Input.InputScopeName
+Microsoft.UI.Xaml.Input.InputScopeNameValue

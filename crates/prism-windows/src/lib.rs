@@ -70,7 +70,7 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates`, `inputs` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -120,6 +120,7 @@ mod fieldicon;
 mod fluent;
 // A date picker's arithmetic: no Win32, tested everywhere.
 mod dates;
+// Text inputs' scopes and suggestions: no Win32, tested everywhere.
 #[cfg(target_os = "windows")]
 mod fonts;
 #[cfg(target_os = "windows")]
@@ -132,6 +133,7 @@ mod images;
 mod imp;
 #[cfg(target_os = "windows")]
 mod inject;
+mod inputs;
 #[cfg(target_os = "windows")]
 mod keyboard;
 // Key names and icon glyphs: no Win32, tested everywhere.
@@ -186,6 +188,8 @@ mod stacking;
 mod stream;
 #[cfg(target_os = "windows")]
 mod style;
+#[cfg(target_os = "windows")]
+mod suggest;
 #[cfg(target_os = "windows")]
 mod system;
 // A table's grid for UI Automation: no Win32, tested everywhere.

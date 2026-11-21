@@ -31,7 +31,7 @@ use crate::winui::xaml::Controls::{
     ProgressBar, ProgressRing, RadioButton, SelectionChangedEventHandler, Slider, StackPanel,
     TextBlock, TextBox, TextChangedEventHandler, ToggleSwitch,
 };
-use crate::winui::xaml::Input::KeyEventHandler;
+use crate::winui::xaml::Input::{InputScope, InputScopeName, InputScopeNameValue, KeyEventHandler};
 use crate::winui::xaml::Media::{
     BezierSegment, Brush, FillRule, LineSegment, PathFigure, PathGeometry, PenLineCap, PenLineJoin,
     Stretch,
@@ -316,6 +316,7 @@ fn field(id: NodeId, single: bool) -> Result<Content> {
             }
             Ok(())
         }))?;
+        crate::suggest::connect(id, &t)?;
     }
     Ok(Content::Field(t))
 }
@@ -553,17 +554,52 @@ pub fn clickable_host(id: NodeId) -> Result<Button> {
 /// A field's configuration: secure (a `PasswordBox` in place of the
 /// `TextBox`), length limit. Returns a new content when it must change.
 pub fn configure_field(c: &Content, id: NodeId, config: &str) -> Result<Option<Content>> {
+    let list = prism_core::controls::input_suggestions(config);
     let config = InputConfig::decode(config);
+    let traits = crate::inputs::traits(&config);
     match c {
-        Content::Field(t) if config.secure => {
-            let _ = t;
-            return secure(id).map(Some);
+        Content::Field(_) if config.secure => {
+            crate::suggest::set(id, Vec::new())?;
+            let p = secure(id)?;
+            configure_field(&p, id, &InputConfig::encode(&config))?;
+            return Ok(Some(p));
         }
-        Content::Field(t) => t.SetMaxLength(config.max_length.unwrap_or(0) as i32)?,
-        Content::Secure(p) => p.SetMaxLength(config.max_length.unwrap_or(0) as i32)?,
+        Content::Field(t) => {
+            t.SetMaxLength(config.max_length.unwrap_or(0) as i32)?;
+            t.SetInputScope(&input_scope(traits.scope)?)?;
+            t.SetIsSpellCheckEnabled(traits.spell_check)?;
+            t.SetIsTextPredictionEnabled(traits.prediction)?;
+            crate::suggest::set(id, if t.AcceptsReturn()? { Vec::new() } else { list })?;
+        }
+        Content::Secure(p) => {
+            p.SetMaxLength(config.max_length.unwrap_or(0) as i32)?;
+            p.SetInputScope(&input_scope(traits.scope)?)?;
+        }
         _ => {}
     }
     Ok(None)
+}
+
+/// An input scope (the touch keyboard's layout and keys).
+fn input_scope(s: crate::inputs::Scope) -> Result<InputScope> {
+    use crate::inputs::Scope;
+    let value = match s {
+        Scope::Default => InputScopeNameValue::Default,
+        Scope::Search => InputScopeNameValue::Search,
+        Scope::NameOrPhoneNumber => InputScopeNameValue::NameOrPhoneNumber,
+        Scope::EmailSmtpAddress => InputScopeNameValue::EmailSmtpAddress,
+        Scope::Digits => InputScopeNameValue::Digits,
+        Scope::Number => InputScopeNameValue::Number,
+        Scope::TelephoneNumber => InputScopeNameValue::TelephoneNumber,
+        Scope::Url => InputScopeNameValue::Url,
+        Scope::Password => InputScopeNameValue::Password,
+        Scope::NumericPin => InputScopeNameValue::NumericPin,
+    };
+    let name = InputScopeName::new()?;
+    name.SetNameValue(value)?;
+    let scope = InputScope::new()?;
+    scope.Names()?.Append(&name)?;
+    Ok(scope)
 }
 
 /// A control's options (`set_config`).
