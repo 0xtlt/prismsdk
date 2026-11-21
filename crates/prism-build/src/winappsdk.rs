@@ -202,10 +202,15 @@ fn fetch(
         return Ok(());
     }
     fs::create_dir_all(sdk).map_err(|e| format!("{}: {e}", sdk.display()))?;
+    // The backend's build script and the app's (`link_app`) may fetch at
+    // the same time on a first build: one at a time, and the second reuses
+    // what the first unpacked.
+    let _lock = Lock::take(sdk.join(format!("{}.lock", p.name)));
+    if ready(&dest) {
+        return Ok(());
+    }
     let (id, version) = (p.id, p.version);
     let url = format!("https://api.nuget.org/v3-flatcontainer/{id}/{version}/{id}.{version}.nupkg");
-    // Named after this process: the backend's build script and the app's
-    // (`link_app`) may fetch at the same time on a first build.
     let tag = std::process::id();
     let pkg = sdk.join(format!("{id}.{version}.{tag}.zip"));
     println!(
@@ -254,19 +259,69 @@ fn fetch(
         let _ = fs::remove_dir_all(&tmp);
         return Err(format!("prism: could not unpack {}", pkg.display()));
     }
-    if !ready(&dest) {
+    // An older copy (no SHA-256 stamp) goes first. On Windows a virus
+    // scanner may still hold a file just unpacked, which fails the rename
+    // for a moment: retried for up to 10 s.
+    let mut moved = false;
+    for attempt in 0..40 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
         let _ = fs::remove_dir_all(&dest);
-        // Another build script may have renamed its copy in between.
-        if fs::rename(&tmp, &dest).is_err() && !ready(&dest) {
-            let _ = fs::remove_dir_all(&tmp);
-            return Err(format!(
-                "prism: could not move the Windows App SDK package to {}",
-                dest.display()
-            ));
+        if fs::rename(&tmp, &dest).is_ok() {
+            moved = true;
+            break;
         }
     }
-    let _ = fs::remove_dir_all(&tmp);
+    if !moved {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(format!(
+            "prism: could not move the Windows App SDK package to {}",
+            dest.display()
+        ));
+    }
     Ok(())
+}
+
+/// A lock file held while one package is fetched, removed when dropped.
+/// A lock older than 15 minutes is a build that was killed: taken over.
+/// After 15 minutes of waiting, the fetch goes ahead without it.
+struct Lock(Option<PathBuf>);
+
+impl Lock {
+    fn take(path: PathBuf) -> Lock {
+        use std::time::{Duration, Instant};
+        const STALE: Duration = Duration::from_secs(15 * 60);
+        let started = Instant::now();
+        loop {
+            let created = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path);
+            if created.is_ok() {
+                return Lock(Some(path));
+            }
+            if started.elapsed() > STALE {
+                return Lock(None);
+            }
+            let stale = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > STALE));
+            if stale {
+                let _ = fs::remove_file(&path);
+            } else {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 /// The `<file>` entries registering the runtime's WinRT classes, from each
@@ -703,6 +758,42 @@ mod tests {
         fs::write(vendor.join("pkg/lib/x.txt"), "mine").unwrap();
         fetch(&vendor, &p, true, serve).unwrap();
         assert_eq!(downloads.get(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Two build scripts fetching at once (the backend's and the app's, on
+    /// a first build): one downloads, the other reuses its copy, and an
+    /// older copy without a stamp is replaced.
+    #[test]
+    fn s24_fetches_at_the_same_time_download_once() {
+        let dir = scratch("together");
+        let genuine = archive(&dir, "genuine");
+        let p = pinned_to(&genuine, &dir);
+        let sdk = dir.join("sdk");
+        fs::create_dir_all(sdk.join("pkg/lib")).unwrap();
+        fs::write(sdk.join("pkg/lib/x.txt"), "older").unwrap();
+        let downloads = std::sync::atomic::AtomicUsize::new(0);
+        let serve = |_: &str, to: &Path| {
+            downloads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            fs::write(to, &genuine).is_ok()
+        };
+        std::thread::scope(|s| {
+            let a = s.spawn(|| fetch(&sdk, &p, false, serve));
+            let b = s.spawn(|| fetch(&sdk, &p, false, serve));
+            assert_eq!(a.join().unwrap(), Ok(()));
+            assert_eq!(b.join().unwrap(), Ok(()));
+        });
+        assert_eq!(downloads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let text = sdk.join("pkg/lib/x.txt");
+        assert_eq!(fs::read_to_string(text).unwrap(), "genuine");
+        let left: Vec<_> = fs::read_dir(&sdk)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .filter(|n| n != "pkg")
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 
