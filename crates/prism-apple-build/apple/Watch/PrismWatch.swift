@@ -1229,6 +1229,11 @@ extension EnvironmentValues {
 /// element of a cell lists its column's header in VoiceOver's More Content
 /// rotor (`accessibilityCustomContent`), and a cell of a clickable row
 /// clicks the row.
+///
+/// Each part is one chain of modifiers whose values change, never its
+/// structure: a label, a control or a clickable row coming or going keeps
+/// the node's views and their state (focus, a loaded picture). A node's part
+/// comes with its table's patch, in the batch that creates the node.
 struct A11yNode: ViewModifier {
     @ObservedObject var store = PrismStore.shared
     @Environment(\.prismColumnHeader) var columnHeader
@@ -1249,21 +1254,20 @@ struct A11yNode: ViewModifier {
         case .row:
             content
         case .cell(let cell):
+            // A cell holding a control is a container whose elements list the
+            // column header themselves; any other cell is one element.
+            let holds = holdsControl(node)
             let header = cell.columnHeader.flatMap(spoken)
-            if holdsControl(node) {
-                content.accessibilityElement(children: .contain)
-                    .environment(\.prismColumnHeader, header)
-            } else {
-                let rowClickable = store.nodes[cell.rowId]?.clickable == true
-                content.accessibilityElement(children: node.label == nil ? .combine : .ignore)
-                    .modifier(A11yLabel(label: node.label))
-                    .accessibilityAddTraits(cell.header ? .isHeader : [])
-                    .modifier(ColumnHeaderContent(header: header, value: node.label ?? spoken(id)))
-                    .modifier(RowClick(row: rowClickable ? cell.rowId : nil))
-            }
+            let rowClickable = !holds && store.nodes[cell.rowId]?.clickable == true
+            content.accessibilityElement(children: holds ? .contain : node.label == nil ? .combine : .ignore)
+                .modifier(A11yLabel(label: holds ? nil : node.label))
+                .accessibilityAddTraits(!holds && cell.header ? .isHeader : [])
+                .modifier(ColumnHeaderContent(id: id, header: holds ? nil : header, value: node.label ?? spoken(id)))
+                .modifier(RowClick(row: rowClickable ? cell.rowId : nil))
+                .environment(\.prismColumnHeader, holds ? header : nil)
         case nil:
             content.modifier(A11yLabel(label: node.label))
-                .modifier(ColumnHeaderContent(header: Self.leaves.contains(node.kind) ? columnHeader : nil,
+                .modifier(ColumnHeaderContent(id: id, header: Self.leaves.contains(node.kind) ? columnHeader : nil,
                                               value: node.label ?? node.text))
         }
     }
@@ -1286,52 +1290,70 @@ struct A11yNode: ViewModifier {
     }
 }
 
-/// A node's own label; none leaves SwiftUI's (a text's words).
+/// A node's own label; none leaves SwiftUI's (a text's words). The label
+/// is switched on and off (`isEnabled`, watchOS 11+), so the views keep
+/// their identity when it comes or goes. Only watchOS 10 simulators lack it
+/// (watches run watchOS 26+, see `docs/src/platforms/watchos.md`): there a
+/// label coming or going rebuilds the node's views.
 struct A11yLabel: ViewModifier {
     let label: String?
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if let label { content.accessibilityLabel(label) } else { content }
+        if #available(watchOS 11.0, *) {
+            content.accessibilityLabel(Text(label ?? ""), isEnabled: label != nil)
+        } else if let label {
+            content.accessibilityLabel(label)
+        } else {
+            content
+        }
     }
 }
 
-/// A table cell's column header, in VoiceOver's More Content rotor.
+/// A table cell's column header, in VoiceOver's More Content rotor. No
+/// header gives no value, which removes the entry: the views stay. The key
+/// is the node's own: on a stack, which is no element, the entry reaches
+/// every element inside, and an empty one must not remove theirs.
 struct ColumnHeaderContent: ViewModifier {
+    let id: UInt64
     let header: String?
     let value: String?
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if let header, !header.isEmpty {
-            content.accessibilityCustomContent(Text(header), Text(value ?? ""))
-        } else {
-            content
-        }
+        let shown = header.map { !$0.isEmpty } ?? false
+        let key = AccessibilityCustomContentKey(Text(header ?? ""), id: "prism.column.\(id)")
+        return content.accessibilityCustomContent(key, shown ? Text(value ?? "") : nil)
     }
 }
 
-/// VoiceOver's activation of a cell of a clickable row clicks the row.
+/// VoiceOver's activation of a cell of a clickable row clicks the row. The
+/// action is always there, so the views stay when the row's click comes or
+/// goes; outside a clickable row it does nothing and the cell drops the
+/// button trait the action gives (SwiftUI gives every element a press).
 struct RowClick: ViewModifier {
     let row: UInt64?
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if let row {
-            content.accessibilityAction { send(["t": "click", "id": row]) }
-        } else {
-            content
-        }
+        content.accessibilityAction { if let row { send(["t": "click", "id": row]) } }
+            .accessibilityRemoveTraits(row == nil ? .isButton : [])
     }
 }
 
-/// `a11y.value` (e.g. "40 %") read out instead of the control's own value.
+/// `a11y.value` (e.g. "40 %") read out instead of the control's own value,
+/// switched on and off like `A11yLabel`.
 struct A11yValue: ViewModifier {
     let value: String?
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if let value, !value.isEmpty { content.accessibilityValue(value) } else { content }
+        let shown = value.map { !$0.isEmpty } ?? false
+        if #available(watchOS 11.0, *) {
+            content.accessibilityValue(Text(value ?? ""), isEnabled: shown)
+        } else if shown, let value {
+            content.accessibilityValue(value)
+        } else {
+            content
+        }
     }
 }
 
