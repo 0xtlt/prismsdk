@@ -5402,11 +5402,15 @@ pub fn run(config: AppConfig, init: AppInit) {
     runtime
         .app
         .set_widget_configurations_source(prism_native::apple::widget_configurations);
-    // Widget buttons open the app on links that only its widgets can sign.
+    // Widget buttons open the app on links that only its widgets can sign,
+    // each usable once; the key and the ledger of used links stay in the
+    // data directory between runs.
     if capabilities.widgets {
-        runtime
-            .app
-            .set_widget_key(crate::widget_key::load(&data_dir(&config.title)));
+        let dir = data_dir(&config.title);
+        runtime.app.set_widget_key(
+            crate::widget_key::load(&dir),
+            Box::new(prism_core::FileStorage::new(&dir)),
+        );
     }
     let renderer = NativeRenderer::new(AppKit {
         mtm,

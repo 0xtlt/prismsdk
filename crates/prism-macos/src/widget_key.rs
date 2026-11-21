@@ -1,9 +1,10 @@
 //! The app's secret for widget-action links (S19). A macOS widget button
 //! opens the app on a link, and any app or web page can open the same
 //! link: the app runs the action only when the link carries the token its
-//! own widget snapshot gave the button ([`App::set_widget_key`]). The key
-//! lives in the app's data directory, readable by this user only, so links
-//! drawn in an earlier run still work.
+//! own widget snapshot gave the button, and only once
+//! ([`App::set_widget_key`]). The key lives in the app's data directory,
+//! readable by this user only, so links drawn in an earlier run still work;
+//! the ledger of used links (`widget-link-ledger`) sits next to it.
 //!
 //! [`App::set_widget_key`]: prism_core::App::set_widget_key
 
