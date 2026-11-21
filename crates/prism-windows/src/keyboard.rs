@@ -3,6 +3,8 @@
 //! keys typed into a text box stay the text box's; keys a listener
 //! consumes never reach XAML.
 
+use std::cell::RefCell;
+
 use prism_core::{KeyEvent, Modifiers, UiEvent};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, GetKeyboardState, MAPVK_VK_TO_VSC, MapVirtualKeyW, ToUnicode, VK_CONTROL, VK_LWIN,
@@ -10,7 +12,22 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use crate::controls::Content;
-use crate::imp::{State, dispatch};
+use crate::imp::{State, dispatch_traced};
+
+thread_local! {
+    /// The keys whose press was reported, until released (#159).
+    static HELD: RefCell<crate::keys::Held> = RefCell::new(crate::keys::Held::default());
+}
+
+/// The window turned inactive: Windows sends the keys still down their
+/// release in the window that is active then, so they are released now,
+/// to the node their press went to (#159).
+pub fn release_all() {
+    let held = HELD.with(|h| h.borrow_mut().take_all());
+    for (name, target) in held {
+        dispatch_traced(UiEvent::KeyUp(target, KeyEvent::new(name)));
+    }
+}
 
 pub fn modifiers() -> Modifiers {
     let down = |vk: u16| unsafe { GetKeyState(vk as i32) } < 0;
@@ -41,13 +58,31 @@ pub fn typed_char(vk: u32) -> Option<char> {
     }
 }
 
-/// A key went down (or up): reported to the listeners that want it.
-/// Returns whether XAML must not see it (a listener consumed or claimed
-/// it).
-pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: bool) -> bool {
+/// Key `code` (its virtual key `vk` and scan code) went down (or up):
+/// reported to the listeners that want it. A release goes, under the name
+/// it went down with, to the node its press went to, only if that press
+/// was reported. Returns whether XAML must not see it (a listener
+/// consumed or claimed it).
+pub fn key_event(
+    s: &mut State,
+    code: u32,
+    vk: u16,
+    typed: Option<char>,
+    repeat: bool,
+    up: bool,
+) -> bool {
+    if up {
+        if let Some((name, target)) = HELD.with(|h| h.borrow_mut().release(code)) {
+            let key = KeyEvent {
+                modifiers: modifiers(),
+                ..KeyEvent::new(name)
+            };
+            dispatch_traced(UiEvent::KeyUp(target, key));
+        }
+        return false;
+    }
     // Escape closes the topmost sheet or dialog (`overlay.rs`).
     if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0
-        && !up
         && !repeat
         && crate::overlay::escape(&s.renderer.widgets)
     {
@@ -56,19 +91,17 @@ pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: 
     let Some(name) = crate::keys::key_name(vk, typed) else {
         return false;
     };
+    // Keyboard input: focus moved now shows the focus visual.
+    s.renderer.widgets.focus_visible = true;
     let modifiers = modifiers();
     let w = &s.renderer.widgets;
     let focus = w.focus;
     let scene = &w.scene;
     let any_global = scene.nodes.values().any(|n| n.keys_global);
     let target = focus.and_then(|f| scene.find_up(f, |n| n.keys_local));
-    let field = focus
-        .and_then(|f| w.views.get(&f))
-        .and_then(|v| match &v.content {
-            Content::Field(t) => Some(t.clone()),
-            _ => None,
-        });
-    let editing = field.is_some()
+    let content = focus.and_then(|f| w.views.get(&f)).map(|v| &v.content);
+    let field = matches!(content, Some(Content::Field(_) | Content::Rich(_)));
+    let editing = field
         || focus
             .and_then(|f| scene.get(f))
             .is_some_and(|n| n.is_text_field());
@@ -77,28 +110,20 @@ pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: 
     if target.is_none() && (typing || !any_global) {
         return false;
     }
-    let selection = field.and_then(|t| {
-        let text = t.Text().ok()?.to_string();
-        let a = t.SelectionStart().ok()?.max(0) as usize;
-        let b = a + t.SelectionLength().ok()?.max(0) as usize;
-        Some(prism_core::SelectionEvent::new(
-            prism_native::fields::utf16_to_chars(&text, a),
-            prism_native::fields::utf16_to_chars(&text, b),
-        ))
-    });
+    // The field's selection and caret edges (#211), for `consume_key_at`.
+    let (selection, edges) = content
+        .and_then(crate::carets::caret_state)
+        .map_or((None, None), |(s, e)| (Some(s), Some(e)));
     let key = KeyEvent {
         key: name.clone(),
         modifiers,
         repeat,
         selection,
-        edges: None,
+        edges,
     };
-    if up {
-        dispatch(UiEvent::KeyUp(target, key));
-        return false;
-    }
+    HELD.with(|h| h.borrow_mut().press(code, &name, target));
     let claimed = target.is_some_and(|t| Some(t) == focus && crate::keys::claims(&name));
     let consumed = s.runtime.consumes_key_event(focus, &key);
-    dispatch(UiEvent::Key(target, key));
+    dispatch_traced(UiEvent::Key(target, key));
     claimed || consumed
 }

@@ -67,10 +67,12 @@ Application::new()
 
 impl Render for Notes {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Room for the traffic lights, dropped in full screen (they hide).
-        let lead = cx.window_controls().map_or(12., |c| c.right() + 12.);
+        // Room for the window's buttons, dropped in full screen (they hide).
+        let (left, right) = cx
+            .window_controls()
+            .map_or((0., 0.), |c| c.insets(cx.window_size().0));
         div().size_full().flex_col()
-            .child(div().h(40.).pl(lead).flex_row().items_center()
+            .child(div().h(40.).pl(left + 12.).pr(right + 12.).flex_row().items_center()
                 .window_drag()                    // moves and zooms the window
                 .child(tabs(cx)))                 // clicks still reach the tabs
             .child(body(cx))
@@ -88,7 +90,8 @@ impl Render for Notes {
   to keep them vertically centered in it, so they keep responding to the
   pointer; the rest of that strip is the app's content and takes clicks.
 - `cx.window_controls()` is the lights' frame from the window's top-left
-  corner (`x`, `y`, `width`, `height`, `right()`, `bottom()`), `None` in full
+  corner (`x`, `y`, `width`, `height`, `right()`, `bottom()`, and
+  `insets(width)`: the room to keep at each end of a title bar), `None` in full
   screen or with the standard chrome. `cx.is_fullscreen()` says whether the
   window fills the screen. Both re-render the app when they change (on the
   way into full screen, before the animation ends).
@@ -102,7 +105,9 @@ impl Render for Notes {
 - Containers outside a `.window_drag()` region don't move the window, even in
   the title bar strip.
 
-Other platforms accept both and ignore them: the web (the browser owns the
-window), iOS, iPadOS, visionOS, Android, Linux, where GTK keeps its own
-header bar for now, and Windows, where the system title bar stays for now. `window_controls()` is `None` and `is_fullscreen()` is
+Windows has it too, with its caption buttons at the top right
+([Windows › Custom window chrome](windows.md#custom-window-chrome)). Other
+platforms accept both and ignore them: the web (the browser owns the
+window), iOS, iPadOS, visionOS, Android, and Linux, where GTK keeps its own
+header bar for now. `window_controls()` is `None` and `is_fullscreen()` is
 `false` there.

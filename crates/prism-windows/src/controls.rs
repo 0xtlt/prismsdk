@@ -155,9 +155,10 @@ pub fn create(id: NodeId, kind: NodeKind) -> Result<Content> {
             b.SetMinHeight(0.)?;
             b.SetIsTextScaleFactorEnabled(false)?;
             b.Click(&RoutedEventHandler::new(move |_, _| {
-                dispatch(UiEvent::Click(id));
+                crate::events::button_clicked(id);
                 Ok(())
             }))?;
+            crate::events::button_presses(&b, id)?;
             Content::Button(b, t)
         }
         NodeKind::RichInput => Content::Rich(crate::rich::Rich::new(id)?),
@@ -581,9 +582,10 @@ pub fn clickable_host(id: NodeId) -> Result<Button> {
     b.SetVerticalContentAlignment(VerticalAlignment::Top)?;
     b.SetIsTextScaleFactorEnabled(false)?;
     b.Click(&RoutedEventHandler::new(move |_, _| {
-        dispatch(UiEvent::Click(id));
+        crate::events::button_clicked(id);
         Ok(())
     }))?;
+    crate::events::button_presses(&b, id)?;
     Ok(b)
 }
 

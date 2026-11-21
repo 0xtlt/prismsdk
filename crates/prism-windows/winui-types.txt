@@ -11,6 +11,12 @@ Microsoft.UI.Content.ContentSizePolicy
 Microsoft.UI.Dispatching.DispatcherQueueController
 Microsoft.UI.Dispatching.DispatcherQueue
 Microsoft.UI.WindowId
+# Custom window chrome (titlebar.rs)
+Microsoft.UI.Windowing.AppWindow
+Microsoft.UI.Windowing.AppWindowTitleBar
+Microsoft.UI.Windowing.TitleBarTheme
+Microsoft.UI.Input.InputNonClientPointerSource
+Microsoft.UI.Input.NonClientRegionKind
 Windows.UI.Xaml.Interop.TypeName
 Microsoft.UI.Xaml.Application
 Microsoft.UI.Xaml.IApplicationFactory
@@ -55,6 +61,8 @@ Microsoft.UI.Xaml.Input.PointerRoutedEventArgs
 Microsoft.UI.Xaml.Input.KeyEventHandler
 Microsoft.UI.Xaml.Input.KeyRoutedEventArgs
 Microsoft.UI.Xaml.Input.TappedEventHandler
+Microsoft.UI.Xaml.Input.DoubleTappedEventHandler
+Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs
 Microsoft.UI.Xaml.Input.TappedRoutedEventArgs
 Microsoft.UI.Xaml.Input.Pointer
 Microsoft.UI.Xaml.Input.FocusManager

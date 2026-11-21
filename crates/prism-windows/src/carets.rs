@@ -305,6 +305,60 @@ impl Measure {
     }
 }
 
+/// A text field's selection and, with nothing selected, its caret's
+/// edges (#211, `consume_key_at`): at the start or end of the text, on
+/// its first or last visual line, from the field's own geometry (a
+/// one-line text box is always on both).
+pub(crate) fn caret_state(
+    content: &crate::controls::Content,
+) -> Option<(prism_core::SelectionEvent, prism_core::CaretEdges)> {
+    use prism_native::fields::utf16_to_chars;
+    let field = Field::of(content)?;
+    let (selection, text, multi_line) = match &field {
+        Field::Text(t) => {
+            let text = t.Text().ok()?.to_string();
+            let a = t.SelectionStart().ok()?.max(0) as usize;
+            let b = a + t.SelectionLength().ok()?.max(0) as usize;
+            let sel =
+                prism_core::SelectionEvent::new(utf16_to_chars(&text, a), utf16_to_chars(&text, b));
+            let wraps = t.TextWrapping().ok() != Some(crate::winui::xaml::TextWrapping::NoWrap);
+            (sel, text, t.AcceptsReturn().unwrap_or(false) || wraps)
+        }
+        Field::Rich(r) => {
+            let (sel, text) = crate::edit::selection(r).ok()?;
+            (sel, text, true)
+        }
+    };
+    if !selection.is_caret() {
+        return Some((selection, prism_core::CaretEdges::default()));
+    }
+    let caret = selection.start;
+    let len = text.chars().count();
+    let lines = if multi_line && len > 0 {
+        let m = Measure::new(&field).ok()?;
+        let mid = |chars: usize| m.caret(chars).map(|(_, y, h)| (y + h / 2., h));
+        match (mid(caret), mid(0), mid(len)) {
+            (Some((at, height)), Some((first, _)), Some((last, _))) => Some(crate::keys::Lines {
+                caret: at,
+                first,
+                last,
+                height,
+            }),
+            // Not measured (not laid out yet): on no line edge but the
+            // text's own ends.
+            _ => Some(crate::keys::Lines {
+                caret: 0.,
+                first: f32::MAX,
+                last: f32::MAX,
+                height: 1.,
+            }),
+        }
+    } else {
+        None
+    };
+    Some((selection, crate::keys::caret_edges(caret, len, lines)))
+}
+
 /// Where a text box's text starts in the box: its text host
 /// (`ContentElement`, a scroll viewer inside the border), inside the
 /// host's padding. `GetRectFromCharacterIndex` and RichEdit's client

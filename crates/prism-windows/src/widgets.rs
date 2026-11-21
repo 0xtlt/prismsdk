@@ -51,7 +51,8 @@ pub struct Win {
     pub locale: prism_core::Locale,
     /// The node with the keyboard focus.
     pub focus: Option<NodeId>,
-    /// Focus moved with the keyboard.
+    /// The last input was a key, not a press: focus moved by Prism
+    /// (`cx.focus`) shows the focus visual.
     pub focus_visible: bool,
     /// `cx.focus(…)` and `dismiss_keyboard` while patches apply: carried
     /// out after (they report to prism-native).
@@ -73,6 +74,8 @@ pub struct Win {
     /// Nodes with events already wired: clicks, hover and press.
     clicks: IdSet<NodeId>,
     hovers: IdSet<NodeId>,
+    /// The cursor each view shows (`cursors.rs`).
+    cursors: crate::cursors::Shapes,
 }
 
 impl Win {
@@ -120,6 +123,7 @@ impl Win {
             layers: IdMap::default(),
             clicks: IdSet::default(),
             hovers: IdSet::default(),
+            cursors: crate::cursors::Shapes::default(),
         };
         w.theme_root()?;
         Ok(w)
@@ -319,7 +323,15 @@ impl Win {
         let hover = n.reports.contains(prism_core::Interaction::Hover)
             || n.reports.contains(prism_core::Interaction::Active);
         let pointer = crate::pointer::wants(id);
-        let wants = n.clickable || hover || n.menu.is_some() || n.pointer_mask != 0 || pointer;
+        let keys = n.keys_local;
+        let cursor = n.style.cursor;
+        let wants = n.clickable
+            || hover
+            || n.menu.is_some()
+            || n.pointer_mask != 0
+            || pointer
+            || keys
+            || cursor.is_some();
         let clickable = n.clickable;
         let Some(v) = self.views.get_mut(&id) else {
             return;
@@ -353,10 +365,51 @@ impl Win {
         if pointer && let Err(e) = crate::pointer::wire(&v.outer, &v.kids, v.button.is_some(), id) {
             log!("pointer input of node {id}: {e}");
         }
+        // A view listening to keys takes the focus: its button or its
+        // control if it has one, else its canvas (`keyview.rs`).
+        let stop = keys && v.button.is_none() && v.content.control().is_none();
+        match crate::keyview::set(&v.outer, id, stop) {
+            Ok(true) => {
+                if let Some(n) = self.scene.get(id)
+                    && let Err(e) = crate::a11y::apply(v, id, &n.a11y, &n.text)
+                {
+                    log!("accessibility of node {id}: {e}");
+                }
+            }
+            Ok(false) => {}
+            Err(e) => log!("keyboard focus of node {id}: {e}"),
+        }
+        // The style's cursor, or a hand over a clickable view (once its
+        // button is made: the element under the pointer).
+        let shape = crate::cursors::shape(cursor, clickable);
+        let changed = self.cursors.set(id, shape);
+        if (changed || made)
+            && let Err(e) = set_cursor(v, shape)
+        {
+            log!("cursor of node {id}: {e}");
+        }
         // Under a contrast theme a button's colors are the button ones.
         if made && self.palette.forced.is_some() {
             self.restyle_tree(id);
         }
+    }
+
+    /// Whether node `id` keeps its own presses in a `.window_drag()`
+    /// region (`chrome.rs`): buttons, controls, `on_click`, draggable and
+    /// pointer-listening views, context menus, key views.
+    pub(crate) fn keeps_presses(&self, id: NodeId) -> bool {
+        let Some(n) = self.scene.get(id) else {
+            return false;
+        };
+        n.clickable
+            || n.pointer_mask != 0
+            || n.menu.is_some()
+            || crate::pointer::wants(id)
+            || crate::keyview::is(id)
+            || self
+                .views
+                .get(&id)
+                .is_some_and(|v| v.button.is_some() || v.content.control().is_some())
     }
 
     /// A field's text from the app, unless it is the echo of typing.
@@ -387,23 +440,33 @@ impl Win {
         }
     }
 
-    /// Gives node `id` the keyboard focus (`None`: away from fields).
+    /// Gives node `id` the keyboard focus (`None`: away from fields): its
+    /// control, a clickable view's button, a key view's canvas.
     pub fn focus_node(&mut self, id: Option<NodeId>) {
         if let Some(i) = id {
             // A collapsed control cannot take the focus.
             crate::defer::reveal(self, i);
         }
-        let control = id
-            .and_then(|i| self.views.get(&i))
-            .and_then(|v| v.content.control());
-        match control {
-            Some(c) => {
+        let target = id.and_then(|i| {
+            let v = self.views.get(&i)?;
+            if let Some(c) = v.content.control() {
+                return ui(&c).ok();
+            }
+            if let Some(b) = &v.button {
+                return ui(b).ok();
+            }
+            crate::keyview::is(i).then(|| v.outer())
+        });
+        match target {
+            Some(e) => {
+                // The focus visual shows after keyboard input, as it would
+                // had the user moved the focus.
                 let state = if self.focus_visible {
                     FocusState::Keyboard
                 } else {
                     FocusState::Programmatic
                 };
-                let _ = c.Focus(state);
+                let _ = e.Focus(state);
             }
             None if id.is_none() => {
                 // Out of the field: the root takes the focus.
@@ -480,6 +543,7 @@ impl Widgets for Win {
             return;
         };
         let axis = n.style.scroll_axis != style.scroll_axis;
+        let cursor = n.style.cursor != style.cursor;
         n.style = style.clone();
         if !matches!(n.kind, NodeKind::Text | NodeKind::Timer) {
             // A text's sizes stay while its text and font do (`Measurer`).
@@ -491,6 +555,9 @@ impl Widgets for Win {
             let _ = scroll_axis(sv, style.scroll_axis == prism_core::ScrollAxis::Vertical);
         }
         self.restyle_tree(id);
+        if cursor {
+            self.update_hit(id);
+        }
     }
 
     fn set_text(&mut self, view: &NodeId, text: &str) {
@@ -631,6 +698,7 @@ impl Widgets for Win {
         self.measurer.forget(id);
         crate::defer::forget(id);
         crate::pointer::forget(id);
+        crate::keyview::forget(id);
         crate::drops::forget(id);
         crate::edit::forget(id);
         crate::carets::forget(id);
@@ -640,6 +708,7 @@ impl Widgets for Win {
         self.select_events.remove(&id);
         self.clicks.remove(&id);
         self.hovers.remove(&id);
+        self.cursors.forget(id);
         self.overlay_origins.remove(&id);
         crate::motion::forget(id);
         if self.focus == Some(id) {
@@ -1145,6 +1214,9 @@ impl Widgets for Win {
             n.keys_local = local;
             n.keys_global = global;
         }
+        // A view listening to keys takes the focus (`keyview.rs`); a lazy
+        // one once made.
+        self.update_hit(*view);
     }
 
     fn set_selection(&mut self, view: &NodeId, start: usize, end: usize) {
@@ -1370,6 +1442,7 @@ impl Win {
                     self.bars.insert(id);
                 }
                 self.views.insert(id, v);
+                self.cursors.forget(id);
                 if kind == NodeKind::Overlay {
                     self.new_overlay(id);
                 }
@@ -1421,6 +1494,26 @@ impl Win {
         v.frame = Rect::default();
         let _ = v.place(n, &pal, sticky);
     }
+}
+
+/// Shows `shape` over a view (`cursors.rs`), or the cursor of what is
+/// around it (`None`): on its canvas and on its button, the element under
+/// the pointer.
+fn set_cursor(v: &View, shape: Option<crate::cursors::Shape>) -> Result<()> {
+    use crate::winui::bindings::Microsoft::UI::Input::{
+        InputCursor, InputSystemCursor, InputSystemCursorShape,
+    };
+    let cursor = match shape {
+        Some(s) => Some(
+            InputSystemCursor::Create(InputSystemCursorShape(s as i32))?.cast::<InputCursor>()?,
+        ),
+        None => None,
+    };
+    v.outer.SetProtectedCursor(cursor.as_ref())?;
+    if let Some(b) = &v.button {
+        b.SetProtectedCursor(cursor.as_ref())?;
+    }
+    Ok(())
 }
 
 /// Takes a node's swapped-out content element out of its outer canvas.

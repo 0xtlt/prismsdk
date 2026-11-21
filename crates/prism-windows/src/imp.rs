@@ -23,6 +23,7 @@ use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
     SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -97,6 +98,16 @@ pub fn dispatch(event: UiEvent) {
     }
     QUEUE.with(|q| q.borrow_mut().push_back(event));
     post(WM_PRISM_DISPATCH);
+}
+
+/// [`dispatch`], logged with `PRISM_TRACE_INPUT=1` (what reached the app:
+/// clicks with their position, keys and count; keys with the caret's
+/// edges; key releases).
+pub fn dispatch_traced(event: UiEvent) {
+    if env("PRISM_TRACE_INPUT").is_some() {
+        log!("input: {event:?}");
+    }
+    dispatch(event);
 }
 
 /// Work that needs the state, run from the message loop.
@@ -241,6 +252,8 @@ pub fn relayout(s: &mut State) {
         }
     }
     crate::perf::layout(|| s.renderer.widgets.flush());
+    // A custom title bar's drag regions (`titlebar.rs`).
+    crate::titlebar::update_regions(s);
     UPDATING.set(was);
 }
 
@@ -317,6 +330,35 @@ pub fn fill(id: NodeId, text: &str) {
     report_typed(id, text.to_string());
 }
 
+thread_local! {
+    /// The lifecycle phase last reported to the app.
+    static LIFECYCLE: Cell<prism_core::Lifecycle> = const { Cell::new(prism_core::Lifecycle::Active) };
+    /// A close was confirmed: background was the window's last phase.
+    static CLOSING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The window's phase (`cx.on_lifecycle`): reported when it changes, now,
+/// or once the state is free. After a confirmed close (`closing`) no
+/// phase follows: the window's deactivation as it goes (`DestroyWindow`)
+/// is not reported.
+fn report_lifecycle(phase: prism_core::Lifecycle, closing: bool) {
+    let apply = move |s: &mut State| {
+        if CLOSING.get() {
+            return;
+        }
+        CLOSING.set(closing);
+        if LIFECYCLE.get() == phase {
+            return;
+        }
+        LIFECYCLE.set(phase);
+        let patches = s.runtime.set_lifecycle(phase);
+        commit(s, patches);
+    };
+    if with_state(apply).is_none() {
+        defer(Box::new(apply));
+    }
+}
+
 /// A control took or lost the keyboard focus.
 pub fn focus_changed(id: NodeId, on: bool) {
     defer(Box::new(move |s| {
@@ -365,6 +407,7 @@ pub fn scrolled(id: NodeId, x: f32, y: f32) {
         let report = n.scroll_events;
         let h = n.frame.h;
         w.flush();
+        crate::titlebar::update_regions(s);
         if report {
             dispatch(UiEvent::Scroll(id, y, h));
         }
@@ -434,6 +477,7 @@ pub fn send_contrast_changed(h: HWND) {
 }
 
 pub fn set_dark_title_bar(h: HWND, dark: bool) {
+    crate::titlebar::set_dark(dark);
     let on = BOOL::from(dark);
     unsafe {
         let _ = DwmSetWindowAttribute(
@@ -587,7 +631,22 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         match msg {
             WM_ERASEBKGND => LRESULT(1),
             WM_SIZE => {
+                // Minimized, or back from it: the lifecycle follows. (Sizes
+                // of a shown window leave it: the first comes before the
+                // window is shown, hence active.)
+                let minimized = wp.0 == SIZE_MINIMIZED as usize;
+                let back = matches!(wp.0 as u32, SIZE_RESTORED | SIZE_MAXIMIZED)
+                    && LIFECYCLE.get() == prism_core::Lifecycle::Background;
+                if minimized || back {
+                    let active = GetActiveWindow() == h;
+                    report_lifecycle(crate::lifecycle::phase(minimized, active, false), false);
+                }
+                if minimized {
+                    // A minimized window is 0 × 0: the layout stays.
+                    return LRESULT(0);
+                }
                 let (pw, ph) = (loword(lp.0 as usize) as i32, hiword(lp.0 as usize) as i32);
+                crate::titlebar::invalidate();
                 with_state(|s| {
                     let w = &mut s.renderer.widgets;
                     let k = w.scale();
@@ -596,6 +655,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     }
                     w.resize(pw as f32 / k, ph as f32 / k);
                     relayout(s);
+                    crate::titlebar::report_controls(s);
                 });
                 LRESULT(0)
             }
@@ -657,6 +717,18 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     y: r.bottom - r.top,
                 };
                 LRESULT(0)
+            }
+            WM_ACTIVATE => {
+                let active = u32::from(loword(wp.0)) != WA_INACTIVE;
+                if !active {
+                    // The keys still down get their release in the window
+                    // active now: released here (#159).
+                    crate::keyboard::release_all();
+                }
+                // The high word: minimized.
+                let minimized = hiword(wp.0) != 0 || IsIconic(h).as_bool();
+                report_lifecycle(crate::lifecycle::phase(minimized, active, false), false);
+                DefWindowProcW(h, msg, wp, lp)
             }
             WM_SETFOCUS => {
                 // The island takes the keyboard focus.
@@ -762,6 +834,8 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         return LRESULT(0);
                     }
                 }
+                // The app's last chance to save (`on_lifecycle`).
+                report_lifecycle(crate::lifecycle::phase(false, false, true), true);
                 let _ = DestroyWindow(h);
                 LRESULT(0)
             }
@@ -906,6 +980,11 @@ pub fn run(config: AppConfig, init: AppInit) {
                 Ok(i) => win.island = Some(i),
                 Err(e) => log!("XAML island: {e}"),
             }
+            // No title bar (`WindowChrome::Custom`): the client area
+            // grows to the window's top edge before the first layout.
+            if config.window_chrome.is_custom() {
+                crate::titlebar::install(main, win.palette.dark);
+            }
             // XAML laid the tree out, then the first frame.
             let _ = win
                 .root
@@ -977,6 +1056,8 @@ pub fn run(config: AppConfig, init: AppInit) {
             if let Some(i) = &s.renderer.widgets.island {
                 i.show();
             }
+            // The caption buttons are laid out once shown.
+            crate::titlebar::report_controls(s);
         });
         crate::smoke::start(main);
 
@@ -991,17 +1072,27 @@ pub fn run(config: AppConfig, init: AppInit) {
                 let vk = msg.wParam.0 as u32;
                 let up = matches!(msg.message, WM_KEYUP | WM_SYSKEYUP);
                 let repeat = !up && (msg.lParam.0 >> 30) & 1 == 1;
+                // The key itself: its virtual key, scan code and extended
+                // bit (a release matches its press, #159).
+                let code = (vk & 0xFFFF) << 16 | ((msg.lParam.0 >> 16) & 0x1FF) as u32;
                 let typed = if up {
                     None
                 } else {
                     crate::keyboard::typed_char(vk)
                 };
-                let consumed =
-                    with_state(|s| crate::keyboard::key_event(s, vk as u16, typed, repeat, up))
-                        .unwrap_or(false);
+                let consumed = with_state(|s| {
+                    crate::keyboard::key_event(s, code, vk as u16, typed, repeat, up)
+                })
+                .unwrap_or(false);
                 if consumed {
                     continue;
                 }
+            } else if matches!(
+                msg.message,
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN | WM_POINTERDOWN
+            ) {
+                // A press: focus moved now shows no focus visual.
+                with_state(|s| s.renderer.widgets.focus_visible = false);
             }
             if let Some(pre) = pre
                 && pre(&msg).as_bool()

@@ -53,6 +53,8 @@
 //! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
 //! | `scene3d`, `dxgl` | 3D scenes: prism-native's OpenGL renderer, in WGL, to a swap chain |
 //! | `keyboard` | key presses for Prism's key listeners |
+//! | `keyview` | views listening to keys take the keyboard focus |
+//! | `titlebar` | custom window chrome: no title bar, drag regions, caption buttons |
 //! | `smoke`, `inject`, `touch` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
 //! | `perf`, `profile` | `PRISM_TRACE`: where startup and update time goes; `PRISM_PROFILE`: the UI thread's stacks |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
@@ -77,7 +79,7 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `passkey`, `device` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `passkey`, `device`, `clicks`, `lifecycle`, `cursors`, `chrome` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -103,6 +105,8 @@ mod capture;
 mod carets;
 #[cfg(target_os = "windows")]
 mod chips;
+// Clicks counted in quick series: no Win32, tested everywhere.
+mod clicks;
 #[cfg(target_os = "windows")]
 mod clip;
 #[cfg(target_os = "windows")]
@@ -144,8 +148,18 @@ mod imp;
 mod inject;
 #[cfg(target_os = "windows")]
 mod keyboard;
+#[cfg(target_os = "windows")]
+mod keyview;
+#[cfg(target_os = "windows")]
+mod titlebar;
 // Key names and icon glyphs: no Win32, tested everywhere.
 mod keys;
+// The lifecycle phase from the window: no Win32, tested everywhere.
+mod lifecycle;
+// The pointer's shape over views: no Win32, tested everywhere.
+mod cursors;
+// Custom window chrome's drag regions: no Win32, tested everywhere.
+mod chrome;
 #[cfg(target_os = "windows")]
 mod location;
 #[cfg(target_os = "windows")]

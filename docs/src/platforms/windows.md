@@ -67,7 +67,16 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Clickable views** (`on_click`, `ui::button`, list rows) hold their
   children in a chrome-less WinUI `Button`: Invoke, Enter and Space, the
   focus rectangle and the UI Automation peer come from WinUI; hover and
-  pressed refinements are Prism's.
+  pressed refinements are Prism's. A click by the pointer carries where
+  it landed, the keys held and its number in a quick series (presses on
+  the same view within `GetDoubleClickTime` and the double-click
+  rectangle, as Windows counts a double click), read from the button's
+  press and release (`handledEventsToo`); clickable views without a
+  button take `Tapped` and `DoubleTapped`. Enter, Space and UI
+  Automation's Invoke click without a position, as on macOS. The pointer
+  shows a hand over them, and a view's `.cursor(..)` over it
+  (`ProtectedCursor`, a system cursor: the move arrows for an open or
+  closed hand, the arrow for zoom, as Windows has neither).
 - **Navigation:** a `SelectorBar` (the Windows 11 top tabs) for a tab bar,
   and a header per stack with Back (`NavigationBackButtonNormalStyle`), the
   title and the screen's bar buttons.
@@ -174,7 +183,12 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Input:** XAML's: pointer, touch, pen, wheel and touchpads (with
   `ScrollViewer`'s inertia), keyboard focus with Tab, access keys. Key
   presses also go to Prism's key listeners first (`on_key_down`,
-  `consume_keys`). Context menus (`set_menu`) and pop-up menus
+  `consume_keys`). A view with `on_key_down` takes the focus like a
+  control: a clickable one through its button, any other as its canvas
+  made a Tab stop (`UIElement.IsTabStop`), focused by a press (no focus
+  visual) and by `cx.focus` (the system's focus visual after keyboard
+  input), and read by UI Automation as a keyboard-focusable group (or its
+  role). Context menus (`set_menu`) and pop-up menus
   (`show_menu`) are `MenuFlyout`s. Pointer events reach Prism's
   listeners: hover and moves (`on_pointer_*`), drags with any button past
   the system's drag distance (a touch on a node that drags after a long
@@ -258,7 +272,11 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Windows and DPI:** per-monitor DPI v2 (XAML scales by itself; a move
   to a monitor of another DPI resizes the window to keep its size in
   DIPs), resizing, a minimum size, the title (`cx.set_title`), a
-  confirmation on close with unsaved changes. `PRISM_SCALE=1.5` runs the
+  confirmation on close with unsaved changes. The lifecycle
+  (`cx.on_lifecycle`) follows the window: active while it is the active
+  window, inactive while another is (`WM_ACTIVATE`), background while it is
+  minimized (`WM_SIZE`) and once a close is confirmed, before the window
+  goes. `PRISM_SCALE=1.5` runs the
   app at 150 % on any screen, through the same path as a real DPI (see
   [Development hooks](#development-hooks)).
 - **Services:** see [Services](#services) below.
@@ -352,8 +370,9 @@ Explorer on Windows 11, not menus drawn in the title bar (Paint's way):
 - WinUI's `MenuBar` is made for that row ("typically" at the top of the
   window, says the design guidance), 40 px tall, with its own hover,
   pressed and keyboard states;
-- the title bar stays the system's: its caption buttons, drag, double
-  click, the window menu and snap layouts need no code of Prism's
+- the title bar stays the system's (unless the app draws its own:
+  [Custom window chrome](#custom-window-chrome)): its caption buttons, drag,
+  double click, the window menu and snap layouts need no code of Prism's
   (menus in the title bar mean `ExtendsContentIntoTitleBar`, drawing the
   icon and the title, and keeping the hit-test regions of every menu up to
   date, and its colors are ignored on Windows 10);
@@ -363,6 +382,35 @@ Explorer on Windows 11, not menus drawn in the title bar (Paint's way):
 The row is on the window's solid color (`SolidBackgroundFillColorBase`,
 the color of Prism's tab bars and stack headers under it), so the title
 bar alone shows Mica and the menus read as part of the window's chrome.
+
+### Custom window chrome
+
+`WindowChrome::Custom` works as on macOS
+([macOS › Custom window chrome](macos.md#custom-window-chrome)), through the
+window's `AppWindow`:
+
+- its title bar goes (`AppWindowTitleBar::ExtendsContentIntoTitleBar`): the
+  content is laid out from the window's top edge; the title still names the
+  window in the taskbar and Alt+Tab;
+- the system still draws the caption buttons (minimize, maximize with its
+  snap layouts, close) over the content's top right corner, on a
+  transparent background, in the app's light or dark theme. Windows places
+  them: `traffic_lights` is ignored. `cx.window_controls()` is their frame
+  (`RightInset` and the title bar's `Height`, 32 px); `is_fullscreen()`
+  stays `false`;
+- `.window_drag()` views are the window's caption regions
+  (`InputNonClientPointerSource`): a press moves the window, a double click
+  maximizes or restores it, a right click opens the window menu. Buttons,
+  controls, `on_click`, draggable views and context menus inside are
+  passthrough regions and keep their clicks; the rest of the top strip is
+  the app's. The regions follow layouts and scrolls, and there are none
+  while a dialog, sheet or popover is open. The system takes the pointer
+  over a drag region: hover refinements inside it don't apply;
+- with a menu bar, its row is the window's top edge, under the caption
+  buttons, and the app's views start under it.
+
+`PRISM_CHROME=custom cargo run -p counter` shows it: the home screen draws a
+title bar that moves the window, with a button that keeps its clicks.
 
 ## The Windows App SDK
 
@@ -554,7 +602,7 @@ The same as the other backends, in a desktop session:
 |---|---|
 | `PRISM_PATH` | the first route |
 | `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`). The window is made the active one before the steps (a popover closes when another window takes the activation) |
-| `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app |
+| `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app, and its clicks (position, keys held, count) and keys (caret edges, releases) |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, and what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, then quits |
 | `PRISM_DELAY`, `PRISM_AFTER` | seconds before the clicks (1) and between them and the snapshot (0.7) |
@@ -691,12 +739,8 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 
 ## Not yet
 
-- **Views and input:** a view with `on_key_down` takes no keyboard focus
-  (controls and clickable views do); clicks carry no position, keys or
-  count; `consume_key_at` gets no caret edges; held keys are not released
-  when the window turns inactive; no lifecycle phases; `.cursor(..)`,
-  `object_position`, `Scrollbar::Hidden`, `tabular_nums` and underline
-  colors are ignored; custom window chrome; the runtime's layers (toasts)
+- **Views and input:** `object_position`, `Scrollbar::Hidden`,
+  `tabular_nums` and underline colors are ignored; the runtime's layers (toasts)
   draw under sheets and dialogs.
 - **Forms and navigation:** keyboard types, capitalization, autocorrect and
   suggestions; clearing an optional date; a date and time picker shows the

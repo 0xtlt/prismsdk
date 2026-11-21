@@ -21,7 +21,7 @@
 //!   `OnCreateAutomationPeer` returns the custom peer; its other methods,
 //!   like an element that needs no custom peer, call the base class's.
 //! - The peer (`ButtonAutomationPeer`, `FrameworkElementAutomationPeer`)
-//!   overrides seven of `IAutomationPeerOverrides`' 47 methods (the
+//!   overrides nine of `IAutomationPeerOverrides`' 47 methods (the
 //!   others call the base class's) and provides `IToggleProvider`,
 //!   `ISelectionItemProvider`, `IValueProvider` and, for a table and its
 //!   cells (`table.rs`), `IGridProvider`, `ITableProvider`,
@@ -481,7 +481,7 @@ fn tables() -> &'static Tables {
                 content_element as *const () as usize, // IsContentElementCore
                 control_element as *const () as usize, // IsControlElementCore
                 enabled as *const () as usize,         // IsEnabledCore
-                p1::<21> as *const () as usize,
+                focusable as *const () as usize,       // IsKeyboardFocusableCore
                 p1::<22> as *const () as usize,
                 p1::<23> as *const () as usize,
                 p1::<24> as *const () as usize,
@@ -865,6 +865,18 @@ unsafe extern "system" fn enabled(this: *mut c_void, out: *mut bool) -> HRESULT 
             return S_OK;
         }
         p1::<20>(this, out as *mut c_void)
+    }
+}
+
+/// A view listening to keys takes the keyboard focus (`keyview.rs`).
+unsafe extern "system" fn focusable(this: *mut c_void, out: *mut bool) -> HRESULT {
+    unsafe {
+        let o = outer::<1>(this);
+        if lookup(o.key).is_some_and(|s| s.focusable && !s.disabled) {
+            *out = true;
+            return S_OK;
+        }
+        p1::<21>(this, out as *mut c_void)
     }
 }
 

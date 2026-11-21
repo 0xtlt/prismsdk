@@ -33,7 +33,7 @@ cx.scroll_to("list", 0., 0., true);                             // back to the t
 - **Coordinates** are points in the element, from its top-left corner (whatever the layout direction). A drag's `start` is where the pointer went down and `translation` how far it moved since, so moving the element while it is dragged (drag to reorder) does not disturb them; `position()` is their sum.
 - **Click and drag** combine: a tap reports its position through `on_click`, a drag starts once the pointer moved past the platform's slop and then does not click. Together they make a custom slider or a « level » bar; add `on_key_down` (arrows) and an `accessibility_role(Role::Slider)` with a value so it works without a pointer.
 - **Hover** needs a pointer: a mouse, a trackpad, an iPad pointer, Apple Vision Pro's gaze. Phones report `on_pointer_move` while a finger touches the element, and no hover. Don't hide anything essential behind hover.
-- **Keys** use the web's `KeyboardEvent.key` names everywhere: characters (`"a"`, `"A"`, `" "`), `"Escape"`, `"Enter"`, `"Tab"`, `"Backspace"`, `"Delete"`, `"ArrowUp"`…, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `"F1"`… with `e.modifiers` (`shift`, `control`, `alt`, `meta`, `command()` for ⌘ on Apple platforms and Ctrl elsewhere). A view with `on_key_down` can take the focus (Tab, a click, `cx.focus`, the tvOS focus engine, a D-pad); on Windows only controls and clickable views take it for now. The handlers of the focused element and its ancestors run first, then every `on_global_key_down`, newest first; `cx.stop_propagation()` stops there. While a text field has the focus, global handlers only get keys that do not type (Escape, arrows, Enter, Tab, function keys) or come with Control / Command.
+- **Keys** use the web's `KeyboardEvent.key` names everywhere: characters (`"a"`, `"A"`, `" "`), `"Escape"`, `"Enter"`, `"Tab"`, `"Backspace"`, `"Delete"`, `"ArrowUp"`…, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `"F1"`… with `e.modifiers` (`shift`, `control`, `alt`, `meta`, `command()` for ⌘ on Apple platforms and Ctrl elsewhere). A view with `on_key_down` can take the focus (Tab, a click, `cx.focus`, the tvOS focus engine, a D-pad). The handlers of the focused element and its ancestors run first, then every `on_global_key_down`, newest first; `cx.stop_propagation()` stops there. While a text field has the focus, global handlers only get keys that do not type (Escape, arrows, Enter, Tab, function keys) or come with Control / Command.
 - **TV remotes and D-pads**: the Siri Remote and Android TV / D-pad report their arrows and `"Enter"` (select / center), `"MediaPlayPause"`, and Menu / Back as `"Escape"` when the app listens for keys.
 - **Ids**: `.id("name")` names an element for `cx.focus` and `cx.scroll_into_view` (the last element given a name wins). Unknown names are ignored.
 - **Scrolling from the app** (#193): `cx.scroll_by(id, dx, dy)` moves a `scroll()` with that `.id()` by points from where it is, at once (call it each frame or timer tick while a drag stays in an edge zone); `cx.scroll_to(id, x, y, animated)` puts its content's point (`x`, `y`) at its top-left corner (`f32::MAX`: the end). Both stay within the content and do nothing on other elements. `cx.scroll_offset(id)` is the last offset it reported, along its axis, once it has `on_scroll`. Web: `scrollBy` / `scrollTo`; macOS: the clip view's origin; iOS: `setContentOffset(_:animated:)`; Linux: the scrolled window's adjustments (not animated); Android: `scrollBy` / `smoothScrollTo`; Windows: `ScrollViewer.ChangeView`. `.autofocus()` focuses an element when it appears (a dialog's first field).
@@ -49,7 +49,7 @@ cx.scroll_to("list", 0., 0., true);                             // back to the t
 | tvOS | — | — | — | Siri Remote presses | focus engine, `scrollRectToVisible` |
 | Linux | `GestureClick` | `EventControllerMotion` | `GestureDrag` | `EventControllerKey` | `grab_focus`, scrolled window adjustment |
 | Android | touch up | hover events; touches | touch listener with touch slop | key events, D-pad | `requestFocus`, `requestRectangleOnScreen` |
-| Windows | not reported yet (`Tapped`) | `PointerEntered` / `PointerMoved` | pointer capture past the system's drag distance | the message loop's `WM_KEYDOWN`, before XAML | `Focus`, `StartBringIntoView` |
+| Windows | `Tapped` / `DoubleTapped`; a clickable view's button: its press and release (`handledEventsToo`) | `PointerEntered` / `PointerMoved` | pointer capture past the system's drag distance | the message loop's `WM_KEYDOWN`, before XAML | `Focus`, `StartBringIntoView` |
 | watchOS | `SpatialTapGesture` | — (moves while touching) | `DragGesture` | — | `@FocusState`, `ScrollViewReader` |
 
 tvOS has no pointer over views, the watch neither hover nor keys: those handlers simply never run there. On tvOS, a focused view with `on_key_down` keeps left / right for the app while up / down still move the focus.
@@ -105,7 +105,7 @@ div()
 | iOS, iPadOS, visionOS | `caretRect(for:)` of the caret against `beginningOfDocument` and `endOfDocument` |
 | Android | `Layout.getLineForOffset` against `getLineCount` |
 | Linux (GTK) | `GtkTextView` iterator locations of the caret, the start and the end |
-| Windows | not yet: no edges are reported, so a declared key is always taken |
+| Windows | `TextBox::GetRectFromCharacterIndex` of the caret against the start and end of the text; rich inputs: RichEdit's `ITextRange::GetRect` |
 
 ## Middle, back and forward clicks
 
@@ -153,7 +153,7 @@ never sticks.
 | Linux (GTK) | `GestureClick`'s `n_press` and the event's state | `EventControllerKey` releases, matched to their press by hardware key; the window turning inactive releases held keys |
 | iOS, iPadOS, visionOS | `UITouch.tapCount`, the tap's `modifierFlags` (a hardware keyboard, an iPad pointer) | `pressesEnded:` / `pressesCancelled:`; the app turning inactive releases held keys |
 | Android | taps counted with the system's double-tap timeout and slop; the event's meta state | `KeyEvent.ACTION_UP`; the window losing the focus releases held keys |
-| Windows | not yet: a click has no keys and counts 1 | `WM_KEYUP`; held keys are not released yet when the window turns inactive |
+| Windows | the keys held; presses counted with `GetDoubleClickTime` and the double-click rectangle (`SM_CXDOUBLECLK`) | `WM_KEYUP`, matched to its press by virtual key and scan code; the window turning inactive (`WM_ACTIVATE`) releases held keys |
 
 tvOS counts presses of the remote's select button as single clicks; watchOS reports count 1 and no keys.
 

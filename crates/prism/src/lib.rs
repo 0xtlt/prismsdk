@@ -218,11 +218,12 @@ impl Application {
         self
     }
 
-    /// The desktop window's frame (macOS; ignored elsewhere). The default,
-    /// [`WindowChrome::Standard`], keeps the system's title bar;
+    /// The desktop window's frame (macOS, Windows; ignored elsewhere). The
+    /// default, [`WindowChrome::Standard`], keeps the system's title bar;
     /// [`WindowChrome::Custom`] removes it so the content fills the window
-    /// from its top edge, the traffic lights drawn over it where
-    /// `traffic_lights` says. Mark the app's own title bar with
+    /// from its top edge, the window's buttons drawn over it (the traffic
+    /// lights where `traffic_lights` says, Windows' caption buttons at the
+    /// top right). Mark the app's own title bar with
     /// `.window_drag()` so it moves the window, and leave room for the
     /// buttons with `cx.window_controls()`. The [`title`](Self::title)
     /// still names the window (Mission Control, the Window menu, VoiceOver).

@@ -379,8 +379,7 @@ impl Color {
 
 /// The pointer's shape over a node (see [`Styled::cursor`](crate::Styled::cursor)).
 /// Clickable nodes get [`Pointer`](Cursor::Pointer) by default where there is
-/// a pointer (web, macOS, iPad, Linux, Android with a mouse); not yet on
-/// Windows, which keeps the arrow.
+/// a pointer (web, macOS, iPad, Linux, Windows, Android with a mouse).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cursor {
     /// The platform's arrow.
