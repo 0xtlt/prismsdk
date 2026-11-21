@@ -233,7 +233,7 @@ pub(crate) fn serve_media(
     );
     h.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'none'; sandbox"),
+        HeaderValue::from_static(crate::app::SANDBOX),
     );
     r
 }

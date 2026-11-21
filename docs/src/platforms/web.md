@@ -31,7 +31,7 @@ Other servers (actix, hyper, …): `prism-web` without default features has no s
 | pages | `private, no-store` | rendered per browser, sets the session cookie |
 | `/_prism/client.<hash>.js`, `/_prism/prism.<hash>.css` | `public, max-age=31536000, immutable` | ETag, `304` |
 | `/assets/logo.<hash>.png` (`picture("logo.png")`) | `public, max-age=31536000, immutable` | unhashed `/assets/logo.png`: revalidated |
-| `/files/*` (uploads) | `private` | per browser |
+| `/files/*` (uploads) | `private` | per browser; sandboxed (`default-src 'none'; sandbox`, `nosniff`), only raster pictures and videos inline, other files download |
 | `/ws` | – | proxy as a WebSocket |
 
 `prism build web` also writes `public/` (hashed files plus `manifest.json`). Upload it to a CDN and set `PRISM_ASSET_URL=https://cdn.example.com`, or let the CDN cache `/_prism/*` and `/assets/*` from the server. Settings: `PRISM_HOST`, `PRISM_PORT`, `PRISM_BASE_PATH`, `PRISM_ASSET_URL`, `PRISM_DATA_DIR` (or `WebApp::base_path` / `asset_url` / `data_dir`).
@@ -194,7 +194,7 @@ img-src 'self' data:;                   # + remote picture hosts
 connect-src 'self';                     # the socket (same origin)
 ```
 
-With [islands](../guide/islands.md), WASM islands also need `'wasm-unsafe-eval'` in `script-src` (it allows compiling WebAssembly, not `eval`). Their modules load from the same origin (or the CDN) through `client.js`, so they need no nonce, and the `.wasm` is fetched under `connect-src`. `WebApp::content_security_policy(&nonce)` returns this policy for the app, and `WebApp::strict_csp()` (or `PRISM_STRICT_CSP=1`) makes the built-in server send it with a fresh nonce on every page.
+With [islands](../guide/islands.md), WASM islands also need `'wasm-unsafe-eval'` in `script-src` (it allows compiling WebAssembly, not `eval`). Their modules load from the same origin (or the CDN) through `client.js`, so they need no nonce, and the `.wasm` is fetched under `connect-src`. `WebApp::content_security_policy(&nonce)` returns this policy for the app, and `WebApp::strict_csp()` (or `PRISM_STRICT_CSP=1`) makes the built-in server send it with a fresh nonce on every page. Responses with a policy of their own keep it: uploads, proxied pictures and downloads stay sandboxed.
 
 Without a nonce, the page's `<style>` blocks need `'unsafe-inline'` (or their hashes). Under a strict policy that lacks both, the page still works: the first paint is unstyled until the client connects. The sign-in callback page (`/_prism/auth/callback`) takes the nonce too. `client.js` uses no `eval`, inline handlers or `style` attributes.
 

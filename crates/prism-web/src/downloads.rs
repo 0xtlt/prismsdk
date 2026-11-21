@@ -98,7 +98,7 @@ pub(crate) fn serve(id: &str, sid: Option<&str>) -> Response<Vec<u8>> {
     );
     h.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'none'; sandbox"),
+        HeaderValue::from_static(crate::app::SANDBOX),
     );
     r
 }

@@ -514,3 +514,133 @@ fn s8_the_page_is_never_told_to_open_a_script_url() {
     let v = crate::session::device_json(1, DeviceCall::OpenUrl("/logout".into()));
     assert_eq!(v["url"], "/logout");
 }
+
+/// An app with two files uploaded in session `SID`: an SVG that runs a
+/// script when opened as a document, and a PNG. Their URL paths.
+const SID: &str = "5e55105e55105e55105e55105e55105e";
+
+fn uploads_app(tag: &str, strict: bool) -> (crate::WebApp, String, String) {
+    use prism_core::prelude::*;
+    struct Blank;
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            text("blank")
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Blank);
+        cx.set_root(root);
+    });
+    let mut app = crate::WebApp::new(prism_core::AppConfig::default(), init).data_dir(scratch(tag));
+    if strict {
+        app = app.strict_csp();
+    }
+    let files = app.files_dir(SID);
+    std::fs::create_dir_all(&files).unwrap();
+    let svg = format!("{}.svg", "0".repeat(32));
+    let png = format!("{}.png", "1".repeat(32));
+    std::fs::write(
+        files.join(&svg),
+        r#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.cookie)</script></svg>"#,
+    )
+    .unwrap();
+    std::fs::write(files.join(&png), b"\x89PNG\r\n\x1a\n").unwrap();
+    (app, format!("/files/{svg}"), format!("/files/{png}"))
+}
+
+fn sandboxed(csp: &str) -> bool {
+    csp.split(';').any(|d| d.trim() == "sandbox") && csp.contains("default-src 'none'")
+}
+
+#[test]
+fn s9_uploads_never_run_as_documents() {
+    let (app, svg, png) = uploads_app("s9-headers", false);
+    let get = |path: &str, sid: &str| {
+        let req = http::Request::get(path)
+            .header("cookie", format!("prism_sid={sid}"))
+            .body(())
+            .unwrap();
+        app.handle(&req)
+    };
+    let h = |r: &http::Response<Vec<u8>>, name: &str| {
+        r.headers()
+            .get(name)
+            .map(|v| v.to_str().unwrap().to_string())
+    };
+    // The SVG: a download, without scripts or sniffing even if opened.
+    let r = get(&svg, SID);
+    assert_eq!(r.status(), http::StatusCode::OK);
+    assert_eq!(h(&r, "x-content-type-options").as_deref(), Some("nosniff"));
+    assert!(
+        sandboxed(&h(&r, "content-security-policy").unwrap_or_default()),
+        "{r:?}"
+    );
+    assert!(
+        h(&r, "content-disposition").is_some_and(|d| d.starts_with("attachment")),
+        "{r:?}"
+    );
+    // A raster picture still shows inline (previews), sandboxed too.
+    let r = get(&png, SID);
+    assert_eq!(r.status(), http::StatusCode::OK);
+    assert_eq!(h(&r, "content-type").as_deref(), Some("image/png"));
+    assert_eq!(h(&r, "content-disposition"), None);
+    assert!(
+        sandboxed(&h(&r, "content-security-policy").unwrap_or_default()),
+        "{r:?}"
+    );
+    // Another browser's session has none of them.
+    let other = "0123456789abcdef0123456789abcdef";
+    assert_eq!(get(&svg, other).status(), http::StatusCode::NOT_FOUND);
+    assert_eq!(get(&png, other).status(), http::StatusCode::NOT_FOUND);
+}
+
+/// The head of the answer to `GET path` from the router serving `app`.
+#[cfg(feature = "server")]
+fn served_head(app: crate::WebApp, paths: &[&str]) -> Vec<String> {
+    use std::io::{Read, Write};
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            tx.send(listener.local_addr().unwrap()).unwrap();
+            axum::serve(listener, app.router::<()>()).await.unwrap();
+        });
+    });
+    let addr = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    paths
+        .iter()
+        .map(|path| {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            write!(
+                s,
+                "GET {path} HTTP/1.1\r\nHost: {addr}\r\nCookie: prism_sid={SID}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut out = Vec::new();
+            s.read_to_end(&mut out).unwrap();
+            let out = String::from_utf8_lossy(&out).to_ascii_lowercase();
+            out.split("\r\n\r\n").next().unwrap_or("").to_string()
+        })
+        .collect()
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn s9_the_strict_page_policy_keeps_the_upload_sandbox() {
+    let (app, svg, png) = uploads_app("s9-strict", true);
+    let heads = served_head(app, &[&svg, &png, "/"]);
+    let csp = |head: &str| {
+        head.lines()
+            .find_map(|l| l.strip_prefix("content-security-policy: "))
+            .unwrap_or("")
+            .to_string()
+    };
+    assert!(sandboxed(&csp(&heads[0])), "{}", heads[0]);
+    assert!(sandboxed(&csp(&heads[1])), "{}", heads[1]);
+    // Pages still get the strict policy.
+    assert!(csp(&heads[2]).contains("'nonce-"), "{}", heads[2]);
+}

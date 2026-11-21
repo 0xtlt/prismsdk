@@ -58,10 +58,13 @@ async fn page(State(app): State<WebApp>, req: Request) -> Response {
     match tokio::task::spawn_blocking(move || app.handle(&req)).await {
         Ok(response) => {
             let mut response = response.map(Body::from);
+            // A response with a policy of its own (an upload, a proxied
+            // picture, a download: sandboxed) keeps it.
             if let Some(policy) = csp.and_then(|p| http::HeaderValue::from_str(&p).ok()) {
                 response
                     .headers_mut()
-                    .insert(http::header::CONTENT_SECURITY_POLICY, policy);
+                    .entry(http::header::CONTENT_SECURITY_POLICY)
+                    .or_insert(policy);
             }
             response
         }

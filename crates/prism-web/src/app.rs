@@ -431,6 +431,15 @@ impl WebApp {
                     header::CACHE_CONTROL,
                     "private, max-age=31536000, immutable",
                 );
+                // Someone else's file, served from the app's origin: opened
+                // as a document it runs nothing (an SVG's or HTML's
+                // scripts), is never sniffed as another type, and only
+                // pictures and videos show inline; anything else downloads.
+                set(&mut r, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+                set(&mut r, header::CONTENT_SECURITY_POLICY, SANDBOX);
+                if !inert(crate::assets::content_type(name)) {
+                    set(&mut r, header::CONTENT_DISPOSITION, "attachment");
+                }
                 r
             }
             Err(_) => status(StatusCode::NOT_FOUND),
@@ -1038,6 +1047,17 @@ fn file_response(f: StaticFile, headers: &HeaderMap) -> Response<Vec<u8>> {
         r.headers_mut().insert(header::ETAG, v);
     }
     r
+}
+
+/// The policy of a file the app did not make (an upload): no scripts, no
+/// subresources, an opaque origin, whatever the page's own policy is.
+pub(crate) const SANDBOX: &str = "default-src 'none'; sandbox";
+
+/// Whether a browser shows `content_type` without running anything: raster
+/// pictures and videos (not SVG, HTML, PDF…).
+fn inert(content_type: &str) -> bool {
+    (content_type.starts_with("image/") && content_type != "image/svg+xml")
+        || content_type.starts_with("video/")
 }
 
 fn cookie_header(headers: &HeaderMap) -> Option<&str> {
