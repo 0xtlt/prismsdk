@@ -489,6 +489,8 @@ impl Widgets for Win {
             return;
         };
         let axis = n.style.scroll_axis != style.scroll_axis;
+        // A bar's tint (`bars.rs`).
+        let tint = n.style.tint != style.tint && matches!(n.kind, NodeKind::Stack | NodeKind::Tabs);
         n.style = style.clone();
         if !matches!(n.kind, NodeKind::Text | NodeKind::Timer) {
             // A text's sizes stay while its text and font do (`Measurer`).
@@ -498,6 +500,9 @@ impl Widgets for Win {
             && let Some(sv) = self.views.get(&id).and_then(|v| v.scroll.as_ref())
         {
             let _ = scroll_axis(sv, style.scroll_axis == prism_core::ScrollAxis::Vertical);
+        }
+        if tint {
+            self.bars.insert(id);
         }
         self.restyle_tree(id);
     }
