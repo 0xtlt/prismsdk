@@ -891,7 +891,9 @@ struct NodeView: View {
                 // The content inside its padding; the box around it.
                 .padding(n.padding)
                 .frame(width: n.frame.width, height: height, alignment: .topLeading)
-                .background(BoxFill(node: n, dark: dark))
+                // A screen's background fills the display, under its title
+                // and the screen's corners, where its content scrolls too.
+                .background { BoxFill(node: n, dark: dark).ignoresSafeArea(edges: n.kind == "screen" ? .all : []) }
                 .overlay(BoxBorder(node: n, dark: dark))
                 .modifier(RoundedClip(radius: n.num("radius"), clip: n.style["clip"] as? Bool ?? false, shape: n.box()))
                 .background(DropShadows(node: n, dark: dark))
