@@ -12,10 +12,11 @@
 //! - `wheel:Label=dy` turns the wheel over it: `dy` points toward the end
 //!   (100 a notch), `wheel:Label=dy,h` sideways.
 //!
-//! The steps play one after the other, after the other clicks and
-//! `PRISM_SCROLL`; each first scrolls its view into sight. The window
-//! stays on top meanwhile, so the input reaches it and no other window on
-//! the desktop. Give the snapshot time (`PRISM_AFTER`).
+//! The steps play one after the other, each first scrolling its view into
+//! sight; the steps after them (`key:Escape` after a click) and the
+//! snapshot's delay (`PRISM_AFTER`) wait until they have played. The
+//! window stays on top meanwhile, so the input reaches it and no other
+//! window on the desktop.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -59,6 +60,11 @@ enum Act {
 thread_local! {
     static QUEUE: RefCell<VecDeque<(Act, u32)>> = const { RefCell::new(VecDeque::new()) };
     static PLAYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether queued input is still playing.
+pub fn playing() -> bool {
+    PLAYING.get()
 }
 
 /// Queues `step` if it is one of these; `None` for other steps.
@@ -196,6 +202,8 @@ fn locate(label: &str, at: Option<(f32, f32)>) -> Option<((i32, i32), f32)> {
         let (x, y) = at.map_or((r.x + r.w / 2., r.y + r.h / 2.), |(ax, ay)| {
             (r.x + ax, r.y + ay)
         });
+        // The app's view starts under the menu bar.
+        let y = y + crate::menubar::height();
         let k = w.scale();
         let mut p = POINT {
             x: (x * k).round() as i32,

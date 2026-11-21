@@ -38,7 +38,9 @@ kinds and services come next (see [Not yet](#not-yet)).
   shadows a `DropShadow` cast by a frame around the box's inside, clipped to
   it; opacity and transforms are the element's Composition facades
   (`Opacity`, `Translation`, `Rotation`, `Scale`); `overflow: hidden`
-  clips, to the rounded corners too (a Composition geometric clip).
+  clips, to the rounded corners too (a Composition geometric clip: a
+  rounded rectangle, or a Direct2D path when only some corners are
+  rounded, opposite ones or three, so each corner is exact).
 - **Text** is `TextBlock`s: fonts and weights per run (`Run` inlines),
   colors, underline and strikethrough, inline Segoe Fluent Icons, CSS line
   heights, letter spacing, wrapping, line clamps with an ellipsis,
@@ -71,8 +73,10 @@ kinds and services come next (see [Not yet](#not-yet)).
   Windows has no sheet: a sheet is a larger dialog. Popovers (and dialogs
   placed beside their anchor) are WinUI `Flyout`s on the anchor: the
   acrylic presenter, its shadow and entry animation, placement from the
-  side and alignment (flipped without room), light dismiss, Escape and the
-  focus are WinUI's; `fixed` and `manual` ones ignore a click outside,
+  side and alignment (flipped without room), light dismiss and Escape are
+  WinUI's; on closing, the focus goes back to what had it before, else to
+  the anchor (not to the page's first element, which would scroll the page
+  to its top); `fixed` and `manual` ones ignore a click outside,
   `keep_focus` ones are transient and let the click through.
   `cx.show_alert` is a `ContentDialog` (Windows 11's style): the first two
   actions are its primary and secondary buttons, the cancel action its
@@ -89,7 +93,9 @@ kinds and services come next (see [Not yet](#not-yet)).
   spell checking, selection, undo and the clipboard are WinUI's. The
   backend reports edits (`Typed` tells the app's echo from the user's
   typing), Enter (`on_submit`), the selection (`on_select`) and focus
-  changes.
+  changes. A one-line field is as wide as its placeholder or text (120 at
+  least, like macOS), and a `leading_icon` is its Segoe Fluent Icons glyph
+  in the field's first 24 DIPs, the text after it.
 - **Rich inputs** (`rich_input`) are `RichEditBox`es: each run's weight,
   italic, underline (single, thick, double, dotted, dashed),
   strikethrough, colors, background, font and size are RichEdit character
@@ -158,7 +164,7 @@ kinds and services come next (see [Not yet](#not-yet)).
 
 | | |
 |---|---|
-| Files, folders, photos | the shell's common item dialogs (`IFileOpenDialog`, folders with `FOS_PICKFOLDERS`, pictures from the Pictures folder with an image filter), modal to the window; picked files are copied under the app's data directory, a folder's files are read in place |
+| Files, folders, photos | the shell's common item dialogs (`IFileOpenDialog`, folders with `FOS_PICKFOLDERS`, pictures from the Pictures folder with an image filter), modal to the window; picked files are copied under the app's data directory, a folder's files are read in place. The filters are named in the app's language (« Fichiers (*.png;…) », « Images », « Tous les fichiers »: `prism.files`, `prism.images` and `prism.all_files` in the app's translations override them) |
 | Saving a file | `IFileSaveDialog` (Windows asks before replacing); `reveal_path` selects the file in Explorer (`SHOpenFolderAndSelectItems`) |
 | Notifications | Windows App SDK app notifications (`AppNotificationManager`), unpackaged and self-contained: title, subtitle, body, buttons (destructive ones in the critical style), reply fields, sound or silent, replace and withdraw by id (the tag), threads (the group); delays are timers in the app |
 | Clicks on notifications | `on_notification_response` with the button and a reply's text, while the app runs or after Windows starts it for the click; the window comes forward unless the button is a background one |
@@ -167,10 +173,10 @@ kinds and services come next (see [Not yet](#not-yet)).
 | Biometrics | Windows Hello (`UserConsentVerifier`, its prompt owned by the window), which also takes the Hello PIN; `capabilities().biometry` is the face camera, fingerprint or iris reader the Windows Biometric Framework sees. Without Hello set up, `authenticate` answers `Unavailable` |
 | Sign-in (`prism::oauth`) | the default browser and a loopback redirect, `http://127.0.0.1:<port>/callback` (RFC 8252), like on Linux |
 | Tray | `Shell_NotifyIcon`: the SF Symbol's Segoe Fluent Icons glyph in the taskbar's color (else the app's icon), the tooltip, and a Win32 popup menu on a click (dark when apps are); it comes back when Explorer restarts and goes when the app quits |
-| Menu bar | `cx.set_app_menu` / `set_menu_bar` put a WinUI `MenuBar` across the top of the window (the app's view starts under it): access keys (Alt+F), `KeyboardAccelerator`s that work with the menus closed, shortcut hints shown only, checkable items, submenus; platform actions do Windows' own (Cut, Copy, Paste, Select All, Undo, Redo in the focused field; Minimize, Zoom, Close, Quit with Alt+F4) |
+| Menu bar | `cx.set_app_menu` / `set_menu_bar` put a WinUI `MenuBar` across the top of the window, under the title bar (the app's view starts under it; see [The menu bar](#the-menu-bar)): access keys (Alt+F), `KeyboardAccelerator`s that work with the menus closed, shortcut hints shown only, checkable items, submenus; platform actions do Windows' own (Cut, Copy, Paste, Select All, Undo, Redo in the focused field; Minimize, Zoom, Close, Quit with Alt+F4) |
 | Alerts | `ContentDialog`: the first action is the accent button unless it is destructive, Cancel is the close button (Escape), more than three actions are listed under the message |
 | Clipboard | text, HTML (`HTML Format`), RTF, pictures (`PNG` and `CF_DIBV5`, read back from either or from a plain DIB), files (`CF_HDROP` as `text/uri-list`), other MIME types as formats of their name |
-| Run-time fonts | written to `prism-fonts\` next to the executable and named by `ms-appx:///prism-fonts/…#Family`: XAML loads font files from the app's folder only (not absolute paths, `file:` URIs or `AddFontResourceEx`), so an app installed in a read-only folder cannot load fonts at run time |
+| Run-time fonts | written to `%LOCALAPPDATA%\<app>\prism-fonts` and named `ms-appx:///prism-fonts/<hash>.ttf#Family`. XAML loads font files by URI only, and an unpackaged app's `ms-appx:///` is its executable's folder (absolute paths, `file:` URIs and `AddFontResourceEx` are ignored): the app hands XAML its resource manager (`Application.ResourceManagerRequested`), the default one with a fallback (`ResourceManager.ResourceNotFound`) that resolves `prism-fonts/…` to the file in the data folder. So an app installed in a read-only folder (`C:\Program Files`) loads fonts too, nothing is installed, and the font is the app's alone |
 | Background tasks | timers while the app runs, like on Linux (`PRISM_BACKGROUND_INTERVAL` shortens them) |
 | Push | « unavailable »: Windows push notifications (WNS) need package identity (an MSIX or a sparse package), so an unpackaged app gets no channel |
 
@@ -187,6 +193,26 @@ rest (`UnregisterAll`, which leaves the key naming the app by its path,
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings`).
 With `PRISM_NOTIFICATIONS_CLEANUP=1` the app does all of that itself on quit
 and also clears its notifications: tests leave nothing behind.
+
+### The menu bar
+
+The app's menus are a row under the title bar, as in Notepad and File
+Explorer on Windows 11, not menus drawn in the title bar (Paint's way):
+
+- WinUI's `MenuBar` is made for that row ("typically" at the top of the
+  window, says the design guidance), 40 px tall, with its own hover,
+  pressed and keyboard states;
+- the title bar stays the system's: its caption buttons, drag, double
+  click, the window menu and snap layouts need no code of Prism's
+  (menus in the title bar mean `ExtendsContentIntoTitleBar`, drawing the
+  icon and the title, and keeping the hit-test regions of every menu up to
+  date, and its colors are ignored on Windows 10);
+- a narrow window (the counter's is 460 px) keeps room for every menu
+  beside the caption buttons.
+
+The row is on the window's solid color (`SolidBackgroundFillColorBase`,
+the color of Prism's tab bars and stack headers under it), so the title
+bar alone shows Mica and the menus read as part of the window's chrome.
 
 ## The Windows App SDK
 
@@ -373,7 +399,7 @@ The same as the other backends, in a desktop session:
 | Variable | |
 |---|---|
 | `PRISM_PATH` | the first route |
-| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first): `hover:Label`, `click:Label@x,y`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `type:Label=text` |
+| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first): `hover:Label`, `click:Label@x,y`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `type:Label=text`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`) |
 | `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, and what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, then quits |
@@ -398,9 +424,8 @@ the session, presses the counter's button through UI Automation.
 
 ## Not yet
 
-- **Controls:** a rounded clip with only some corners rounded rounds them
-  all but those on one side; dialogs and sheets have no UI Automation
-  dialog role yet.
+- **Controls:** dialogs and sheets have no UI Automation dialog role
+  yet.
 - **Embedded content and input:** a video's request headers
   (`Video::header`) are not sent; a web view does not block form
   submissions in a sandbox without `forms` (WebView2 does not tell them
@@ -413,10 +438,10 @@ the session, presses the counter's button through UI Automation.
   drops from Explorer are untested on screen.
 - **Services:** push (WNS needs package identity), location, motion, the
   camera, the share sheet (`DataTransferManager`), haptics and passkeys
-  answer « unavailable »; run-time fonts need a writable app folder;
-  notification banners and the Hello prompt are untested on screen (the test
-  PC shows no banners from any app and has no Hello device: delivery, clicks
-  and the « unavailable » answer are tested).
+  answer « unavailable »; notification banners and the Hello prompt are
+  untested on screen (the test PC shows no banners from any app and has no
+  Hello device: delivery, clicks and the « unavailable » answer are
+  tested).
 - **Packaging:** an MSIX with the Windows App Runtime as a framework
   dependency ([MSIX](#msix)); an installer (Start menu shortcut, file
   associations, uninstall entry): the zip is a portable app; code signing;

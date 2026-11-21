@@ -57,6 +57,8 @@ pub struct View {
     pub button: Option<Button>,
     /// The frame the elements were sized for.
     pub frame: Rect,
+    /// A text field's leading icon (`fieldicon.rs`).
+    pub field_icon: Option<crate::winui::xaml::Controls::FontIcon>,
 }
 
 impl View {
@@ -111,6 +113,7 @@ impl View {
             hit: false,
             button: None,
             frame: Rect::default(),
+            field_icon: None,
         })
     }
 
@@ -183,6 +186,7 @@ impl View {
         };
         self.decor.apply(&self.outer, under, n, pal, text)?;
         controls::style(&self.content, n, pal)?;
+        crate::fieldicon::sync(&mut self.field_icon, &self.outer, n, pal)?;
         style::apply_transform(&self.outer, s, r, sticky)?;
         self.clip(n)?;
         Ok(())

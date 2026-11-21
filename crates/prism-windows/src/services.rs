@@ -57,6 +57,9 @@ pub struct WinServices {
     background: HashMap<String, usize>,
     /// Requests logged once as unavailable.
     told: HashSet<&'static str>,
+    /// File dialogs' filter names in the app's language (set by `imp`
+    /// before each device call).
+    pub filter_names: pickers::FilterNames,
 }
 
 /// Answers device call `id`.
@@ -116,6 +119,7 @@ impl WinServices {
             loopback: Loopback::default(),
             background: HashMap::new(),
             told: HashSet::new(),
+            filter_names: pickers::FilterNames::default(),
         }
     }
 
@@ -242,8 +246,9 @@ impl WinServices {
     /// folder's read) off the UI thread.
     fn pick(&mut self, id: u64, pick: Pick) {
         let (owner, dir) = (self.hwnd, self.picked.clone());
+        let names = self.filter_names.clone();
         shell::later(move || {
-            let paths = match pickers::open(owner, &pick) {
+            let paths = match pickers::open(owner, &pick, &names) {
                 Ok(p) => p,
                 Err(e) => return reply(id, Err(e)),
             };
@@ -268,8 +273,9 @@ impl WinServices {
     /// The save dialog (#210), then the file written off the UI thread.
     fn save(&mut self, id: u64, f: prism_core::SaveFile) {
         let owner = self.hwnd;
+        let names = self.filter_names.clone();
         shell::later(move || {
-            let path = match pickers::save(owner, &f.file_name()) {
+            let path = match pickers::save(owner, &f.file_name(), &names) {
                 Ok(p) => p,
                 Err(e) => return reply(id, Err(e)),
             };

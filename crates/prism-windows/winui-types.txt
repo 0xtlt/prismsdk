@@ -274,3 +274,16 @@ Microsoft.UI.Xaml.Controls.MenuBarItem
 Microsoft.UI.Xaml.Input.KeyboardAccelerator
 Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs
 Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode
+# Clips with opposite rounded corners (clip.rs)
+Microsoft.UI.Composition.CompositionPath
+Microsoft.UI.Composition.CompositionPathGeometry
+# Run-time fonts from a writable folder (fonts.rs): XAML's resource manager
+# with a fallback for files it does not find
+Microsoft.UI.Xaml.ResourceManagerRequestedEventArgs
+Microsoft.Windows.ApplicationModel.Resources.IResourceManager
+Microsoft.Windows.ApplicationModel.Resources.ResourceManager
+Microsoft.Windows.ApplicationModel.Resources.ResourceMap
+Microsoft.Windows.ApplicationModel.Resources.ResourceContext
+Microsoft.Windows.ApplicationModel.Resources.ResourceCandidate
+Microsoft.Windows.ApplicationModel.Resources.ResourceCandidateKind
+Microsoft.Windows.ApplicationModel.Resources.ResourceNotFoundEventArgs

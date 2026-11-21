@@ -241,6 +241,13 @@ fn xy(p: &PointerPoint) -> (f32, f32) {
     p.Position().map_or((0., 0.), |p| (p.X, p.Y))
 }
 
+/// A point of the XAML root in the app's coordinates (Prism's window
+/// points), which start under the menu bar.
+fn in_app(p: &PointerPoint) -> (f32, f32) {
+    let (x, y) = xy(p);
+    (x, y - crate::menubar::height())
+}
+
 /// The button a press or release changed.
 fn button_of(p: &PointerPoint) -> Option<PointerButton> {
     let kind = p.Properties().and_then(|p| p.PointerUpdateKind()).ok()?;
@@ -322,7 +329,7 @@ fn pressed(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> 
     if drags && claimed(a) {
         return Ok(());
     }
-    let w = xy(&window);
+    let w = in_app(&window);
     let mut press = Press {
         pointer,
         stamp,
@@ -467,7 +474,7 @@ fn moved(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
         with(id, |l| l.press = None);
         return Ok(());
     }
-    let w = xy(&window);
+    let w = in_app(&window);
     p.sample(w.0, w.1, local.Timestamp()?);
     p.modifiers = modifiers(a);
     let (dx, dy) = (w.0 - p.window_at.0, w.1 - p.window_at.1);
@@ -550,7 +557,7 @@ fn released(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()>
         }
         HOLDS.with(|h| h.borrow_mut().remove(&timer));
     }
-    let w = xy(&window);
+    let w = in_app(&window);
     p.sample(w.0, w.1, local.Timestamp()?);
     if p.captured {
         let _ = e.ReleasePointerCaptures();

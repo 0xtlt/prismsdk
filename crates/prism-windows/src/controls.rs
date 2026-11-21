@@ -547,14 +547,16 @@ fn field_look(c: Control, n: &Node, color: Color) -> Result<()> {
         }
         c.SetBorderThickness(uniform(0.))?;
         let p = s.padding;
+        // A leading icon (`fieldicon.rs`) takes the start of the field.
+        let lead = crate::fieldicon::leading(n);
         c.SetPadding(if s.has_padding() {
-            thickness(p.left, p.top, p.right, p.bottom)
+            thickness(lead, p.top, p.right, p.bottom)
         } else {
-            uniform(0.)
+            thickness(lead, 0., 0., 0.)
         })?;
     } else {
-        let (l, t, r, b) = FIELD_PADDING;
-        c.SetPadding(thickness(l, t, r, b))?;
+        let (_, t, r, b) = FIELD_PADDING;
+        c.SetPadding(thickness(crate::fieldicon::leading(n), t, r, b))?;
     }
     Ok(())
 }
@@ -927,7 +929,22 @@ pub fn measure(
                 };
                 text_h.max(lh * rows)
             };
-            let w = max_width.map_or(200., |m| m.min(200.));
+            // A one-line field is as wide as its placeholder or its text,
+            // at least 120 (macOS's `fittingSize`, at least 120): two short
+            // fields share a row. Taller fields keep 200.
+            let natural = if k == NodeKind::TextInput {
+                // A secure field's dots are not its text.
+                let secure = InputConfig::decode(&n.config).secure;
+                let widest = [&n.placeholder, &n.text]
+                    .into_iter()
+                    .filter(|t| !t.is_empty() && !(secure && std::ptr::eq(*t, &n.text)))
+                    .map(|t| text_size(m, t).0)
+                    .fold(0., f32::max);
+                widest.ceil().max(120.)
+            } else {
+                200.
+            };
+            let w = max_width.map_or(natural, |m| m.min(natural));
             if own || s.has_padding() {
                 (w, content_h)
             } else {

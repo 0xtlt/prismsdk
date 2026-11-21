@@ -160,7 +160,12 @@ pub fn commit(s: &mut State, patches: Vec<Patch>) {
             }
             prism_core::PlatformRequest::SetUnsavedChanges(on) => UNSAVED.set(on),
             prism_core::PlatformRequest::LoadFont(face) => crate::fonts::load(s, face),
-            other => prism_core::PlatformServices::handle(&mut s.services, other),
+            other => {
+                if matches!(other, prism_core::PlatformRequest::Device { .. }) {
+                    s.services.filter_names = crate::pickers::FilterNames::of(&s.runtime.app);
+                }
+                prism_core::PlatformServices::handle(&mut s.services, other)
+            }
         }
     }
     if let Some(at) = s.runtime.next_timer() {
@@ -691,6 +696,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         let assets = crate::package::assets_dir(config.assets.as_deref());
         let data = system::data_dir(&config.title);
         let _ = std::fs::create_dir_all(&data);
+        crate::fonts::set_data_dir(&data);
         let images = Images::new(prism_native::images::ImageSources {
             embedded: config.embedded_assets.clone(),
             asset_dirs: assets.into_iter().collect(),

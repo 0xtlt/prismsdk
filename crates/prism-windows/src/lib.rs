@@ -28,6 +28,8 @@
 //! | `view` | one node's XAML elements: box, children, content, bars |
 //! | `style` | backgrounds, gradients, borders, radii, shadows, transforms |
 //! | `decor` | inset shadows, conic gradients, sides of several colors, rounded clips |
+//! | `clip` | clips whose corners differ (a Direct2D path for Composition) |
+//! | `fieldicon` | a one-line field's leading icon |
 //! | `motion` | transitions, enter and exit poses, loops, moving frames |
 //! | `overlay` | sheets and dialogs (`ContentDialog`'s look), popovers (`Flyout`) |
 //! | `alert` | `cx.show_alert` as a `ContentDialog` |
@@ -65,6 +67,8 @@ mod bars;
 #[cfg(target_os = "windows")]
 mod capture;
 #[cfg(target_os = "windows")]
+mod clip;
+#[cfg(target_os = "windows")]
 mod clipboard;
 #[cfg(target_os = "windows")]
 mod controls;
@@ -72,6 +76,8 @@ mod controls;
 mod decor;
 #[cfg(target_os = "windows")]
 mod events;
+#[cfg(target_os = "windows")]
+mod fieldicon;
 // Theme colors and control metrics: no Win32, tested everywhere.
 mod fluent;
 #[cfg(target_os = "windows")]

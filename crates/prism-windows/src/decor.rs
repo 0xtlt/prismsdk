@@ -396,8 +396,11 @@ fn clip(kids: &Canvas, n: &Node, on: bool, was_rounded: bool) -> Result<bool> {
         kids.SetClip(None::<&RectangleGeometry>)?;
     }
     let visual = ElementCompositionPreview::GetElementVisual(&kids_e)?;
-    // One radius for all four corners: square ones are pushed out of the
-    // box (two on one side exactly; others approximately).
+    let comp = visual.Compositor()?;
+    // One radius for the rounded corners: square ones are pushed out of
+    // the box, exact when they are the corners of one side or all but one
+    // (top, bottom, left and right each tell whether a rounded corner
+    // touches them).
     let c = s.rounded_corners;
     let (top, bottom) = (
         c.contains(Corners::TOP_LEADING) || c.contains(Corners::TOP_TRAILING),
@@ -407,11 +410,30 @@ fn clip(kids: &Canvas, n: &Node, on: bool, was_rounded: bool) -> Result<bool> {
         c.contains(Corners::TOP_LEADING) || c.contains(Corners::BOTTOM_LEADING),
         c.contains(Corners::TOP_TRAILING) || c.contains(Corners::BOTTOM_TRAILING),
     );
+    let implied = [
+        (top && left, Corners::TOP_LEADING),
+        (top && right, Corners::TOP_TRAILING),
+        (bottom && right, Corners::BOTTOM_TRAILING),
+        (bottom && left, Corners::BOTTOM_LEADING),
+    ]
+    .iter()
+    .filter(|(on, _)| *on)
+    .fold(Corners::NONE, |acc, (_, k)| acc | *k);
+    if implied != c {
+        // Opposite corners, or three: a path (Direct2D) with each corner
+        // its own.
+        match crate::clip::rounded_path(&comp, corners(s, w, h), w, h) {
+            Ok(g) => {
+                visual.SetClip(&comp.CreateGeometricClipWithGeometry(&g)?)?;
+                return Ok(true);
+            }
+            Err(e) => crate::win::log!("rounded clip: {e}"),
+        }
+    }
     let x0 = if left { 0. } else { -r };
     let y0 = if top { 0. } else { -r };
     let x1 = if right { w } else { w + r };
     let y1 = if bottom { h } else { h + r };
-    let comp = visual.Compositor()?;
     let g = comp.CreateRoundedRectangleGeometry()?;
     g.SetOffset(Vector2 { X: x0, Y: y0 })?;
     g.SetSize(Vector2 {
