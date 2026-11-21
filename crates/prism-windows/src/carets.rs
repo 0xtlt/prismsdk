@@ -171,14 +171,17 @@ fn schedule(id: NodeId) {
 struct Measure {
     field: Field,
     text: String,
-    /// RichEdit's client coordinates → the field's.
+    /// Where the text's own coordinates start in the field.
     origin: (f32, f32),
 }
 
 impl Measure {
     fn new(field: &Field) -> Result<Measure> {
         let (text, origin) = match field {
-            Field::Text(t) => (t.Text()?.to_string(), (0., 0.)),
+            Field::Text(t) => (
+                t.Text()?.to_string(),
+                host_origin(&t.cast()?, t.GetTemplateChild(&h("ContentElement")).ok()),
+            ),
             Field::Rich(r) => {
                 let mut s = HSTRING::new();
                 r.Document()?.GetText(TextGetOptions::UseLf, &mut s)?;
@@ -207,7 +210,12 @@ impl Measure {
             Field::Text(t) => {
                 let a = t.GetRectFromCharacterIndex(i, false).ok()?;
                 let b = t.GetRectFromCharacterIndex(i, true).ok()?;
-                Some((a.X, a.Y, (b.X - a.X).max(0.), a.Height))
+                Some((
+                    a.X + self.origin.0,
+                    a.Y + self.origin.1,
+                    (b.X - a.X).max(0.),
+                    a.Height,
+                ))
             }
             Field::Rich(r) => {
                 let range: ITextRange = r.Document().ok()?.GetRange(i, i + 1).ok()?.cast().ok()?;
@@ -252,14 +260,8 @@ impl Measure {
     fn empty_caret(&self) -> Option<(f32, f32, f32)> {
         match &self.field {
             Field::Text(t) => {
-                let p = t.Padding().ok()?;
-                let b = t.BorderThickness().ok()?;
                 let size = t.FontSize().ok()? as f32;
-                Some((
-                    (p.Left + b.Left) as f32,
-                    (p.Top + b.Top) as f32,
-                    size * 1.33,
-                ))
+                Some((self.origin.0, self.origin.1, size * 1.33))
             }
             Field::Rich(r) => {
                 let range: ITextRange = r.Document().ok()?.GetRange(0, 0).ok()?.cast().ok()?;
@@ -303,15 +305,25 @@ impl Measure {
     }
 }
 
-/// Where RichEdit's text host starts in the box.
-fn host_origin(me: &UIElement, host: Option<crate::winui::xaml::DependencyObject>) -> (f32, f32) {
-    host.and_then(|h| h.cast::<UIElement>().ok())
-        .and_then(|h| h.TransformToVisual(me).ok())
-        .and_then(|t| {
-            t.TransformPoint(windows::Foundation::Point { X: 0., Y: 0. })
-                .ok()
-        })
-        .map_or((0., 0.), |p| (p.X, p.Y))
+/// Where a text box's text starts in the box: its text host
+/// (`ContentElement`, a scroll viewer inside the border), inside the
+/// host's padding. `GetRectFromCharacterIndex` and RichEdit's client
+/// coordinates count from there.
+pub fn host_origin(
+    me: &UIElement,
+    host: Option<crate::winui::xaml::DependencyObject>,
+) -> (f32, f32) {
+    let Some(host) = host else { return (0., 0.) };
+    let at = host
+        .cast::<UIElement>()
+        .and_then(|h| h.TransformToVisual(me))
+        .and_then(|t| t.TransformPoint(windows::Foundation::Point { X: 0., Y: 0. }))
+        .map_or((0., 0.), |p| (p.X, p.Y));
+    let pad = host
+        .cast::<crate::winui::xaml::Controls::Control>()
+        .and_then(|c| c.Padding())
+        .map_or((0., 0.), |p| (p.Left as f32, p.Top as f32));
+    (at.0 + pad.0, at.1 + pad.1)
 }
 
 /// The field's inner scroll viewer, listened to once it exists.

@@ -158,13 +158,18 @@ kinds and services come next (see [Not yet](#not-yet)).
   press waits for it; the view captures the pointer, so a clickable view
   does not click and a scroll view stops panning), the wheel and
   precision touchpads (`on_wheel`), pinches (`on_magnify`: two touches on
-  the element, the scroll views around stopping, a drag following the
-  fingers' middle as on iOS; and Ctrl + wheel, how precision touchpads
-  send their pinches), middle, back and forward clicks (`on_aux_click`),
-  quick horizontal flicks (`on_swipe_*`, any pointer, like iOS's
-  `UISwipeGestureRecognizer`, Android's fling and GTK's `GestureSwipe`:
-  WinUI's `SwipeControl` reveals swipe items, which Prism's
-  direction-only swipes have none of). Drags between views (`draggable`,
+  the element, which keeps its touches with a manipulation mode of its own
+  (`Scale`) so the scroll views around do not take them, a drag following
+  the fingers' middle as on iOS; and Ctrl + wheel, how precision
+  touchpads send their pinches), middle, back and forward clicks
+  (`on_aux_click`), quick horizontal flicks (`on_swipe_*`, any pointer,
+  like iOS's `UISwipeGestureRecognizer`, Android's fling and GTK's
+  `GestureSwipe`). By touch, a scroll view takes a finger as it lands, so
+  a swiping row keeps horizontal translations on rails
+  (`System | TranslateX | TranslateRailsX`): a horizontal flick stays its
+  own, a vertical pan still scrolls the list, a tap still clicks. WinUI's
+  `SwipeControl` reveals swipe items, which Prism's direction-only swipes
+  have none of. Drags between views (`draggable`,
   `on_drop_payload`) find their target with prism-native's `locate_drag`,
   with a see-through preview and autoscroll. Files dragged from Explorer
   land on `on_drop_files` targets (copies in `%TEMP%\prism-dropped`): as
@@ -407,7 +412,7 @@ The same as the other backends, in a desktop session:
 | Variable | |
 |---|---|
 | `PRISM_PATH` | the first route |
-| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first): `hover:Label`, `click:Label@x,y`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `type:Label=text` |
+| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy` |
 | `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, and what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, then quits |
@@ -438,10 +443,8 @@ the session, presses the counter's button through UI Automation.
 - **Embedded content and input:** 3D frames go through the CPU (a
   read-back per frame, fine at a scene's size); a precision touchpad's
   pinch is only handled as the Ctrl + wheel Windows sends apps (touchpads
-  cannot be injected). Not yet run on a PC, only type-checked for Windows:
-  chips as pictures, the rich input's editing hooks, remote carets and a
-  group's highlights, drags across fields, video request headers, form
-  blocking in a sandbox, pinches and touch swipes.
+  cannot be injected); the request headers of HLS and DASH videos
+  (`AdaptiveMediaSource`) are untested (a plain video's are).
 - **Services:** push (WNS needs package identity), location, motion, the
   camera, the share sheet (`DataTransferManager`), haptics and passkeys
   answer « unavailable »; run-time fonts need a writable app folder;

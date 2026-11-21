@@ -1027,11 +1027,20 @@ impl Widgets for Win {
             n.pointer_mask = mask;
         }
         crate::pointer::set_mask(*view, mask);
+        if let Some(v) = self.views.get(view) {
+            // Pinches and touch swipes keep their touches.
+            let _ = crate::pointer::wire_swipes(&v.outer(), *view);
+        }
         self.update_hit(*view);
     }
 
     fn set_swipe(&mut self, view: &NodeId, left: bool, right: bool) {
         crate::pointer::set_swipe(*view, left, right);
+        if let Some(v) = self.views.get(view)
+            && let Err(e) = crate::pointer::wire_swipes(&v.outer(), *view)
+        {
+            log!("swipes of {view}: {e}");
+        }
         self.update_hit(*view);
     }
 

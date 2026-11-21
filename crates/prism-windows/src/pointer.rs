@@ -150,6 +150,46 @@ pub fn set_mask(id: NodeId, mask: u8) {
     with(id, |l| l.mask = mask);
 }
 
+/// A node reporting pinches keeps its touches (#133): the scroll views
+/// around would otherwise take two moving fingers for themselves
+/// (DirectManipulation) before the pinch has grown. XAML leaves the
+/// touches that start on an element with a manipulation mode of its own
+/// to it: on such a node one finger does not scroll the page either, as
+/// on a canvas.
+pub fn set_touch_mode(e: &UIElement, mask: u8) {
+    set_mode(e, mask, false);
+}
+
+fn set_mode(e: &UIElement, mask: u8, swipes: bool) {
+    use crate::winui::xaml::Input::ManipulationModes;
+    let mode = if mask & MAGNIFY != 0 {
+        ManipulationModes::Scale
+    } else if swipes {
+        // Vertical pans stay the scroll views' (DirectManipulation),
+        // horizontal ones come to the node as manipulations.
+        ManipulationModes::System
+            | ManipulationModes::TranslateX
+            | ManipulationModes::TranslateRailsX
+    } else {
+        ManipulationModes::System
+    };
+    if e.ManipulationMode().ok() != Some(mode) {
+        let _ = e.SetManipulationMode(mode);
+    }
+}
+
+/// Node `id` (element `e`) reports swipes or pinches, or not anymore:
+/// the touches it keeps. By touch, the scroll view around takes a finger
+/// as it lands (the row gets a press, then nothing): with horizontal
+/// translations of its own (on rails), a horizontal flick stays the row's
+/// pointer moves, judged like the mouse's, while vertical pans still
+/// scroll the list.
+pub fn wire_swipes(e: &UIElement, id: NodeId) -> Result<()> {
+    let (mask, swipe) = with(id, |l| (l.mask, l.swipe));
+    set_mode(e, mask, swipe != (false, false));
+    Ok(())
+}
+
 /// Which swipes node `id` reports.
 pub fn set_swipe(id: NodeId, left: bool, right: bool) {
     with(id, |l| l.swipe = (left, right));

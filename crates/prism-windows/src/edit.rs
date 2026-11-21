@@ -240,18 +240,13 @@ pub fn insert_text(r: &RichEditBox, text: &str) {
 /// Where RichEdit's client coordinates start in the box: its text host
 /// (`ContentElement`, inside the border and padding).
 fn client_origin(r: &RichEditBox) -> (f32, f32) {
-    let host = r
-        .GetTemplateChild(&HSTRING::from("ContentElement"))
-        .ok()
-        .and_then(|h| h.cast::<UIElement>().ok());
-    let Some(host) = host else { return (0., 0.) };
-    let me: UIElement = match r.cast() {
-        Ok(e) => e,
-        Err(_) => return (0., 0.),
+    let Ok(me) = r.cast::<UIElement>() else {
+        return (0., 0.);
     };
-    host.TransformToVisual(&me)
-        .and_then(|t| t.TransformPoint(windows::Foundation::Point { X: 0., Y: 0. }))
-        .map_or((0., 0.), |p| (p.X, p.Y))
+    crate::carets::host_origin(
+        &me,
+        r.GetTemplateChild(&HSTRING::from("ContentElement")).ok(),
+    )
 }
 
 /// The character under `(x, y)` (in the box), in characters.

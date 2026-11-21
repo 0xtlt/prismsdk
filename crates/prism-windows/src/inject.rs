@@ -23,7 +23,11 @@
 //! The steps play one after the other, after the other clicks and
 //! `PRISM_SCROLL`; each first scrolls its view into sight. The window
 //! stays on top meanwhile, so the input reaches it and no other window on
-//! the desktop. Give the snapshot time (`PRISM_AFTER`).
+//! the desktop: before a press, a wheel turn or a touch, the window under
+//! the point must be the app's (it is raised again, then the input is
+//! dropped), and keys go only while it has the keyboard, so a desktop
+//! shared with other apps never gets the input. Give the snapshot time
+//! (`PRISM_AFTER`).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -37,9 +41,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_END,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, HWND_NOTOPMOST, HWND_TOPMOST, KillTimer, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOMOVE, SWP_NOSIZE,
-    SetForegroundWindow, SetTimer, SetWindowPos,
+    BringWindowToTop, GA_ROOT, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
+    HWND_NOTOPMOST, HWND_TOPMOST, KillTimer, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow, SetTimer,
+    SetWindowPos, WindowFromPoint,
 };
 
 use crate::imp::{main_hwnd, with_state};
@@ -295,10 +300,12 @@ fn locate(label: &str, at: Option<(f32, f32)>) -> Option<((i32, i32), f32)> {
         let (x, y) = at.map_or((r.x + r.w / 2., r.y + r.h / 2.), |(ax, ay)| {
             (r.x + ax, r.y + ay)
         });
+        // Layout starts at the app's view, under the window's menu bar.
+        let (ox, oy) = app_origin(&w.app);
         let k = w.scale();
         let mut p = POINT {
-            x: (x * k).round() as i32,
-            y: (y * k).round() as i32,
+            x: ((x + ox) * k).round() as i32,
+            y: ((y + oy) * k).round() as i32,
         };
         unsafe {
             let _ = ClientToScreen(w.hwnd, &mut p);
@@ -310,6 +317,15 @@ fn locate(label: &str, at: Option<(f32, f32)>) -> Option<((i32, i32), f32)> {
         log!("PRISM_CLICK: nothing labelled {label:?} to point at");
         None
     })
+}
+
+/// Where the app's view starts in the window (DIPs): under the menu bar.
+fn app_origin(app: &crate::winui::xaml::Controls::Canvas) -> (f32, f32) {
+    use windows_core::Interface;
+    app.cast::<crate::winui::xaml::UIElement>()
+        .and_then(|e| e.TransformToVisual(None::<&crate::winui::xaml::UIElement>))
+        .and_then(|t| t.TransformPoint(windows::Foundation::Point { X: 0., Y: 0. }))
+        .map_or((0., 0.), |p| (p.X, p.Y))
 }
 
 /// Plays the next input, then waits its pause.
@@ -372,7 +388,102 @@ unsafe extern "system" fn play(_: HWND, _: u32, timer: usize, _: u32) {
     }
 }
 
+thread_local! {
+    /// A press was dropped (another window over the point): so is its
+    /// release.
+    static DROPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the app's window is the one at screen point `p` (raised again
+/// once if not).
+fn ours_at(p: POINT) -> bool {
+    let main = main_hwnd();
+    let at = || unsafe { GetAncestor(WindowFromPoint(p), GA_ROOT) };
+    if at() == main {
+        return true;
+    }
+    unsafe {
+        let _ = SetWindowPos(
+            main,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE,
+        );
+        let _ = BringWindowToTop(main);
+        let _ = SetForegroundWindow(main);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    at() == main
+}
+
+/// Makes the app's window the active one (XAML takes no click on an
+/// inactive window: the click only activates it). Allowed once the app
+/// sent the last input (the pointer's move just before).
+fn active() -> bool {
+    let main = main_hwnd();
+    unsafe {
+        if GetForegroundWindow() != main {
+            let _ = SetForegroundWindow(main);
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        GetForegroundWindow() == main
+    }
+}
+
+/// The pointer's place now.
+fn cursor() -> POINT {
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    p
+}
+
+/// Whether `act` may go: the press, wheel or touch on the app's window,
+/// keys while it has the keyboard.
+fn allowed(act: &Act) -> bool {
+    let ok = match act {
+        Act::Down | Act::Wheel(..) => {
+            let ok = ours_at(cursor()) && active();
+            DROPPED.set(!ok);
+            ok
+        }
+        Act::Up => !DROPPED.replace(false),
+        Act::Touch(contacts) => match contacts.first() {
+            Some(c) if c.phase == crate::touch::Phase::Down => {
+                let ok = ours_at(POINT { x: c.x, y: c.y });
+                DROPPED.set(!ok);
+                ok
+            }
+            Some(_) => !DROPPED.get(),
+            None => true,
+        },
+        Act::Key(0, _) => true,
+        Act::Key(..) | Act::Char(_) => {
+            let main = main_hwnd();
+            unsafe {
+                if GetForegroundWindow() != main {
+                    let _ = SetForegroundWindow(main);
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                }
+                GetForegroundWindow() == main
+            }
+        }
+        _ => true,
+    };
+    if !ok {
+        log!("PRISM_CLICK: another window has the point or the keyboard: {act:?} dropped");
+    }
+    ok
+}
+
 fn send(act: &Act) {
+    if !allowed(act) {
+        return;
+    }
     let (flags, data, at) = match *act {
         Act::Move(x, y) => (MOUSEEVENTF_MOVE, 0, Some((x, y))),
         Act::Down => (MOUSEEVENTF_LEFTDOWN, 0, None),

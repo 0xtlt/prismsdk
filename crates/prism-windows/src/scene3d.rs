@@ -347,6 +347,20 @@ impl SceneView {
         let t = now();
         let player = st.player.get_or_insert_with(|| ScenePlayer::new(t));
         player.apply(update, t);
+        // A scene the user turns or zooms keeps its touches: the scroll
+        // views around would take two moving fingers for themselves.
+        let orbits = player
+            .settings()
+            .orbit
+            .is_some_and(|o| o.rotate || o.pan || o.zoom);
+        if let Ok(e) = crate::winui::ui(&self.element) {
+            let mask = if orbits {
+                prism_core::events::pointer_mask::MAGNIFY
+            } else {
+                0
+            };
+            crate::pointer::set_touch_mode(&e, mask);
+        }
         let wanted = Wanted::of(player);
         st.images.retain(|src, _| wanted.sources.contains(src));
         let mut load = Vec::new();
