@@ -106,7 +106,9 @@ pub enum NodeKind {
     // --- Editable rich text (#115) ---
     /// An editable paragraph of styled runs and inline objects
     /// ([`rich_input`]): a `contenteditable` on the web, an `NSTextView`
-    /// with attributes and attachments on macOS, a `RichEditBox` on
+    /// with attributes and attachments on macOS, a `UITextView` on iOS,
+    /// iPadOS and visionOS, a `GtkTextView` with tags and child anchors on
+    /// Linux, an `EditText` with spans on Android, a `RichEditBox` on
     /// Windows. Its text is the plain
     /// value (a chip is [`OBJECT_CHAR`](crate::OBJECT_CHAR)), its runs come
     /// in [`Patch::SetRichValue`](crate::Patch::SetRichValue), its config is
@@ -1664,8 +1666,9 @@ impl RichInput {
     /// refuse outside the key press); macOS: `copy:` of the text view
     /// (`NSPasteboard`, every type); iOS, iPadOS, visionOS: `copy:`
     /// (`UIPasteboard`, every type); Linux: the text view's `copy-clipboard`
-    /// (every type); Android: the text field's copy action (plain text and
-    /// HTML); Windows: the `RichEditBox`'s `CopyingToClipboard` (every
+    /// (every type); Android: the text field's copy action (every type: the
+    /// clip's text and HTML, the others in its description and extras);
+    /// Windows: the `RichEditBox`'s `CopyingToClipboard` (every
     /// type). tvOS and watchOS have no clipboard.
     pub fn on_copy(mut self, handler: Handler<crate::CopyEvent>) -> Self {
         self.0.edit.on_copy = Some(handler);
@@ -1690,7 +1693,7 @@ impl RichInput {
     /// Web: the `paste` event's `clipboardData`; macOS: `paste:` and the
     /// general pasteboard (every type's text data); iOS, iPadOS, visionOS:
     /// `paste:` and `UIPasteboard`; Linux: the text view's `paste-clipboard`
-    /// (plain text and the clipboard's types, no HTML); Android: the text
+    /// (plain text, HTML and the clipboard's types); Android: the text
     /// field's paste action (plain text, HTML, types); Windows: the
     /// `RichEditBox`'s `Paste` (text, HTML, types). tvOS and watchOS have
     /// no clipboard.
@@ -2086,9 +2089,10 @@ impl Scroll {
     }
 
     /// Pull to refresh (iOS refresh control; pull gesture and a Refresh
-    /// button on the web; SwiftUI's `refreshable` on watchOS; F5 or Ctrl+R
-    /// on Linux). Not yet on macOS, Android and Windows. Show progress with
-    /// [`Scroll::refreshing`].
+    /// button on the web; SwiftUI's `refreshable` on watchOS; a trackpad
+    /// pull past the top or ⌘R on macOS; a pull at the top, F5 or Ctrl+R on
+    /// Android; F5 or Ctrl+R on Linux). Not yet on Windows. Show progress
+    /// with [`Scroll::refreshing`].
     pub fn on_refresh(mut self, handler: Handler<ClickEvent>) -> Self {
         self.0.on_click = Some(handler);
         self

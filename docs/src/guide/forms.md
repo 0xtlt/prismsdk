@@ -239,7 +239,11 @@ self.sel = SelectionEvent::caret(at - 2);
 | Web | a `contenteditable` drawn from runs the client owns: `beforeinput` edits them (typing, deletion by character, word or line, a chip as one character), an IME composition is the browser's and is read back when it ends, undo/redo step through the field's own edits |
 | macOS | `NSTextView` with the runs as attributes and each chip an `NSTextAttachment` (its icon and label drawn in a rounded box), each icon an attachment of its SF Symbol; undo is AppKit's |
 | Windows | `RichEditBox` with the runs as RichEdit character formats and each chip a picture embedded in the text (`InsertImage`: its Segoe Fluent icon and label drawn in a rounded box with Direct2D, at the window's scale); undo is RichEdit's |
-| iOS, iPadOS, visionOS, GTK, Android, watchOS | **not yet**: a plain multi-line field of `value` (no styles drawn, a chip or an icon shows as U+FFFC). Edits still come back as spans that keep the styles around them, a deleted U+FFFC removes its chip, and Enter (a line break typed alone) calls `on_submit` when the input has one; tvOS shows one line |
+| iOS, iPadOS, visionOS | `UITextView` with the runs as attributes and each chip or icon an `NSTextAttachment` (its SF Symbol and label drawn in a rounded box, again when the appearance changes); restyling the text the field shows changes its attributes in place, so the caret, the selection and a composition stay; a tap on a chip with an `on_click` reports it; undo is UIKit's |
+| Linux | `GtkTextView` with the runs as text tags and each chip or icon a widget at a child anchor (its symbol and label in a rounded box, on the text's baseline), which the caret, the selection and Backspace treat as one character; a click on a chip with an `on_click` reports it; undo is GTK's |
+| Android | `EditText` with the runs as spans, and each chip or icon a span drawn in place of its character (its glyph and label in a rounded box, on the baseline); restyling the text the field shows changes its spans in place, caret and IME composition untouched; a tap on a chip with an `on_click` reports it |
+| watchOS | a plain multi-line field of `value` (a chip or an icon shows as U+FFFC): SwiftUI's `TextEditor`, its only view that edits an `AttributedString`, is `@available(watchOS, unavailable)`, and `TextField` binds a plain `String`. Edits still come back as spans that keep the styles around them, a deleted U+FFFC removes its chip, and Enter (a line break typed alone) calls `on_submit` when the input has one |
+| tvOS | the same plain field, on one line: `UITextView`'s `editable` is `API_UNAVAILABLE(tvos)`, so text is typed in the system's full-screen keyboard, which edits plain text |
 
 ### Toolbars, the clipboard and modifier-clicks
 
@@ -281,9 +285,9 @@ div() // laid out at the field's origin: no padding
 | Web | the selection's client rectangles | the `copy` / `cut` event: plain text at once, the app's content then through the async Clipboard API (custom types as `web …` formats where the browser has them; Safari may refuse the late write and keep the plain text) | the `paste` event's `clipboardData` (text, HTML, every text type, file types) | ⌘, Ctrl or ⌥ |
 | macOS | the layout manager's glyph box, the caret's rectangle | `copy:` / `cut:`: `NSPasteboard`, every type (Markdown as `net.daringfireball.markdown`) | `paste:`: text, HTML and every type's text from the general pasteboard | ⌘ or ⌥ (⌃-click stays the context menu) |
 | iOS, iPadOS, visionOS | `caretRect` and `selectionRects` | `copy:` / `cut:`: `UIPasteboard`, every type | `paste:`: text, HTML, types from `UIPasteboard` | none (touch) |
-| Linux | the text view's iter locations | `copy-clipboard` / `cut-clipboard`: every type | `paste-clipboard`: plain text and the clipboard's types (no HTML) | Ctrl or Alt |
+| Linux | the text view's iter locations | `copy-clipboard` / `cut-clipboard`: every type | `paste-clipboard`: text, HTML and the text of the clipboard's types | Ctrl or Alt |
 | Windows | RichEdit's `ITextRange::GetRect` | `CopyingToClipboard` / `CuttingToClipboard`: every type (`HTML Format`, MIME-named formats) | `Paste`: text, HTML, the clipboard's types and their text | Ctrl or Alt |
-| Android | the `Layout`'s line bounds | the field's copy / cut actions: plain text and HTML | the paste action: text, HTML, types | none (touch) |
+| Android | the `Layout`'s line bounds | the field's copy / cut actions: plain text and HTML, the other types listed in the clip's description with their text in its extras | the paste action: text, HTML, the app's own types and their text (another app's `text/…` item as its text) | none (touch) |
 | tvOS, watchOS | none | none: no clipboard | none | none |
 
 ### One selection across several fields
