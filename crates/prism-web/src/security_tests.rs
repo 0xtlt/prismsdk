@@ -1083,3 +1083,219 @@ fn s15_the_page_cannot_complete_a_cookie_or_a_sign_in() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+fn upload_file(name: &str, size: u64) -> Value {
+    json!({ "name": name, "mime": "text/plain", "size": size })
+}
+
+fn stored_files(app: &crate::WebApp, sid: &str) -> usize {
+    std::fs::read_dir(app.files_dir(sid)).map_or(0, |d| d.count())
+}
+
+/// S16: the files a page announces are checked against the app's limits
+/// before anything is stored (how many, their bytes per browser and
+/// server-wide, their names), and an upload that ends any way gives its
+/// bytes back.
+#[test]
+fn s16_uploads_past_the_limits_are_refused_before_anything_is_stored() {
+    use crate::uploads::{Key, Uploads};
+    use std::sync::atomic::Ordering::SeqCst;
+    let (app, _, _) = uploads_app("s16-limits", false);
+    let app = app
+        .max_upload_files(2)
+        .max_upload_bytes(10)
+        .max_uploading_bytes(8);
+    let sid = "5e16a05e16a05e16a05e16a05e16a05e";
+    let mut up = Uploads::default();
+    let mut refused = |id: u64, max: Option<usize>, files: &[Value]| -> String {
+        up.expect(id, max);
+        assert_eq!(up.start(&app, sid, Key::Call(id), files), None, "{files:?}");
+        match up.finish(&app, Key::Call(id), true) {
+            Some(Err(why)) => why,
+            other => panic!("{other:?}"),
+        }
+    };
+    let f = upload_file;
+    assert!(refused(1, None, &[f("a", 1), f("b", 1), f("c", 1)]).contains("too many files"));
+    // A pick of one file takes one.
+    assert!(refused(2, Some(1), &[f("a", 1), f("b", 1)]).contains("too many files"));
+    assert!(refused(3, None, &[f("a", 6), f("b", 6)]).contains("too large"));
+    // Sizes that overflow once added.
+    assert!(refused(4, None, &[f("a", u64::MAX), f("b", u64::MAX)]).contains("too large"));
+    assert!(refused(5, None, &[f(&"n".repeat(2000), 1)]).contains("too long"));
+    assert_eq!(stored_files(&app, sid), 0);
+    // Accepted: nothing on disk before its first chunk, its bytes reserved.
+    let mut up = Uploads::default();
+    up.expect(6, None);
+    assert_eq!(
+        up.start(&app, sid, Key::Call(6), &[f("a.txt", 6)]),
+        Some((0, 6))
+    );
+    assert_eq!(stored_files(&app, sid), 0);
+    assert_eq!(app.uploading().load(SeqCst), 6);
+    // The server receives at most 8 bytes at once: another browser waits.
+    let other = "5e16b05e16b05e16b05e16b05e16b05e";
+    let mut up2 = Uploads::default();
+    up2.expect(1, None);
+    assert_eq!(up2.start(&app, other, Key::Call(1), &[f("b.txt", 6)]), None);
+    assert!(
+        matches!(up2.finish(&app, Key::Call(1), false), Some(Err(why)) if why.contains("try again later"))
+    );
+    // Cancelled: what arrived is deleted, its bytes given back.
+    assert_eq!(up.chunk(Key::Call(6), 0, "aGVs"), Some((3, 6)));
+    assert_eq!(stored_files(&app, sid), 1);
+    assert_eq!(up.finish(&app, Key::Call(6), true), None);
+    assert_eq!(stored_files(&app, sid), 0);
+    assert_eq!(app.uploading().load(SeqCst), 0);
+    // Now the other one fits; its session ending gives its bytes back too.
+    up2.expect(2, None);
+    assert!(
+        up2.start(&app, other, Key::Call(2), &[f("b.txt", 6)])
+            .is_some()
+    );
+    assert!(up2.chunk(Key::Call(2), 0, "aGVs").is_some());
+    drop(up2);
+    assert_eq!(stored_files(&app, other), 0);
+    assert_eq!(app.uploading().load(SeqCst), 0);
+}
+
+/// S16: a chunk past its file's declared size, or longer than a chunk can
+/// be (measured before it is decoded), fails the whole upload.
+#[test]
+fn s16_a_chunk_beyond_its_budget_fails_the_upload() {
+    use crate::uploads::{CHUNK, Key, Uploads};
+    let (app, _, _) = uploads_app("s16-chunks", false);
+    let sid = "5e16c05e16c05e16c05e16c05e16c05e";
+    let mut up = Uploads::default();
+    up.expect(1, None);
+    assert!(
+        up.start(&app, sid, Key::Call(1), &[upload_file("a.txt", 3)])
+            .is_some()
+    );
+    assert_eq!(up.chunk(Key::Call(1), 0, "AQIDBA=="), None);
+    assert_eq!(
+        up.chunk(Key::Call(1), 0, "AQID"),
+        None,
+        "a failed upload takes nothing more"
+    );
+    assert!(matches!(up.finish(&app, Key::Call(1), false), Some(Err(_))));
+    up.expect(2, None);
+    assert!(
+        up.start(&app, sid, Key::Call(2), &[upload_file("b.bin", 1 << 20)])
+            .is_some()
+    );
+    let long = "A".repeat(CHUNK.div_ceil(3) * 4 + 4);
+    assert_eq!(up.chunk(Key::Call(2), 0, &long), None);
+    assert!(matches!(up.finish(&app, Key::Call(2), false), Some(Err(_))));
+    assert_eq!(stored_files(&app, sid), 0);
+    assert_eq!(app.uploading().load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// S16: received files count against what their browser keeps, and go
+/// after `keep_uploads` with their URLs, those of browsers that never come
+/// back included.
+#[test]
+fn s16_received_files_expire_with_their_urls() {
+    use crate::uploads::{Key, Uploads, sweep, sweep_all};
+    use prism_core::device::has_local_file;
+    use std::time::{Duration, SystemTime};
+    let (app, _, _) = uploads_app("s16-expiry", false);
+    let app = app
+        .keep_uploads(Duration::from_secs(3600))
+        .max_upload_bytes(10);
+    let sid = "5e16d05e16d05e16d05e16d05e16d05e";
+    let mut up = Uploads::default();
+    up.expect(1, None);
+    let files = [upload_file("a.txt", 3), upload_file("empty.txt", 0)];
+    assert!(up.start(&app, sid, Key::Call(1), &files).is_some());
+    assert!(up.chunk(Key::Call(1), 0, "AQID").is_some());
+    let files = up.finish(&app, Key::Call(1), false).unwrap().unwrap();
+    assert_eq!(files[0].read().unwrap(), [1, 2, 3]);
+    assert_eq!(files[1].read().unwrap(), Vec::<u8>::new());
+    assert_eq!(stored_files(&app, sid), 2);
+    // They count against what the browser keeps: 3 + 8 > 10.
+    up.expect(2, None);
+    assert_eq!(
+        up.start(&app, sid, Key::Call(2), &[upload_file("b.txt", 8)]),
+        None
+    );
+    up.finish(&app, Key::Call(2), true);
+    let now = SystemTime::now();
+    assert_eq!(sweep(&app, &app.files_dir(sid), now), 3);
+    assert!(has_local_file(&files[0].path));
+    // An hour on, they are gone with their URLs (and the files of the
+    // browser that never came back).
+    sweep_all(&app, now + Duration::from_secs(3600));
+    assert_eq!(stored_files(&app, sid), 0);
+    assert_eq!(stored_files(&app, SID), 0);
+    assert!(!has_local_file(&files[0].path) && !has_local_file(&files[1].path));
+    assert!(files[0].read().is_err());
+    up.expect(3, None);
+    assert!(
+        up.start(&app, sid, Key::Call(3), &[upload_file("b.txt", 8)])
+            .is_some()
+    );
+}
+
+/// S16: a pick the server refuses tells the page to stop sending, and
+/// the app learns why.
+#[test]
+fn s16_a_refused_pick_stops_the_page_and_says_why() {
+    use crate::tests::{Page, op_with_text, web_app};
+    use prism_core::prelude::*;
+
+    #[derive(Default)]
+    struct Pick {
+        started: bool,
+        got: String,
+    }
+    impl Render for Pick {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            if !std::mem::replace(&mut self.started, true) {
+                cx.spawn(async move |this, cx| {
+                    let r = cx.pick_files(prism_core::PickFiles::new()).await;
+                    let r = r.map(|f| f.len());
+                    cx.update_entity(&this, |p, _| p.got = format!("picked {r:?}"));
+                });
+            }
+            text(format!("[{}]", self.got))
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Pick::default());
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "s16-pick");
+    let sid = "5e16e05e16e05e16e05e16e05e16e05e";
+    let mut headers = http::HeaderMap::new();
+    headers.insert("cookie", format!("prism_sid={sid}").parse().unwrap());
+    let page = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &headers);
+    let reset = page.next();
+    let got = op_with_text(&reset["p"], "[]");
+    let pick = loop {
+        let m = page.next();
+        if m["t"] == "device" {
+            break m;
+        }
+    };
+    assert_eq!(
+        (pick["call"].as_str(), pick["multiple"].as_bool()),
+        (Some("pick_files"), Some(false))
+    );
+    let id = pick["id"].clone();
+    let two = json!([upload_file("a.txt", 1), upload_file("b.txt", 1)]);
+    page.send(json!({ "t": "upload_start", "id": id, "files": two }));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "device", "id": id, "call": "stop" })
+    );
+    page.send(json!({ "t": "upload_chunk", "id": id, "file": 0, "data": "AQ==" }));
+    page.send(json!({ "t": "device_reply", "id": id, "err": "cancelled" }));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": got,
+            "text": "[picked Err(Failed(\"too many files (at most 1)\"))]" }] })
+    );
+    assert_eq!(stored_files(&app, sid), 0);
+    let _ = std::fs::remove_dir_all(dir);
+}

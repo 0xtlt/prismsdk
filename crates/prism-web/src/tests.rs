@@ -2188,7 +2188,7 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
     ];
     // Not a pick call: refused.
     assert_eq!(u.start(&app, sid, Call(7), &two), None);
-    u.expect(7);
+    u.expect(7, None);
     assert!(u.has(Call(7)));
     assert_eq!(u.start(&app, sid, Call(7), &two), Some((0, 5)));
     assert_eq!(u.start(&app, sid, Call(7), &two), None, "once");
@@ -2213,19 +2213,21 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
     assert_eq!(count(), 2);
 
     // More than declared: refused, and the upload fails.
-    u.expect(8);
+    u.expect(8, None);
     u.start(&app, sid, Call(8), &[json!({ "name": "a.txt", "size": 2 })]);
+    assert_eq!(count(), 2, "created by its first chunk (S16)");
+    assert_eq!(u.chunk(Call(8), 0, "aA=="), Some((1, 2)));
     assert_eq!(count(), 3);
     assert_eq!(u.chunk(Call(8), 0, "aGVsbG8="), None);
     assert_eq!(u.chunk(Call(8), 0, "aGk="), None, "stays refused");
     assert!(matches!(u.finish(&app, Call(8), false), Some(Err(_))));
     assert_eq!(count(), 2, "deleted");
     // Missing bytes fail too.
-    u.expect(9);
+    u.expect(9, None);
     u.start(&app, sid, Call(9), &[json!({ "name": "a.txt", "size": 2 })]);
     assert!(matches!(u.finish(&app, Call(9), false), Some(Err(_))));
     // Cancelled (an error reply): deleted, and the reply's error is the answer.
-    u.expect(10);
+    u.expect(10, None);
     u.start(
         &app,
         sid,
@@ -2236,16 +2238,17 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
     assert!(u.finish(&app, Call(10), true).is_none());
     assert_eq!(count(), 2);
     // The user cancelled the picker: nothing staged, no files.
-    u.expect(11);
+    u.expect(11, None);
     assert!(u.finish(&app, Call(11), true).is_none());
     // An unfinished upload goes with the session.
-    u.expect(12);
+    u.expect(12, None);
     u.start(
         &app,
         sid,
         Call(12),
         &[json!({ "name": "a.txt", "size": 2 })],
     );
+    u.chunk(Call(12), 0, "aA==");
     assert_eq!(count(), 3);
     drop(u);
     assert_eq!(count(), 2);

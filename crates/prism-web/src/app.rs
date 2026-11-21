@@ -35,6 +35,31 @@ pub const DEFAULT_MAX_MESSAGE: usize = 8 << 20;
 /// Bytes waiting in each direction of a session unless
 /// [`WebApp::max_queued_bytes`] says otherwise.
 pub const DEFAULT_MAX_QUEUED: usize = 32 << 20;
+/// The most files one pick, drop or clipboard read uploads unless
+/// [`WebApp::max_upload_files`] says otherwise.
+pub const DEFAULT_MAX_UPLOAD_FILES: usize = 256;
+/// The bytes of uploaded files one browser keeps on the server unless
+/// [`WebApp::max_upload_bytes`] says otherwise (1 GiB).
+pub const DEFAULT_MAX_UPLOAD_BYTES: u64 = 1 << 30;
+/// The bytes all sessions upload at once unless
+/// [`WebApp::max_uploading_bytes`] says otherwise (4 GiB).
+pub const DEFAULT_MAX_UPLOADING_BYTES: u64 = 4 << 30;
+/// How long uploaded files stay on the server unless
+/// [`WebApp::keep_uploads`] says otherwise (24 hours).
+pub const DEFAULT_KEEP_UPLOADS: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// What the browsers may upload (S16).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UploadLimits {
+    /// Files in one pick, drop or clipboard read.
+    pub files: usize,
+    /// Bytes of files one browser keeps, those arriving included.
+    pub bytes: u64,
+    /// Bytes all sessions receive at once.
+    pub uploading: u64,
+    /// How long a received file stays.
+    pub keep: std::time::Duration,
+}
 
 pub(crate) struct Inner {
     pub config: AppConfig,
@@ -67,6 +92,12 @@ pub(crate) struct Inner {
     /// The most bytes a session lets wait in either direction: messages the
     /// session has not handled yet, frames the page has not read yet.
     pub max_queued: usize,
+    /// What the browsers may upload.
+    pub upload_limits: UploadLimits,
+    /// Bytes being uploaded now, all sessions together.
+    pub uploading: Arc<std::sync::atomic::AtomicU64>,
+    /// When old uploads were last deleted.
+    pub swept: std::sync::Mutex<Option<std::time::Instant>>,
     /// A session that hears nothing from its page for this long ends.
     pub idle_timeout: Option<std::time::Duration>,
     /// Live sessions now.
@@ -136,6 +167,14 @@ impl WebApp {
                 max_sessions: Some(DEFAULT_MAX_SESSIONS),
                 max_message: DEFAULT_MAX_MESSAGE,
                 max_queued: DEFAULT_MAX_QUEUED,
+                upload_limits: UploadLimits {
+                    files: DEFAULT_MAX_UPLOAD_FILES,
+                    bytes: DEFAULT_MAX_UPLOAD_BYTES,
+                    uploading: DEFAULT_MAX_UPLOADING_BYTES,
+                    keep: DEFAULT_KEEP_UPLOADS,
+                },
+                uploading: Default::default(),
+                swept: Default::default(),
                 idle_timeout: None,
                 sessions: Default::default(),
                 first_paint_wait: std::time::Duration::ZERO,
@@ -895,6 +934,69 @@ impl WebApp {
     /// the page reconnects. 32 MiB by default ([`DEFAULT_MAX_QUEUED`]).
     pub fn max_queued_bytes(self, bytes: usize) -> Self {
         self.configure(|i| i.max_queued = bytes)
+    }
+
+    /// The most files one pick, drop or clipboard read may upload: more
+    /// fail the call before anything is stored. 256 by default
+    /// ([`DEFAULT_MAX_UPLOAD_FILES`]). A pick of a single file takes one,
+    /// and `PickImages::limit` applies too.
+    pub fn max_upload_files(self, n: usize) -> Self {
+        self.configure(|i| i.upload_limits.files = n)
+    }
+
+    /// The most bytes of uploaded files one browser keeps on the server,
+    /// those arriving included: an upload that would pass it fails before
+    /// anything is stored. 1 GiB by default ([`DEFAULT_MAX_UPLOAD_BYTES`]).
+    pub fn max_upload_bytes(self, bytes: u64) -> Self {
+        self.configure(|i| i.upload_limits.bytes = bytes)
+    }
+
+    /// The most bytes all sessions upload at once: an upload that would
+    /// pass it fails ("try again later") before anything is stored. 4 GiB
+    /// by default ([`DEFAULT_MAX_UPLOADING_BYTES`]).
+    pub fn max_uploading_bytes(self, bytes: u64) -> Self {
+        self.configure(|i| i.upload_limits.uploading = bytes)
+    }
+
+    /// How long uploaded files stay on the server: older ones are deleted
+    /// (and `PickedFile::read` no longer finds them), those of browsers
+    /// that never come back included, after a restart too. 24 hours by
+    /// default ([`DEFAULT_KEEP_UPLOADS`]). Copy the files the app keeps to
+    /// its own storage.
+    pub fn keep_uploads(self, keep: std::time::Duration) -> Self {
+        self.configure(|i| i.upload_limits.keep = keep)
+    }
+
+    pub(crate) fn upload_limits(&self) -> UploadLimits {
+        self.inner.upload_limits
+    }
+
+    pub(crate) fn uploading(&self) -> &Arc<std::sync::atomic::AtomicU64> {
+        &self.inner.uploading
+    }
+
+    /// Deletes the expired uploads of every browser on a background thread,
+    /// at most every [`keep_uploads`](Self::keep_uploads) (once a minute to
+    /// once an hour).
+    pub(crate) fn sweep_uploads(&self) {
+        let every = self.inner.upload_limits.keep.clamp(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(3600),
+        );
+        let now = std::time::Instant::now();
+        {
+            let Ok(mut swept) = self.inner.swept.lock() else {
+                return;
+            };
+            if swept.is_some_and(|at| now.duration_since(at) < every) {
+                return;
+            }
+            *swept = Some(now);
+        }
+        let app = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("prism-web uploads".into())
+            .spawn(move || crate::uploads::sweep_all(&app, std::time::SystemTime::now()));
     }
 
     /// Ends a session that heard nothing from its page (no event, resize or

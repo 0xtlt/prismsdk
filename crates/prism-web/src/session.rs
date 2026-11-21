@@ -155,6 +155,8 @@ impl WebApp {
                 return session;
             }
         };
+        // Uploads past `keep_uploads` go, those of browsers gone too.
+        self.sweep_uploads();
         let (sid, path, visitor) = self.socket_visitor(uri, headers);
         let origin = crate::host::page_origin(headers, Some(uri), self.public());
         let search = crate::app::query_param(uri, "search").map(crate::app::percent_decode);
@@ -490,7 +492,16 @@ impl Live {
                     Some((sent, total)) => {
                         rt.device_event(id, prism_core::DeviceEvent::Upload { sent, total })
                     }
-                    None => Vec::new(),
+                    None => {
+                        // Refused (too many files, too many bytes): the page
+                        // stops sending, and the call fails with the reason.
+                        if self.services.uploads.has(key) {
+                            self.services
+                                .outbox
+                                .push(json!({ "t": "device", "id": id, "call": "stop" }));
+                        }
+                        Vec::new()
+                    }
                 }
             }
             Some("upload_chunk") => {
@@ -1318,7 +1329,16 @@ impl PlatformServices for WebServices {
                         Some("pick_files" | "pick_images" | "pick_folder" | "read_clipboard_item")
                     ) =>
                 {
-                    self.uploads.expect(id);
+                    // How many files it takes: one, unless it said more.
+                    let max = match msg["call"].as_str() {
+                        Some("pick_files") if msg["multiple"] != true => Some(1),
+                        Some("pick_images") => msg["limit"]
+                            .as_u64()
+                            .filter(|n| *n > 0)
+                            .map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+                        _ => None,
+                    };
+                    self.uploads.expect(id, max);
                     msg
                 }
                 Some(msg) => msg,
