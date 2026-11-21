@@ -565,11 +565,8 @@ impl Live {
             // The browser window was resized; `safe`: what the device's
             // notch, bars and rounded corners cover (`env(safe-area-inset-*)`,
             // top, right, bottom, left).
-            Some("viewport") => match (
-                v.get("w").and_then(Value::as_f64),
-                v.get("h").and_then(Value::as_f64),
-            ) {
-                (Some(w), Some(h)) => rt.set_window(w as f32, h as f32, safe_area(&v)),
+            Some("viewport") => match (finite_f32(v.get("w")), finite_f32(v.get("h"))) {
+                (Some(w), Some(h)) if w >= 0. && h >= 0. => rt.set_window(w, h, safe_area(&v)),
                 _ => Vec::new(),
             },
             // The page described its device (on connect, rotation, fold).
@@ -661,6 +658,13 @@ fn message(t: &str, ops: Vec<Value>) -> serde_json::Map<String, Value> {
 
 /// A `change` event's value: a number, or `null` for an optional date
 /// picker the user cleared (`NaN`, #89).
+/// A JSON number as an `f32`, `None` when it is not one or does not fit
+/// (a value past `f32::MAX` would become infinite).
+fn finite_f32(v: Option<&Value>) -> Option<f32> {
+    let n = v?.as_f64()? as f32;
+    n.is_finite().then_some(n)
+}
+
 fn change_value(v: &Value) -> Option<f64> {
     if v.is_null() {
         Some(f64::NAN)
@@ -697,16 +701,16 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         "layout" => Some(UiEvent::Layout(
             id,
             prism_core::Rect::new(
-                v.get("x")?.as_f64()? as f32,
-                v.get("y")?.as_f64()? as f32,
-                v.get("w")?.as_f64()? as f32,
-                v.get("h")?.as_f64()? as f32,
+                finite_f32(v.get("x"))?,
+                finite_f32(v.get("y"))?,
+                finite_f32(v.get("w"))?,
+                finite_f32(v.get("h"))?,
             ),
         )),
         "scroll" => Some(UiEvent::Scroll(
             id,
-            v.get("o")?.as_f64()? as f32,
-            v.get("v")?.as_f64()? as f32,
+            finite_f32(v.get("o"))?,
+            finite_f32(v.get("v"))?,
         )),
         "swipe" => Some(UiEvent::Swipe(
             id,
@@ -757,7 +761,7 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
     use prism_core::{
         DragEvent, DragPhase, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
     };
-    let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|n| n as f32);
+    let num = |k: &str| finite_f32(v.get(k));
     let id = v.get("id").and_then(Value::as_u64);
     match v.get("t")?.as_str()? {
         // With the keys held and the click count (#159) when the page says.
@@ -2054,11 +2058,9 @@ impl WebServices {
 /// absent or malformed.
 fn safe_area(v: &Value) -> prism_core::Edges {
     let side = |i: usize| {
-        v.get("safe")
-            .and_then(|s| s.get(i))
-            .and_then(Value::as_f64)
-            .filter(|x| x.is_finite() && *x >= 0.)
-            .unwrap_or(0.) as f32
+        finite_f32(v.get("safe").and_then(|s| s.get(i)))
+            .filter(|x| *x >= 0.)
+            .unwrap_or(0.)
     };
     prism_core::Edges {
         top: side(0),

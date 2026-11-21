@@ -4838,3 +4838,172 @@ fn configurations_are_drawn_ahead_each_for_their_own_instants() {
     assert_eq!(configs.matches(r#"{"at":"#).count(), 1, "{json}");
     assert!(configs.contains(&format!("b@{}", mins(3))));
 }
+
+// --- Impossible control events (S13) -----------------------------------------
+
+/// What the controls of [`Guarded`] reported, in order.
+struct Guarded {
+    log: Vec<String>,
+}
+
+impl Render for Guarded {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let change = |name: &'static str| {
+            cx.listener(move |this: &mut Self, e: &ChangeEvent, _| {
+                this.log.push(format!("{name} {}", e.value));
+            })
+        };
+        let click = |name: &'static str| {
+            cx.listener(move |this: &mut Self, _: &ClickEvent, _| this.log.push(name.into()))
+        };
+        let day = 86_400.;
+        div()
+            .child(
+                button("Pay")
+                    .accessibility_disabled(true)
+                    .on_click(click("pay")),
+            )
+            .child(button("Go").on_click(click("go")))
+            .child(
+                text_input()
+                    .accessibility_disabled(true)
+                    .on_input(cx.listener(|this: &mut Self, e: &InputEvent, _| {
+                        this.log.push(format!("typed {}", e.value));
+                    }))
+                    .on_submit(click("submit")),
+            )
+            .child(
+                slider(2.)
+                    .range(0., 10.)
+                    .step(0.5)
+                    .on_change(change("slider")),
+            )
+            .child(picker(["S", "M"], None).on_change(change("picker")))
+            .child(toggle(false).on_change(change("toggle")))
+            .child(radio_group(["a", "b"], None).on_change(change("radio")))
+            .child(
+                date_picker(crate::unix_time(0.))
+                    .min(crate::unix_time(0.))
+                    .max(crate::unix_time(day))
+                    .on_change(change("date")),
+            )
+            .child(date_picker_opt(None).on_change(change("any date")))
+            .child(scroll().child(text("no on_scroll")))
+            .child(div().track_layout().child(text("tracked")))
+            .child(div().child(text("untracked")))
+    }
+}
+
+fn nth_of(patches: &[Patch], kind: NodeKind, n: usize) -> u64 {
+    patches
+        .iter()
+        .filter_map(|p| match p {
+            Patch::Create { id, kind: k } if *k == kind => Some(*id),
+            _ => None,
+        })
+        .nth(n)
+        .expect("node created")
+}
+
+/// S13 (security review): a modified page can report events its controls
+/// could never produce. The dispatcher drops clicks and typing on disabled
+/// controls, changes out of a control's range (or snaps them, for a slider
+/// or a bounded date picker), events of unknown nodes, and layout and
+/// scroll reports of nodes that do not report them, or not finite.
+#[test]
+fn impossible_control_events_never_reach_the_app() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Guarded { log: Vec::new() });
+        cx.set_root(root);
+    });
+    let pay = find_text(&first, "Pay");
+    let field = node_of(&first, NodeKind::TextInput);
+    let slider = node_of(&first, NodeKind::Slider);
+    let picker = node_of(&first, NodeKind::Picker);
+    let toggle = node_of(&first, NodeKind::Toggle);
+    let radio = node_of(&first, NodeKind::RadioGroup);
+    let date = nth_of(&first, NodeKind::DatePicker, 0);
+    let any_date = nth_of(&first, NodeKind::DatePicker, 1);
+    let scroll = node_of(&first, NodeKind::Scroll);
+    let unknown = 1_000_000;
+    let position = Point::new(1., 1.);
+    for event in [
+        // Disabled controls.
+        UiEvent::Click(pay),
+        UiEvent::ClickAt(pay, position),
+        UiEvent::ClickWith(pay, ClickEvent::default()),
+        UiEvent::Input(field, "typed".into()),
+        UiEvent::Submit(field),
+        // Values no control reports.
+        UiEvent::Change(slider, f64::INFINITY),
+        UiEvent::Change(picker, 2.),
+        UiEvent::Change(picker, -1.),
+        UiEvent::Change(picker, 0.5),
+        UiEvent::Change(toggle, 7.),
+        UiEvent::Change(radio, 5.),
+        UiEvent::Change(date, f64::NAN),
+        UiEvent::Change(any_date, 1e300),
+        // Nodes that are not there.
+        UiEvent::Click(unknown),
+        UiEvent::Change(unknown, 1.),
+    ] {
+        rt.dispatch(event);
+    }
+    let root = first_root::<Guarded>(&rt);
+    let log = |rt: &Runtime| rt.app.read(&root).log.clone();
+    assert_eq!(log(&rt), Vec::<String>::new());
+
+    // Valid events still arrive; a slider's or a bounded picker's value is
+    // brought within its range.
+    let go = find_text(&first, "Go");
+    for event in [
+        UiEvent::Click(go),
+        UiEvent::Change(slider, 2.5),
+        UiEvent::Change(slider, 3.3),
+        UiEvent::Change(slider, 99.),
+        UiEvent::Change(picker, 1.),
+        UiEvent::Change(toggle, 1.),
+        UiEvent::Change(radio, 0.),
+        UiEvent::Change(date, -86_400.),
+        UiEvent::Change(any_date, f64::NAN),
+    ] {
+        rt.dispatch(event);
+    }
+    assert_eq!(
+        log(&rt),
+        [
+            "go",
+            "slider 2.5",
+            "slider 3.5",
+            "slider 10",
+            "picker 1",
+            "toggle 1",
+            "radio 0",
+            "date 0",
+            "any date NaN"
+        ]
+    );
+
+    // Layout and scroll reports: kept only from the nodes that report them.
+    let frame = Rect::new(0., 0., 10., 10.);
+    let tracked = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetLayoutEvents { id, on: true } => Some(*id),
+            _ => None,
+        })
+        .expect("the tracked view");
+    let untracked = find_text(&first, "untracked");
+    rt.dispatch(UiEvent::Layout(unknown, frame));
+    rt.dispatch(UiEvent::Layout(untracked, frame));
+    rt.dispatch(UiEvent::Layout(
+        tracked,
+        Rect::new(0., 0., f32::INFINITY, 1.),
+    ));
+    rt.dispatch(UiEvent::Scroll(unknown, 5., 100.));
+    rt.dispatch(UiEvent::Scroll(scroll, 5., 100.));
+    assert!(rt.app.frames.is_empty());
+    assert!(rt.app.scroll_offsets.is_empty());
+    rt.dispatch(UiEvent::Layout(tracked, frame));
+    assert_eq!(rt.app.frames.get(&tracked), Some(&frame));
+}

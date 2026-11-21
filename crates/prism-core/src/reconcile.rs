@@ -1090,6 +1090,65 @@ impl Reconciler {
         })
     }
 
+    /// Whether node `id` is mounted and enabled: a disabled control
+    /// (`accessibility_disabled(true)`) is not clicked, typed into or
+    /// changed, as its platform control would not be. Hosts do not report
+    /// those events; a modified web page could.
+    pub fn is_enabled(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(|m| !m.a11y.disabled)
+    }
+
+    /// Whether node `id` is mounted and reports its scroll offset
+    /// (`on_scroll`, #193).
+    pub fn reports_scroll(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(|m| m.scroll_events)
+    }
+
+    /// The value a change of node `id` to `value` gives its handler, or
+    /// `None` when its control could not have produced it: an index past
+    /// the options of a picker, radio group, tab bar or navigation bar, a
+    /// toggle or checkbox other than 0 or 1, a value that is not finite
+    /// (`NaN` only for an optional date picker, #89), a disabled or
+    /// unmounted control. A slider's value is kept within its range, on
+    /// its steps; a date picker's within its bounds and years 1 to 9999.
+    pub fn change_value(&self, id: NodeId, value: f64) -> Option<f64> {
+        use crate::controls::{DateConfig, PickerConfig, RadioConfig, SliderConfig};
+        /// 0001-01-01 and 9999-12-31T23:59:59 UTC, in Unix seconds.
+        const DATES: (f64, f64) = (-62_135_596_800., 253_402_300_799.);
+        let m = self.nodes.get(&id).filter(|m| !m.a11y.disabled)?;
+        let index = |len: usize| value >= 0. && value.fract() == 0. && value < len as f64;
+        let ok = match m.kind {
+            NodeKind::DatePicker => {
+                let c = DateConfig::decode(&m.config);
+                if value.is_nan() {
+                    return c.optional.then_some(value);
+                }
+                if !(DATES.0..=DATES.1).contains(&value) {
+                    return None;
+                }
+                let v = c.min.map_or(value, |min| value.max(min));
+                return Some(c.max.map_or(v, |max| v.min(max)));
+            }
+            NodeKind::Slider => {
+                if !value.is_finite() {
+                    return None;
+                }
+                let c = SliderConfig::decode(&m.config);
+                let snapped = c.snap(value);
+                // On a step already, give or take rounding: as reported.
+                let off = (snapped - value).abs() > 1e-9 * c.step.abs().max(1.);
+                return Some(if off { snapped } else { value });
+            }
+            NodeKind::Toggle | NodeKind::Checkbox => value == 0. || value == 1.,
+            NodeKind::Picker => index(PickerConfig::decode(&m.config).options.len()),
+            NodeKind::RadioGroup => index(RadioConfig::decode(&m.config).options.len()),
+            NodeKind::Tabs => index(m.children.len()),
+            NodeKind::Screen => index(crate::navbar::ScreenConfig::decode(&m.config).items.len()),
+            _ => value.is_finite(),
+        };
+        ok.then_some(value)
+    }
+
     /// The hover handler of node `id`, if any.
     pub fn hover_handler(&self, id: NodeId) -> Option<Handler<crate::events::HoverEvent>> {
         self.hover.get(&id).cloned()

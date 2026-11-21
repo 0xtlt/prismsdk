@@ -907,3 +907,22 @@ fn s12_web_messages_keep_their_view_allowed_origins() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// S13: numbers past `f32::MAX` would reach the app as infinities; the
+/// page's reports that carry one are dropped.
+#[test]
+fn s13_reports_with_numbers_past_f32_are_dropped() {
+    use crate::session::parse_event;
+    for event in [
+        json!({ "t": "layout", "id": 1, "x": 0, "y": 0, "w": 1e39, "h": 1 }),
+        json!({ "t": "scroll", "id": 1, "o": -1e300, "v": 1 }),
+    ] {
+        assert!(parse_event(&event).is_none(), "{event}");
+    }
+    // A click keeps no such position: it is a click without one.
+    assert!(matches!(
+        parse_event(&json!({ "t": "click", "id": 1, "x": 1e39, "y": 0 })),
+        Some(prism_core::UiEvent::Click(1))
+    ));
+    assert!(parse_event(&json!({ "t": "scroll", "id": 1, "o": 12.5, "v": 300 })).is_some());
+}

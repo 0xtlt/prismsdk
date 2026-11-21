@@ -344,6 +344,16 @@ impl Runtime {
         patches
     }
 
+    /// `handler` of node `id`, unless the node is disabled or gone: its
+    /// control takes no clicks or submits then (a modified page could send
+    /// them).
+    fn enabled<T>(&self, id: NodeId, handler: impl FnOnce(&Reconciler) -> Option<T>) -> Option<T> {
+        self.reconciler
+            .is_enabled(id)
+            .then(|| handler(&self.reconciler))
+            .flatten()
+    }
+
     /// Runs the handler for `event`, then re-renders the entities it touched.
     pub fn dispatch(&mut self, event: UiEvent) -> Vec<Patch> {
         // Answers to the field that reported the event (#217), after the
@@ -351,11 +361,11 @@ impl Runtime {
         let mut answers = Vec::new();
         match event {
             UiEvent::Click(id) => {
-                if let Some(h) = self.reconciler.click_handler(id) {
+                if let Some(h) = self.enabled(id, |r| r.click_handler(id)) {
                     h(&ClickEvent, &mut self.app);
                 }
             }
-            UiEvent::Input(id, value) => {
+            UiEvent::Input(id, value) if self.reconciler.is_enabled(id) => {
                 if let Some(edit) = self.reconciler.rich_text_edit(id, &value) {
                     // A rich input on a backend that edits plain text (#115).
                     match edit {
@@ -374,11 +384,13 @@ impl Runtime {
                     h(&InputEvent { value }, &mut self.app);
                 }
             }
-            UiEvent::RichInput(id, runs) => {
+            UiEvent::RichInput(id, runs) if self.reconciler.is_enabled(id) => {
                 if let Some((h, e)) = self.reconciler.rich_runs_edit(id, &runs) {
                     h(&e, &mut self.app);
                 }
             }
+            // A disabled field is not typed into.
+            UiEvent::Input(..) | UiEvent::RichInput(..) => {}
             UiEvent::Select(id, start, end) => {
                 // A selection across fields (#231) ends where the user
                 // selects anew.
@@ -409,9 +421,11 @@ impl Runtime {
                 }
             }
             UiEvent::Change(id, value) => {
-                // Only an optional date picker can be emptied (#89).
-                let accepted = !value.is_nan() || self.reconciler.accepts_empty(id);
-                if accepted && let Some(h) = self.reconciler.change_handler(id) {
+                // Only what the control could report: in range, on a step,
+                // `NaN` for a cleared optional date picker only (#89).
+                if let Some(value) = self.reconciler.change_value(id, value)
+                    && let Some(h) = self.reconciler.change_handler(id)
+                {
                     h(&ChangeEvent { value }, &mut self.app);
                 }
             }
@@ -424,7 +438,14 @@ impl Runtime {
             }
             UiEvent::AlertAction(alert, index) => self.app.alert_action(alert, index),
             UiEvent::Scroll(id, offset, viewport) => {
-                // Kept for `cx.scroll_offset` (#193).
+                // Kept for `cx.scroll_offset` (#193), from the views that
+                // report it.
+                if !(self.reconciler.reports_scroll(id)
+                    && offset.is_finite()
+                    && viewport.is_finite())
+                {
+                    return Vec::new();
+                }
                 self.app.scroll_offsets.insert(id, offset);
                 if let Some(name) = self.reconciler.name_of(id) {
                     self.app.scroll_names.insert(name.to_string(), id);
@@ -434,7 +455,14 @@ impl Runtime {
                 }
             }
             UiEvent::Layout(id, frame) => {
-                // Kept for `cx.frame_of` (#192), then the handler.
+                // Kept for `cx.frame_of` (#192), then the handler, from the
+                // nodes that report it.
+                let finite = [frame.x, frame.y, frame.width, frame.height]
+                    .iter()
+                    .all(|v| v.is_finite());
+                if !(self.reconciler.reports_layout(id) && finite) {
+                    return Vec::new();
+                }
                 self.app.frames.insert(id, frame);
                 if let Some(name) = self.reconciler.name_of(id) {
                     self.app.frame_names.insert(name.to_string(), id);
@@ -454,12 +482,12 @@ impl Runtime {
                 }
             }
             UiEvent::Submit(id) => {
-                if let Some(h) = self.reconciler.submit_handler(id) {
+                if let Some(h) = self.enabled(id, |r| r.submit_handler(id)) {
                     h(&ClickEvent, &mut self.app);
                 }
             }
             UiEvent::ClickAt(id, position) => {
-                if let Some(h) = self.reconciler.click_handler(id) {
+                if let Some(h) = self.enabled(id, |r| r.click_handler(id)) {
                     let e = ClickEvent {
                         position: Some(position),
                         ..ClickEvent
@@ -468,7 +496,7 @@ impl Runtime {
                 }
             }
             UiEvent::ClickWith(id, e) => {
-                if let Some(h) = self.reconciler.click_handler(id) {
+                if let Some(h) = self.enabled(id, |r| r.click_handler(id)) {
                     h(&e, &mut self.app);
                 }
             }
@@ -502,7 +530,7 @@ impl Runtime {
                 }
             }
             UiEvent::AuxClick(id, e) => {
-                if let Some(h) = self.reconciler.aux_click_handler(id) {
+                if let Some(h) = self.enabled(id, |r| r.aux_click_handler(id)) {
                     h(&e, &mut self.app);
                 }
             }

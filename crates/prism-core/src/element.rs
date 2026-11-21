@@ -524,14 +524,19 @@ impl ChangeEvent {
     }
 }
 
-/// `secs` since 1970 as a [`SystemTime`](std::time::SystemTime) (negative: before).
+/// `secs` since 1970 as a [`SystemTime`](std::time::SystemTime) (negative:
+/// before). The Unix epoch when `secs` is not a number or no `SystemTime`
+/// can hold it.
 pub fn unix_time(secs: f64) -> std::time::SystemTime {
-    let d = std::time::Duration::from_secs_f64(secs.abs());
+    let Ok(d) = std::time::Duration::try_from_secs_f64(secs.abs()) else {
+        return std::time::UNIX_EPOCH;
+    };
     if secs >= 0. {
-        std::time::UNIX_EPOCH + d
+        std::time::UNIX_EPOCH.checked_add(d)
     } else {
-        std::time::UNIX_EPOCH - d
+        std::time::UNIX_EPOCH.checked_sub(d)
     }
+    .unwrap_or(std::time::UNIX_EPOCH)
 }
 
 /// Seconds since 1970 (negative: before).
