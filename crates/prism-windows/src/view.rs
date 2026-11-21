@@ -241,10 +241,16 @@ impl View {
     }
 
     /// Children are clipped to the box (`overflow: hidden`, stacks, tabs),
-    /// to its rounded corners if it has some.
+    /// to its rounded corners if it has some; a picture to its rounded
+    /// corners.
     fn clip(&mut self, n: &Node) -> Result<()> {
         let clips = n.clips() && n.kind != NodeKind::Scroll;
-        self.decor.clip_children(&self.kids, n, clips)
+        self.decor.clip_children(&self.kids, n, clips)?;
+        if let Content::Picture(img) = &self.content {
+            let (x, y, _, _) = content_rect(n);
+            self.decor.clip_picture(&img.cast()?, n, (x, y))?;
+        }
+        Ok(())
     }
 
     /// The node's frame (in its parent's coordinates) and size.

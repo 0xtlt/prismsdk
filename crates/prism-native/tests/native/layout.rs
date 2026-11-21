@@ -1143,6 +1143,11 @@ fn z_index_sets_the_paint_order_not_the_layout() {
         [second, first],
         "the cell with the handle on top"
     );
+    assert_eq!(
+        h.w().reading[&row],
+        [first, second],
+        "read and focused in the tree's order"
+    );
     let f = h.layout(400., 300.);
     assert_eq!(
         (f.frame(first).0, f.frame(second).0),
@@ -1183,10 +1188,16 @@ fn z_index_follows_interaction_states() {
     let v = h.w().of_kind(NodeKind::View);
     let (row, first, second) = (v[0], v[1], v[2]);
     assert_eq!(h.w().children[&row], [first, second]);
+    assert!(
+        !h.w().reading.contains_key(&row),
+        "painted in the tree's order"
+    );
     h.r.set_interaction(first, Interaction::Hover, true);
     assert_eq!(h.w().children[&row], [second, first], "hovered: on top");
+    assert_eq!(h.w().reading[&row], [first, second], "still read in order");
     h.r.set_interaction(first, Interaction::Hover, false);
     assert_eq!(h.w().children[&row], [first, second]);
+    assert!(!h.w().reading.contains_key(&row));
 }
 
 /// #232: tabs and stacks keep their order whatever their screens hold.

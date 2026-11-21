@@ -47,8 +47,17 @@ pub trait Widgets {
     fn set_text(&mut self, view: &Self::View, text: &str);
     fn set_placeholder(&mut self, view: &Self::View, text: &str);
     fn set_clickable(&mut self, view: &Self::View, clickable: bool);
-    /// Make `children` the subviews of `parent`, in order.
+    /// Make `children` the subviews of `parent`, in order: their paint
+    /// order (by `z_index`, #232).
     fn set_children(&mut self, parent: &Self::View, children: &[Self::View]);
+    /// The same children in the tree's order, called right after
+    /// `set_children` when their paint order differs (a `z_index`): the
+    /// order screen readers read them in and the focus moves through them,
+    /// which a `z_index` must not change. A `set_children` with no call
+    /// after it is in the tree's order. Backends whose accessibility and
+    /// focus order follow their subviews' order keep the tree's order and
+    /// paint by the other.
+    fn set_reading_order(&mut self, _parent: &Self::View, _children: &[Self::View]) {}
     /// Mount `view` as the root, replacing the previous one.
     fn set_root(&mut self, view: &Self::View);
     fn destroy(&mut self, view: &Self::View);
@@ -1949,10 +1958,16 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         .iter()
                         .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
                         .collect();
+                    let reorder = painted != *children;
                     self.extras.painted.insert(*id, painted);
                     let layouts = self.sorted_layouts(children);
                     let parent = &self.nodes[id];
                     self.widgets.set_children(&parent.view, &views);
+                    if reorder {
+                        let tree = self.views_of(children);
+                        let parent = &self.nodes[id];
+                        self.widgets.set_reading_order(&parent.view, &tree);
+                    }
                     if is_managed(parent.kind) {
                         let _ = self.taffy.set_children(parent.layout, &[]);
                         self.stack_screens.insert(*id, children.clone());

@@ -465,11 +465,23 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
             .iter()
             .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
             .collect();
+        let reorder = painted != ids;
         self.extras.painted.insert(id, painted);
         let layouts = self.sorted_layouts(&ids);
         let (view, layout) = (self.nodes[&id].view.clone(), self.nodes[&id].layout);
         self.widgets.set_children(&view, &views);
+        if reorder {
+            let tree = self.views_of(&ids);
+            self.widgets.set_reading_order(&view, &tree);
+        }
         let _ = self.taffy.set_children(layout, &layouts);
+    }
+
+    /// The views of `ids` (those that exist), in order.
+    pub(crate) fn views_of(&self, ids: &[NodeId]) -> Vec<W::View> {
+        ids.iter()
+            .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
+            .collect()
     }
 
     /// `children` in paint order (#232): by the `z_index` each one shows,
@@ -558,9 +570,14 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
                 .iter()
                 .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
                 .collect();
+            let reorder = painted != ids;
             self.extras.painted.insert(p, painted);
             let view = self.nodes[&p].view.clone();
             self.widgets.set_children(&view, &views);
+            if reorder {
+                let tree = self.views_of(&ids);
+                self.widgets.set_reading_order(&view, &tree);
+            }
         }
     }
 
