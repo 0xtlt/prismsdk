@@ -15,7 +15,7 @@
 //! - `ctrlclick:Label` (`@x,y`) clicks with Ctrl held;
 //! - `chord:ctrl+c` presses keys together (`ctrl`, `shift`, `alt`, a
 //!   letter or a digit, `home`, `end`, the arrows, `enter`, `backspace`,
-//!   `delete`);
+//!   `delete`, `f1` to `f12`: `chord:alt+f4` closes the window);
 //! - touches, from a synthetic touch device (`touch.rs`): `pinch:Label=k`
 //!   spreads two fingers around its middle to `k` times their distance
 //!   (below 1: pinches in), `tswipe:Label=dx` flicks a finger, and
@@ -287,7 +287,11 @@ fn chord(keys: &str) -> Option<Vec<u16>> {
                 k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => {
                     k.to_ascii_uppercase().as_bytes()[0] as u16
                 }
-                _ => return None,
+                // F1 (VK_F1, 0x70) to F12.
+                k => match k.strip_prefix('f').and_then(|n| n.parse::<u16>().ok()) {
+                    Some(n @ 1..=12) => 0x6F + n,
+                    _ => return None,
+                },
             })
         })
         .collect()
