@@ -216,6 +216,7 @@ kinds and services come next (see [Not yet](#not-yet)).
   | `Group`, `Navigation`, `Main`, `Alert` | `Group`; landmarks for `Navigation` and `Main` |
   | `Heading(n)`, `Text`, `Image` | `Text` with its heading level, `Text`, `Image` |
   | `Dialog`, a sheet or dialog shown | `Window` with `IsDialog` |
+  | `Table`, `Row`, `ColumnHeader`, `Cell` (a [`table`](../guide/tables.md)) | `Table` with the Grid and Table patterns (row and column counts, the cell at a row and column, the column headers); `DataItem` rows; `HeaderItem` and `DataItem` cells with the GridItem and TableItem patterns (row, column, table, column header: `table.rs`) |
 
   Selected, current, checked, disabled and value are states the reader
   reads (and hears change: property-changed events); a container with a

@@ -12,6 +12,7 @@
 - [Navigation](guide/navigation.md)
 - [Responsive](guide/responsive.md)
 - [Layout: grids, sticky, sideways](guide/layout.md)
+- [Tables](guide/tables.md)
 - [Decorations and interaction states](guide/decorations.md)
 - [Platform-specific UI](guide/platform-ui.md)
 - [Device information](guide/device-info.md)

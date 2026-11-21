@@ -30,6 +30,12 @@ Tracks: points (`172.`, `px(172.)`), `relative(0.25)`, `fr(1.)`,
 collapse, so the items stretch). The cells of a row are as tall as the row
 (equal-height cards) unless the grid says otherwise (`items_start()`).
 
+A grid's `justify_*` places its columns when they leave room
+(`justify_center()`, `justify_between()`…), and `justify_stretch()` grows
+its `auto` columns to fill its width (CSS `justify-content: stretch`), on
+the web and natively alike. On a flex container, `justify_stretch()` packs
+the children at the start.
+
 ## Flex weights, gaps, baselines, aspect ratio
 
 ```rust
