@@ -3,8 +3,8 @@
 //! Everything native backends have in common. A platform only implements the
 //! small [`Widgets`] trait (create a view, set its text, measure it, place it);
 //! [`NativeRenderer`] turns reconciler patches into those calls and runs the
-//! flexbox layout with taffy, so AppKit, UIKit, GTK and Android views all lay
-//! out exactly like the web backend's CSS flexbox.
+//! flexbox layout with taffy, so AppKit, UIKit, GTK, Android and WinUI views
+//! all lay out exactly like the web backend's CSS flexbox.
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;

@@ -258,7 +258,7 @@ pub struct PasteEvent {
     pub types: Vec<String>,
     /// Text data of the types the app may want besides these: Markdown and
     /// custom types written by [`ClipboardContent::custom`], where the
-    /// platform hands them over (macOS, iOS, the web).
+    /// platform hands them over (macOS, iOS, Windows, the web).
     pub data: Vec<(String, String)>,
     prevented: Cell<bool>,
 }

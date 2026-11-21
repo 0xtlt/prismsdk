@@ -27,6 +27,7 @@
 //! | tvOS | Keychain | — (no LocalAuthentication) | AuthenticationServices | `ASWebAuthenticationSession` |
 //! | Android | Keystore (AES-GCM) | `BiometricPrompt` | — | Custom Tab or browser + deep link |
 //! | Linux | Secret Service (D-Bus) | fprintd (fingerprint) | — | browser + loopback redirect |
+//! | Windows | Credential Manager | Windows Hello (`UserConsentVerifier`) | — | browser + loopback redirect |
 //! | Web | the server, per browser | WebAuthn (platform authenticator) | — | popup + server callback |
 //!
 //! [`Capabilities`](crate::Capabilities) say what the current platform has
@@ -542,7 +543,8 @@ impl AsyncApp {
     /// `ASAuthorizationPlatformPublicKeyCredentialProvider`, which needs the
     /// `webcredentials:` associated domain of the relying party; Android
     /// 14+: the Credential Manager. `Err(Unavailable)` where there are no
-    /// passkeys (`capabilities().passkeys`), `Err(Cancelled)` when the user
+    /// passkeys (`capabilities().passkeys`: Linux, Windows, watchOS, older
+    /// Android), `Err(Cancelled)` when the user
     /// declines.
     pub async fn webauthn_create(&self, options: impl Into<String>) -> Result<String, DeviceError> {
         self.webauthn(true, false, options.into()).await
@@ -569,7 +571,8 @@ impl AsyncApp {
     /// the browser has it; iOS, iPadOS, visionOS:
     /// `ASAuthorizationController.performAutoFillAssistedRequests` (the
     /// field gets `textContentType = .username` from its `autocomplete`).
-    /// `Err(Unavailable)` elsewhere (macOS, Android, older browsers): keep a
+    /// `Err(Unavailable)` elsewhere (macOS, Android, Linux, Windows, older
+    /// browsers): keep a
     /// « Sign in with a passkey » button calling `webauthn_get`.
     pub async fn webauthn_autofill(
         &self,
@@ -611,7 +614,8 @@ impl AsyncApp {
 
     /// The redirect URI this platform catches for a browser sign-in
     /// (`preferred` if it can: a provider-specific scheme on Apple and
-    /// Android). Used by `prism::oauth`.
+    /// Android; a loopback port on Linux and Windows). Used by
+    /// `prism::oauth`.
     pub async fn auth_redirect(&self, preferred: Option<&str>) -> Result<String, DeviceError> {
         match self
             .device(DeviceCall::AuthRedirect(preferred.map(str::to_string)))

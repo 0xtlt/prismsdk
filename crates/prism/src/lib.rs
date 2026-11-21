@@ -7,7 +7,8 @@
 //!   client receiving DOM patches. No WASM.
 //! - a **native app** (`--features native`, default): AppKit on macOS, UIKit
 //!   on iOS, iPadOS, tvOS and visionOS, SwiftUI on watchOS, GTK 4 on Linux,
-//!   Android views on phones, tablets, Wear OS and Android TV.
+//!   WinUI 3 on Windows, Android views on phones, tablets, Wear OS and
+//!   Android TV.
 //!
 //! This crate re-exports [`prism_core`] (elements, styles, entities, the
 //! router, device APIs), [`ui`] (the component library) and [`http`], and
@@ -20,7 +21,7 @@
 //! | `db` | SQL with sqlx (`prism::db`) |
 //!
 //! Backends are separate crates behind the [`Backend`] patch protocol; adding
-//! a platform (Windows…) means adding a crate that implements
+//! a platform means adding a crate that implements
 //! `prism_native::Widgets`, plus one line in [`Application::run`].
 //!
 //! The guide is at <https://0xtlt.github.io/prismsdk/>; the `prism` command

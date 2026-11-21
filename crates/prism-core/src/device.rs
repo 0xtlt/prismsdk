@@ -18,14 +18,14 @@
 //! cx.share(Share::text("Look").url("https://example.com"));
 //! ```
 //!
-//! | | iOS | macOS | Web |
-//! |---|---|---|---|
-//! | Location | CoreLocation | CoreLocation | `navigator.geolocation` |
-//! | Motion | CoreMotion | — | `devicemotion` / `deviceorientation` |
-//! | Photos | PHPicker | open panel | `<input type=file>` |
-//! | Camera | UIImagePickerController | — | `capture` input (mobile) |
-//! | Haptics | UIFeedbackGenerator | trackpad (NSHapticFeedback) | `navigator.vibrate` |
-//! | Clipboard, share, URLs | UIPasteboard, share sheet, `open` | NSPasteboard, sharing picker, NSWorkspace | Clipboard API, Web Share, `window.open` |
+//! | | iOS | macOS | Web | Android | Linux | Windows |
+//! |---|---|---|---|---|---|---|
+//! | Location | CoreLocation | CoreLocation | `navigator.geolocation` | `LocationManager` | GeoClue2 | — |
+//! | Motion | CoreMotion | — | `devicemotion` / `deviceorientation` | `SensorManager` | — | — |
+//! | Photos | PHPicker | open panel | `<input type=file>` | photo picker | file chooser | `IFileOpenDialog` |
+//! | Camera | UIImagePickerController | — | `capture` input (mobile) | `ACTION_IMAGE_CAPTURE` | — | — |
+//! | Haptics | UIFeedbackGenerator | trackpad (NSHapticFeedback) | `navigator.vibrate` | `VibrationEffect` | — | — |
+//! | Clipboard, share, URLs | UIPasteboard, share sheet, `open` | NSPasteboard, sharing picker, NSWorkspace | Clipboard API, Web Share, `window.open` | `ClipboardManager`, `ACTION_SEND`, intents | GDK clipboard, —, the default app | Win32 clipboard, —, `ShellExecuteW` |
 //!
 //! On Apple platforms, each permission needs a usage text in Info.plist:
 //! `prism` adds them from `[permissions]` in `Prism.toml`.
@@ -241,7 +241,7 @@ impl PickFolder {
 pub struct PickedFolder {
     /// The folder's name (`Export`).
     pub name: String,
-    /// Its path where the files are read in place (macOS, Linux); `None`
+    /// Its path where the files are read in place (macOS, Linux, Windows); `None`
     /// where they were copied for the app (iOS, Android, the web).
     pub path: Option<String>,
     /// Its files, sub-folders included (hidden ones left out). Each one's
@@ -618,8 +618,8 @@ impl SaveFile {
 /// Where [`AsyncApp::save_file`] put the file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedFile {
-    /// The file's path where the platform says it (macOS, Linux, iOS and
-    /// iPadOS): for [`App::reveal_path`]. `None` on the web (the browser
+    /// The file's path where the platform says it (macOS, Linux, Windows,
+    /// iOS and iPadOS): for [`App::reveal_path`]. `None` on the web (the browser
     /// downloads it) and on Android (a document of the storage provider).
     pub path: Option<std::path::PathBuf>,
     /// Its name, as the user chose it where the platform says it.
@@ -709,7 +709,7 @@ pub enum DeviceCall {
     /// Sign in with Apple (AuthenticationServices).
     SignInWithApple(crate::security::AppleSignIn),
     /// The redirect URI the platform can catch for a web sign-in: a custom
-    /// scheme (Apple, Android), a loopback port (Linux), the server (web).
+    /// scheme (Apple, Android), a loopback port (Linux, Windows), the server (web).
     /// `Some(uri)` asks for that one.
     AuthRedirect(Option<String>),
     /// Opens `url` in the system's sign-in browser and answers the URL it
@@ -725,7 +725,7 @@ pub enum DeviceCall {
     OpenUrlIn(String, crate::request::UrlTarget),
 
     // --- Handing a file to the user (#210) ---
-    /// Lets the user keep a file: a save panel (macOS, Linux), "Save to
+    /// Lets the user keep a file: a save panel (macOS, Linux, Windows), "Save to
     /// Files" (iOS, iPadOS, visionOS), `ACTION_CREATE_DOCUMENT` (Android), a
     /// download (web). Answers `Files` with the saved file (an empty path
     /// where the platform doesn't say it), `Cancelled` if the user cancels.
@@ -1004,8 +1004,8 @@ impl App {
 
     /// Shows `path` in the system's file manager with the file selected
     /// (#210): the Finder on macOS, the desktop's file manager on Linux
-    /// (`org.freedesktop.FileManager1`, else its folder opens). Nothing on
-    /// the web or mobile platforms.
+    /// (`org.freedesktop.FileManager1`, else its folder opens), Explorer on
+    /// Windows. Nothing on the web or mobile platforms.
     pub fn reveal_path(&mut self, path: impl Into<std::path::PathBuf>) {
         self.device_call(DeviceCall::RevealPath(path.into()));
     }
@@ -1152,7 +1152,7 @@ impl AsyncApp {
     }
 
     /// Lets the user keep a file the app holds (#210), with the platform's
-    /// own UI: a save panel on macOS and Linux (the user picks the name and
+    /// own UI: a save panel on macOS, Linux and Windows (the user picks the name and
     /// folder), "Save to Files" on iOS, iPadOS and visionOS, the storage
     /// picker (`ACTION_CREATE_DOCUMENT`) on Android, a download on the web
     /// (bytes the server holds, so no bearer header is needed). `None` if
@@ -1185,7 +1185,8 @@ impl AsyncApp {
     /// they are copied for the app (the web uploads them, like
     /// [`pick_files`](Self::pick_files)). `NSOpenPanel` on macOS, the Files
     /// app's folder picker on iOS, `ACTION_OPEN_DOCUMENT_TREE` on Android,
-    /// GTK's folder chooser on Linux, `<input webkitdirectory>` on the web;
+    /// GTK's folder chooser on Linux, `IFileOpenDialog` on Windows,
+    /// `<input webkitdirectory>` on the web;
     /// [`DeviceError::Unavailable`] on tvOS and watchOS.
     pub async fn pick_folder(
         &self,

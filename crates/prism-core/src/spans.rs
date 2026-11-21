@@ -14,7 +14,8 @@
 //! The paragraph wraps between words (not between runs), is one element for
 //! screen readers, and maps to `NSAttributedString` (AppKit, UIKit),
 //! `AttributedString` (SwiftUI on watchOS), a `SpannableString` (Android),
-//! Pango attributes (GTK) and inline `<span>`/`<a>` on the web.
+//! Pango attributes (GTK), XAML `Run`s and `Hyperlink`s (Windows) and
+//! inline `<span>`/`<a>` on the web.
 //!
 //! Backends receive the runs as the text node's config
 //! ([`Patch::SetConfig`](crate::Patch::SetConfig)), encoded by

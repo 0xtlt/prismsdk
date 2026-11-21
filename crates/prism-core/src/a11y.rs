@@ -1,5 +1,6 @@
 //! Accessibility: one description, mapped to ARIA on the web, `UIAccessibility`
-//! on iOS and `NSAccessibility` on macOS.
+//! on iOS, `NSAccessibility` on macOS, GTK's accessible roles on Linux,
+//! Android's accessibility nodes and UI Automation on Windows.
 //!
 //! Defaults are automatic: buttons, inputs, toggles, tabs and screens carry the
 //! right role; a clickable `div` becomes a button labelled with its text. Use
@@ -233,7 +234,8 @@ pub trait Accessible: Sized {
     /// The platform's tooltip, shown while the pointer rests on the element
     /// (#216): `toolTip` on macOS, `UIToolTipInteraction` on iPadOS and
     /// visionOS (iOS 15), the `title` attribute on the web, GTK tooltips,
-    /// `setTooltipText` on Android. Screen readers read it as a description.
+    /// `setTooltipText` on Android, `ToolTipService` on Windows. Screen
+    /// readers read it as a description.
     /// Touch screens without a pointer show none (Android: a long press).
     fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.a11y_mut().tooltip = Some(Tooltip::Text(text.into()));
@@ -244,7 +246,7 @@ pub trait Accessible: Sized {
     /// truncated (`truncate()`, `line_clamp(n)`), checked by the platform
     /// as the pointer rests on it (#216). The full title of a tab or a
     /// sidebar row without measuring it. macOS, Linux, Android and the web;
-    /// iPadOS shows none.
+    /// iPadOS and Windows show none.
     fn tooltip_when_truncated(mut self) -> Self {
         self.a11y_mut().tooltip = Some(Tooltip::WhenTruncated);
         self

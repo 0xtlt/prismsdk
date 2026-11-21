@@ -10,7 +10,7 @@
 //! each mounted scene element).
 //!
 //! How backends get a blob by id: the web `GET <base>/_prism/3d/<id>`
-//! (served by the app server); Linux [`get`]; Apple `prism_scene_blob`
+//! (served by the app server); Linux and Windows [`get`]; Apple `prism_scene_blob`
 //! (prism-native); Android a JNI call (prism-android).
 //!
 //! ## Binary layouts
