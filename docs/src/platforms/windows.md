@@ -476,8 +476,10 @@ aloud.
   MSVC](#architectures-and-msvc)).
 - **Accessibility:** checked through UI Automation (`windows-a11y.sh`),
   not with Narrator listening (it speaks aloud); `PRISM_HIGH_CONTRAST`
-  forces Prism's colors only: WinUI's own controls take their contrast
-  theme from the system alone; `tooltip_when_truncated` shows no tooltip;
+  forces Prism's colors and WinUI's light or dark theme, but WinUI's own
+  controls take their contrast colors from the system alone (a text box
+  stays Fluent's under the override); `tooltip_when_truncated` shows no
+  tooltip;
   a view lifted with `z_index` comes later in the focus and reading order
   than its place in the source.
 - **Performance:** a screen of 650 nodes shows its first frame in about
