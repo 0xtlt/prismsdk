@@ -161,6 +161,7 @@ impl Win {
         self.palette = Palette::new(self.dark(), self.accent);
         crate::imp::set_dark_title_bar(self.hwnd, self.dark());
         let _ = self.theme_root();
+        crate::menubar::retheme(&self.palette);
         let ids: Vec<NodeId> = self.views.keys().copied().collect();
         for id in ids {
             self.restyle(id);
@@ -911,6 +912,10 @@ impl Widgets for Win {
         if let Some(v) = self.views.get(&id) {
             let _ = controls::set_icon(&v.content, icon);
         }
+        // A field's leading icon changes its padding (`fieldicon.rs`).
+        if kind == NodeKind::TextInput {
+            self.restyle(id);
+        }
         if kind == NodeKind::Tab
             && let Some(p) = parent
         {
@@ -952,8 +957,9 @@ impl Widgets for Win {
                 (e, x, y)
             }
             None => {
+                // In the app's view, under the menu bar.
                 let (x, y) = at.unwrap_or((self.size.0 / 2., self.size.1 / 2.));
-                (ui(&self.root).expect("root"), x, y)
+                (ui(&self.app).expect("app"), x, y)
             }
         };
         if let Err(e) = events::show_menu(&target, menu, x, y) {

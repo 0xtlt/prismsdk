@@ -84,6 +84,12 @@ fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
         }
         // Each step sees what the previous one did.
         drain();
+        // Real input plays over a few hundred milliseconds: the next steps
+        // (a key after a click) and the snapshot's delay come after it.
+        if crate::inject::playing() {
+            after_input(main, steps);
+            return;
+        }
         if (step.starts_with("scroll:") || step.starts_with("key:")) && !steps.is_empty() {
             crate::motion::after(
                 std::time::Duration::from_millis(400),
@@ -101,6 +107,18 @@ fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
             SetTimer(Some(main), TIMER_SNAPSHOT, (after * 1000.) as u32, None);
         }
     }
+}
+
+/// Goes on with `steps` once the real input queued so far has played.
+fn after_input(main: HWND, steps: Vec<String>) {
+    if crate::inject::playing() {
+        crate::motion::after(
+            std::time::Duration::from_millis(100),
+            Box::new(move || after_input(main, steps)),
+        );
+        return;
+    }
+    steps_then_snapshot(main, steps);
 }
 
 fn run_step(step: &str) -> bool {

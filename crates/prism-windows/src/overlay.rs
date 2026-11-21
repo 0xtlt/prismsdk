@@ -106,6 +106,11 @@ struct FlyoutState {
     /// The app closes it: no dismissal to report, nothing to cancel.
     by_app: Cell<bool>,
     config: Cell<OverlayConfig>,
+    /// Where the focus goes back when it closes: what had it before, else
+    /// the anchor's first focusable element. WinUI's own choice, with
+    /// nothing focused before (opened through UI Automation), is the
+    /// page's first element, which scrolls the page back to its top.
+    give_back: std::cell::RefCell<Option<UIElement>>,
 }
 
 pub struct Overlay {
@@ -234,6 +239,11 @@ impl Overlay {
                 let keep = !state.by_app.get() && (c.fixed || (c.manual && !escape_recent()));
                 if keep && let Some(a) = a.as_ref() {
                     a.SetCancel(true)?;
+                    return Ok(());
+                }
+                // The focus goes back before the flyout takes it away.
+                if let Some(e) = state.give_back.borrow_mut().take() {
+                    let _ = e.Focus(FocusState::Programmatic);
                 }
                 Ok(())
             }),
@@ -533,6 +543,22 @@ impl Win {
                     }
                     o.state.by_app.set(false);
                     o.state.shown.set(true);
+                    // A flyout that takes the focus gives it back.
+                    let back = if transient {
+                        None
+                    } else {
+                        anchor
+                            .XamlRoot()
+                            .ok()
+                            .and_then(|r| FocusManager::GetFocusedElementWithRoot(&r).ok())
+                            .and_then(|e| e.cast::<UIElement>().ok())
+                            .or_else(|| {
+                                FocusManager::FindFirstFocusableElement(&anchor)
+                                    .ok()
+                                    .and_then(|e| e.cast::<UIElement>().ok())
+                            })
+                    };
+                    o.state.give_back.replace(back);
                     // Where the anchor is now (a scroll just asked for).
                     if let Ok(fe) = anchor.cast::<crate::winui::xaml::FrameworkElement>() {
                         let _ = fe.UpdateLayout();

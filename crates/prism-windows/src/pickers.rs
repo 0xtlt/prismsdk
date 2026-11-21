@@ -24,6 +24,36 @@ use windows::core::{HRESULT, HSTRING, PCWSTR};
 
 use crate::win::wide;
 
+/// The filters' names, in the app's language (`App::chrome_text`), as the
+/// other backends' dialogs name theirs in the system's: Windows gives none
+/// for a list of patterns.
+#[derive(Clone, Debug)]
+pub struct FilterNames {
+    pub files: String,
+    pub images: String,
+    pub all_files: String,
+}
+
+impl FilterNames {
+    pub fn of(app: &prism_core::App) -> FilterNames {
+        FilterNames {
+            files: app.chrome_text("files"),
+            images: app.chrome_text("images"),
+            all_files: app.chrome_text("all_files"),
+        }
+    }
+}
+
+impl Default for FilterNames {
+    fn default() -> Self {
+        FilterNames {
+            files: "Files".into(),
+            images: "Images".into(),
+            all_files: "All files".into(),
+        }
+    }
+}
+
 /// What to pick.
 pub enum Pick {
     /// Files of these types (MIME types or `.ext`), one or several.
@@ -47,7 +77,7 @@ fn failed(e: windows::core::Error) -> DeviceError {
 }
 
 /// Shows an open dialog over `owner` and returns the chosen paths.
-pub fn open(owner: HWND, pick: &Pick) -> Result<Vec<PathBuf>, DeviceError> {
+pub fn open(owner: HWND, pick: &Pick, names: &FilterNames) -> Result<Vec<PathBuf>, DeviceError> {
     unsafe {
         let dialog: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).map_err(failed)?;
@@ -62,7 +92,11 @@ pub fn open(owner: HWND, pick: &Pick) -> Result<Vec<PathBuf>, DeviceError> {
                 }
                 if let Some(spec) = filter_spec(types) {
                     let all_images = types.iter().all(|t| t.trim() == "image/*");
-                    let name = if all_images { "Images" } else { "Files" };
+                    let name = if all_images {
+                        &names.images
+                    } else {
+                        &names.files
+                    };
                     filters.push((wide(&format!("{name} ({spec})")), wide(&spec)));
                 }
             }
@@ -72,7 +106,7 @@ pub fn open(owner: HWND, pick: &Pick) -> Result<Vec<PathBuf>, DeviceError> {
                     options |= FOS_ALLOWMULTISELECT;
                 }
                 let spec = patterns("image/*").join(";");
-                filters.push((wide(&format!("Images ({spec})")), wide(&spec)));
+                filters.push((wide(&format!("{} ({spec})", names.images)), wide(&spec)));
                 if let Ok(pictures) =
                     SHGetKnownFolderItem::<IShellItem>(&FOLDERID_Pictures, KF_FLAG_DEFAULT, None)
                 {
@@ -110,7 +144,7 @@ pub fn open(owner: HWND, pick: &Pick) -> Result<Vec<PathBuf>, DeviceError> {
 
 /// Shows a save dialog over `owner` for `name` (Windows asks before
 /// replacing a file) and returns the chosen path.
-pub fn save(owner: HWND, name: &str) -> Result<PathBuf, DeviceError> {
+pub fn save(owner: HWND, name: &str, names: &FilterNames) -> Result<PathBuf, DeviceError> {
     unsafe {
         let dialog: IFileSaveDialog =
             CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).map_err(failed)?;
@@ -127,7 +161,7 @@ pub fn save(owner: HWND, name: &str) -> Result<PathBuf, DeviceError> {
             ));
             let _ = dialog.SetDefaultExtension(&HSTRING::from(ext));
         }
-        filters.push((wide("All files (*.*)"), wide("*.*")));
+        filters.push((wide(&format!("{} (*.*)", names.all_files)), wide("*.*")));
         set_filters(&dialog, &filters)?;
         dialog.SetFileName(&HSTRING::from(name)).map_err(failed)?;
         dialog.Show(Some(owner)).map_err(failed)?;
