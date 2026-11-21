@@ -57,6 +57,7 @@ The app gets the value as JSON either way (`WebMessageEvent::data::<T>()`, `data
 
 - Messages from other origins are dropped, and messages to the page are delivered only while it shows an allowed origin. A message is for the origin the page shows when the app sends it: if the page has moved to another origin by the time it arrives, it is dropped.
 - Native web views keep their main frame on them: a link to another origin opens in the system browser. Scripts and redirects may still navigate; their messages are filtered.
+- Natively, nothing opens outside the app unless the user tapped or clicked for it: a link, or a new window (unless a sandbox leaves out `popups()`). Only web links open (in the system browser), and `mailto:` and `tel:` ones (in the mail and phone apps); never another app's own scheme (`intent:`, `market:`, a custom one).
 - On the web, a frame cannot be held back: it may navigate anywhere. Only its messages are filtered.
 - Messages must come from the main frame of the web view (an `<iframe>` inside the page does not speak for it).
 - The app checks the origin again before `on_message` runs, whatever the platform reports. On the web the browser's script reports it, so a modified page can claim any origin the view allows: `WebMessageEvent::origin` tells which page talks, not that its service vouches for the message. Before a privileged effect (a payment, a grant), confirm with that service, server to server.
@@ -71,7 +72,7 @@ web_view(url).sandbox(WebSandbox::new().scripts().same_origin())
 |---|---|---|---|---|
 | `scripts()` | `allow-scripts` | `allowsContentJavaScript` | `setJavaScriptEnabled` | `IsScriptEnabled` |
 | `forms()` | `allow-forms` | form navigations cancelled otherwise | not enforced | otherwise a script in every frame stops submissions (`submit`, `form.submit()`, `requestSubmit()`) and every POST of a document is answered 403 before it leaves |
-| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open`: the system browser; ignored otherwise | the same | the same (`NewWindowRequested`) |
+| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open` after a tap: the system browser; ignored otherwise | the same | the same (`NewWindowRequested`, user-initiated) |
 | `same_origin()` | `allow-same-origin` | otherwise a private, non-persistent data store | otherwise DOM storage off | otherwise InPrivate |
 
 A window the page opens with `popups()` is not sandboxed: on the web it is a normal tab (`allow-popups-to-escape-sandbox`), as natively, where it opens in the system browser.

@@ -28,7 +28,8 @@ import org.json.JSONTokener;
  * allowed origins). The page posts with `prismHost.postMessage(JSON.stringify(v))`
  * and gets the app's messages as `message` events on `window`. Only the
  * allowed origins (the config's, else the URL's own) are heard and posted to;
- * a link to another origin opens in the browser.
+ * a link to another origin opens in the browser. Nothing opens outside the
+ * app without a tap, nor for another app's own scheme (PrismLinks).
  *
  * The page's messages come through a message port handed to its main frame
  * only (`postWebMessage` checks the frame's origin when it delivers): an
@@ -113,10 +114,13 @@ final class PrismWeb {
             }
         });
         w.setWebChromeClient(new WebChromeClient() {
-            /** New windows: their first URL opens in the browser, if allowed. */
+            /**
+             * New windows: their first URL opens in the browser, if the user asked for the
+             * window (not a script on its own) and the sandbox allows it.
+             */
             @Override
             public boolean onCreateWindow(WebView view, boolean dialog, boolean gesture, Message result) {
-                if (s.sandbox != null && !s.sandbox.contains("popups")) return false;
+                if (!PrismLinks.popup(gesture, s.sandbox)) return false;
                 WebView catcher = new WebView(view.getContext());
                 catcher.setWebViewClient(new WebViewClient() {
                     @Override
@@ -159,7 +163,9 @@ final class PrismWeb {
         return origin != null && list.contains(origin.toLowerCase(Locale.ROOT));
     }
 
+    /** Web links, mail and phone numbers open in their app; nothing else (PrismLinks). */
     static void openExternally(Uri u) {
+        if (u == null || !PrismLinks.external(u.toString())) return;
         try {
             Intent i = new Intent(Intent.ACTION_VIEW, u);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

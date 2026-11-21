@@ -429,11 +429,13 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
         CoreWebView2NewWindowRequestedEventArgs,
     >::new(move |_, a| {
         let Some(a) = a.as_ref() else { return Ok(()) };
-        // Never a WebView2 window of its own: the browser, if allowed.
+        // Never a WebView2 window of its own: the browser, if allowed and
+        // asked for by the user (WebView2 has no popup blocker: a script
+        // could open the browser on its own).
         a.SetHandled(true)?;
         let popups =
             state_of(id).is_some_and(|s| s.borrow().config.sandbox.is_none_or(|s| s.popups));
-        if popups {
+        if popups && a.IsUserInitiated()? {
             open_externally(&a.Uri()?.to_string());
         }
         Ok(())
