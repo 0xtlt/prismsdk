@@ -196,7 +196,12 @@ icloud = true
     assert_eq!(p.device.as_deref(), Some("My iPhone"));
     assert!(p.icloud);
     assert_eq!(p.root, dir.to_path_buf());
-    assert!(p.target_dir.ends_with("target"));
+    // `cargo metadata`'s target directory: `CARGO_TARGET_DIR` when the tests
+    // run with one, else the project's `target`.
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .and_then(|t| std::path::Path::new(&t).file_name().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "target".into());
+    assert!(p.target_dir.ends_with(&target), "{:?}", p.target_dir);
 }
 
 #[test]
