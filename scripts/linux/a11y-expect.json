@@ -1,0 +1,46 @@
+{
+  "always": ["no-type-names", "controls-focusable", "named-controls", "one-selected-tab"],
+  "cases": [
+    {
+      "name": "home",
+      "path": "/",
+      "checks": [{"tabs": ["Todos", "Focus", "Components", "Settings"]}]
+    },
+    {"name": "focus", "path": "/focus"},
+    {
+      "name": "components",
+      "path": "/components",
+      "checks": [
+        {"element": {"role": "heading", "name": "Timetable"}},
+        {"element": {"role": "button", "name": "Primary", "focusable": true}},
+        {"element": {"role": "button", "name": "Disabled", "focusable": false}},
+        {"element": {"role": "button", "name": "Open the timetable", "focusable": true}},
+        {"element": {"role": "image", "name": "QR code: example.com pairing link"}},
+        {"table": {"name": "Timetable", "columns": ["Time", "Line", "Destination", "Min"], "rows": 5}}
+      ]
+    },
+    {
+      "name": "table",
+      "path": "/components/table",
+      "checks": [
+        {"table": {"name": "Timetable", "columns": ["Time", "Line", "Destination", "Min"], "rows": 5}}
+      ]
+    },
+    {
+      "name": "press",
+      "path": "/components",
+      "back": true,
+      "press": [
+        {"role": "button", "name": "Add one tap", "key": "Return"},
+        {"role": "button", "name": "Add one tap", "key": "space"},
+        {"role": "button", "name": "This whole text is clickable: tapped 0 times", "key": "Return"}
+      ],
+      "checks": [
+        {"element": {"role": "label", "name": "+2"}},
+        {"element": {"role": "button", "name": "This whole text is clickable: tapped 1 time"}}
+      ]
+    },
+    {"name": "settings", "path": "/settings"},
+    {"name": "detail", "path": "/todos/new"}
+  ]
+}

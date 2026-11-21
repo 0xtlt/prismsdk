@@ -26,6 +26,8 @@ mod input;
 #[cfg(target_os = "linux")]
 mod layout;
 #[cfg(target_os = "linux")]
+mod names;
+#[cfg(target_os = "linux")]
 mod navbar;
 #[cfg(target_os = "linux")]
 mod padding;
