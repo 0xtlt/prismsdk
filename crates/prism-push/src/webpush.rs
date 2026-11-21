@@ -9,9 +9,9 @@ use std::time::{Duration, SystemTime};
 
 use aes_gcm::aead::{Aead, KeyInit};
 use hmac::Mac;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::Generate;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::{PublicKey, SecretKey};
-use rand_core::{OsRng, RngCore};
 use serde_json::json;
 
 use crate::{HttpRequest, Push, PushError, Subscription, Urgency, b64, unb64};
@@ -22,8 +22,16 @@ type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 /// message size works; 4096 like browsers).
 const RECORD_SIZE: u32 = 4096;
 
+/// `N` bytes from the system's secure generator (a failure there leaves
+/// nothing safe to do: it panics, as key generation does).
+fn random<const N: usize>() -> [u8; N] {
+    let mut bytes = [0; N];
+    getrandom::fill(&mut bytes).expect("the system's random number generator");
+    bytes
+}
+
 fn hmac(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
-    let mut m = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC takes any key size");
+    let mut m = <HmacSha256 as KeyInit>::new_from_slice(key).expect("HMAC takes any key size");
     for p in parts {
         m.update(p);
     }
@@ -50,7 +58,7 @@ fn derive(
 }
 
 fn public_bytes(key: &PublicKey) -> Vec<u8> {
-    key.to_encoded_point(false).as_bytes().to_vec()
+    key.to_sec1_point(false).as_bytes().to_vec()
 }
 
 fn parse_public(bytes: &[u8]) -> Result<PublicKey, PushError> {
@@ -61,15 +69,7 @@ fn parse_public(bytes: &[u8]) -> Result<PublicKey, PushError> {
 /// Encrypts `plaintext` for a subscription's keys (`p256dh`, `auth`, both
 /// decoded), with a fresh key pair and salt.
 pub fn encrypt(plaintext: &[u8], p256dh: &[u8], auth: &[u8]) -> Result<Vec<u8>, PushError> {
-    let mut salt = [0u8; 16];
-    OsRng.fill_bytes(&mut salt);
-    encrypt_with(
-        plaintext,
-        p256dh,
-        auth,
-        &SecretKey::random(&mut OsRng),
-        salt,
-    )
+    encrypt_with(plaintext, p256dh, auth, &SecretKey::generate(), random())
 }
 
 /// [`encrypt`] with a given sender key and salt (test vectors).
@@ -101,7 +101,7 @@ pub fn encrypt_with(
     record.push(2); // last (and only) record, no padding
     let sealed = aes_gcm::Aes128Gcm::new_from_slice(&cek)
         .unwrap()
-        .encrypt(aes_gcm::Nonce::from_slice(&nonce), record.as_slice())
+        .encrypt(&nonce.into(), record.as_slice())
         .map_err(|_| PushError::Config("encryption failed".into()))?;
     let mut out = Vec::with_capacity(86 + sealed.len());
     out.extend_from_slice(&salt);
@@ -122,11 +122,9 @@ pub struct ReceiverKeys {
 
 impl ReceiverKeys {
     pub fn generate() -> Self {
-        let mut auth = [0u8; 16];
-        OsRng.fill_bytes(&mut auth);
         ReceiverKeys {
-            secret: SecretKey::random(&mut OsRng),
-            auth,
+            secret: SecretKey::generate(),
+            auth: random(),
         }
     }
 
@@ -202,7 +200,7 @@ pub fn decrypt(body: &[u8], receiver: &SecretKey, auth: &[u8]) -> Result<Vec<u8>
     );
     let mut plain = aes_gcm::Aes128Gcm::new_from_slice(&cek)
         .unwrap()
-        .decrypt(aes_gcm::Nonce::from_slice(&nonce), &body[start..])
+        .decrypt(&nonce.into(), &body[start..])
         .map_err(|_| bad("authentication failed (wrong keys?)"))?;
     // Padding: zeros after the delimiter, which must be 2 (last record).
     while plain.last() == Some(&0) {
@@ -226,7 +224,7 @@ impl VapidKey {
     /// (`PRISM_VAPID_PUBLIC_KEY`) and to UnifiedPush.
     pub fn generate() -> Self {
         VapidKey {
-            key: p256::ecdsa::SigningKey::random(&mut OsRng),
+            key: p256::ecdsa::SigningKey::generate(),
         }
     }
 
@@ -254,7 +252,7 @@ impl VapidKey {
     /// The public key (base64url, uncompressed point): the browser's
     /// `applicationServerKey`.
     pub fn public_key(&self) -> String {
-        b64(self.key.verifying_key().to_encoded_point(false).as_bytes())
+        b64(self.key.verifying_key().to_sec1_point(false).as_bytes())
     }
 
     /// The `Authorization` header for `endpoint` (RFC 8292): a JWT for the

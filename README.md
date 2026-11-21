@@ -28,6 +28,8 @@ prism build windows          # a zip: the app and its WinUI runtime (from any OS
 prism devices                # simulators, paired iPhones, Android devices
 ```
 
+Prism needs Rust 1.94 or later.
+
 ```rust
 use prism::prelude::*;
 

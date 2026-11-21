@@ -28,11 +28,14 @@ send = ["dep:reqwest", "dep:ring", "dep:rustls", "dep:tokio"]
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 base64 = "0.22"
-p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "pkcs8", "pem", "std"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
-hmac = "0.12"
-sha2 = "0.10"
+# RustCrypto 0.14 family: crypto-bigint 0.7.6 or later underneath
+# (RUSTSEC-2026-0387, timing leaks in 0.5).
+p256 = { version = "0.14", default-features = false, features = ["ecdh", "ecdsa", "pkcs8", "pem", "std"] }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+hmac = "0.13"
+sha2 = "0.11"
+# Salts, auth secrets and temporary names, from the system's generator.
+getrandom = "0.4"
 ring = { version = "0.17", optional = true }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std"] }
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["http2", "rustls-no-provider", "json", "form"] }

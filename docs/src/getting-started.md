@@ -24,7 +24,7 @@ mise install                 # Rust 1.99 and the platform targets
 mise run cli                 # cargo install --path crates/prism-cli --locked
 ```
 
-Prism needs Rust 1.88 or later. Each target has its own tools: Xcode for the
+Prism needs Rust 1.94 or later. Each target has its own tools: Xcode for the
 Apple platforms, the GTK 4 development files on Linux, Java and the Android
 SDK for Android (see [Android](platforms/android.md)).
 

@@ -102,12 +102,12 @@ fn create_private(path: &Path) -> io::Result<std::fs::File> {
 
 /// `data` in a new private file beside `path`, synced to disk.
 fn write_aside(path: &Path, data: &[u8]) -> io::Result<PathBuf> {
-    use rand_core::{OsRng, RngCore};
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let aside = path.with_file_name(format!(".{name}.{:016x}.tmp~", OsRng.next_u64()));
+    let nonce = getrandom::u64().map_err(io::Error::other)?;
+    let aside = path.with_file_name(format!(".{name}.{nonce:016x}.tmp~"));
     let mut file = create_private(&aside)?;
     if let Err(e) = file.write_all(data).and_then(|()| file.sync_all()) {
         let _ = std::fs::remove_file(&aside);

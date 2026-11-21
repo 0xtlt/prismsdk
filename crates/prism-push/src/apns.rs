@@ -193,7 +193,7 @@ mod tests {
     use crate::unb64;
 
     fn key() -> ApnsKey {
-        let secret = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let secret = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
         let pem = secret.to_pkcs8_pem(Default::default()).unwrap();
         ApnsKey::from_p8(&pem, "ABC123DEFG", "TEAM123456").unwrap()
     }

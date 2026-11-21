@@ -58,7 +58,7 @@ pub(crate) mod tests {
         .unwrap();
         let d = unb64("jpsQnnGQmL-YBIffH1136cspYG6-0iY7X1fCE9-E9LI").unwrap();
         let key = p256::ecdsa::SigningKey::from_slice(&d).unwrap();
-        let point = key.verifying_key().to_encoded_point(false);
+        let point = key.verifying_key().to_sec1_point(false);
         assert_eq!(
             crate::b64(point.x().unwrap()),
             "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU"
