@@ -471,18 +471,25 @@ pub fn detach(e: &UIElement) -> Result<()> {
     Ok(())
 }
 
-/// The scroll view's axis.
-pub fn scroll_axis(sv: &ScrollViewer, vertical: bool) -> Result<()> {
+/// The scroll view's axis and its bar: WinUI's (it shows over the content
+/// while scrolling or under the pointer), or none (`Scrollbar::Hidden`,
+/// #132), the view still scrolling with the wheel, touch and the keyboard.
+pub fn scroll_axis(sv: &ScrollViewer, vertical: bool, bar: prism_core::Scrollbar) -> Result<()> {
+    let shown = if bar == prism_core::Scrollbar::Hidden {
+        ScrollBarVisibility::Hidden
+    } else {
+        ScrollBarVisibility::Auto
+    };
     if vertical {
         sv.SetHorizontalScrollMode(ScrollMode::Disabled)?;
         sv.SetHorizontalScrollBarVisibility(ScrollBarVisibility::Disabled)?;
         sv.SetVerticalScrollMode(ScrollMode::Enabled)?;
-        sv.SetVerticalScrollBarVisibility(ScrollBarVisibility::Auto)?;
+        sv.SetVerticalScrollBarVisibility(shown)?;
     } else {
         sv.SetVerticalScrollMode(ScrollMode::Disabled)?;
         sv.SetVerticalScrollBarVisibility(ScrollBarVisibility::Disabled)?;
         sv.SetHorizontalScrollMode(ScrollMode::Enabled)?;
-        sv.SetHorizontalScrollBarVisibility(ScrollBarVisibility::Auto)?;
+        sv.SetHorizontalScrollBarVisibility(shown)?;
     }
     Ok(())
 }

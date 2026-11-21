@@ -499,7 +499,8 @@ impl Widgets for Win {
         if (axis || n.kind == NodeKind::Scroll)
             && let Some(sv) = self.views.get(&id).and_then(|v| v.scroll.as_ref())
         {
-            let _ = scroll_axis(sv, style.scroll_axis == prism_core::ScrollAxis::Vertical);
+            let vertical = style.scroll_axis == prism_core::ScrollAxis::Vertical;
+            let _ = scroll_axis(sv, vertical, style.scrollbar);
         }
         if tint {
             self.bars.insert(id);
