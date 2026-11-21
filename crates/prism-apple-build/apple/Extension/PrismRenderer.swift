@@ -319,7 +319,8 @@ private func prismLinkAroundActions(_ n: PNode) -> PNode {
 /// the iOS 27 simulator stopped treating the button as one (taps fell
 /// through to the widget's URL). Elsewhere (macOS widgets run intents in the
 /// extension, which cannot run the app's code) the tap opens the app on the
-/// action's link, and the app runs it there.
+/// action's link, and the app runs it there when the link carries the
+/// action's token (`t`, from the app's snapshot: any app can open the link).
 private func prismActionButton(_ content: AnyView, _ action: [String: Any]) -> AnyView {
     let kind = action["k"] as? String ?? ""
     let name = action["a"] as? String ?? ""
@@ -331,7 +332,8 @@ private func prismActionButton(_ content: AnyView, _ action: [String: Any]) -> A
     // prism-core `WidgetAction::to_link`.
     let safe = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
     let q = { (s: String) in s.addingPercentEncoding(withAllowedCharacters: safe) ?? "" }
-    let path = "/__prism/widget-action?kind=\(q(kind))&action=\(q(name))&payload=\(q(payload))"
+    let token = action["t"] as? String ?? ""
+    let path = "/__prism/widget-action?kind=\(q(kind))&action=\(q(name))&payload=\(q(payload))&token=\(q(token))"
     guard let url = prismURL(path) else { return content }
     return AnyView(Link(destination: url) { content })
     #endif

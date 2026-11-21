@@ -5348,11 +5348,12 @@ pub fn run(config: AppConfig, init: AppInit) {
         window.clone(),
         config.title.clone(),
     );
+    let capabilities = prism_core::PlatformServices::capabilities(&services);
     let mut runtime = Runtime::with_options(
         &init,
         prism_core::RuntimeOptions {
             path,
-            capabilities: prism_core::PlatformServices::capabilities(&services),
+            capabilities,
             storage: Some(Box::new(prism_core::FileStorage::new(data_dir(
                 &config.title,
             )))),
@@ -5371,6 +5372,12 @@ pub fn run(config: AppConfig, init: AppInit) {
     runtime
         .app
         .set_widget_configurations_source(prism_native::apple::widget_configurations);
+    // Widget buttons open the app on links that only its widgets can sign.
+    if capabilities.widgets {
+        runtime
+            .app
+            .set_widget_key(crate::widget_key::load(&data_dir(&config.title)));
+    }
     let renderer = NativeRenderer::new(AppKit {
         mtm,
         target: target.clone(),

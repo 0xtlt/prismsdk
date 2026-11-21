@@ -927,6 +927,52 @@ fn s13_reports_with_numbers_past_f32_are_dropped() {
     assert!(parse_event(&json!({ "t": "scroll", "id": 1, "o": 12.5, "v": 300 })).is_some());
 }
 
+/// S19: the page's `link` message opens the app's links (a notification
+/// tap). A widget action's link runs nothing there: only a link with the
+/// app's token does, and the web has no widgets, so no key.
+#[test]
+fn s19_a_link_from_the_page_runs_no_widget_action() {
+    use crate::tests::{Page, web_app};
+    use prism_core::prelude::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static RAN: AtomicBool = AtomicBool::new(false);
+    struct Here(&'static str);
+    impl Render for Here {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            text(self.0)
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let router = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| Here("home")))
+            .route("/next", |cx, _| cx.new_entity(|_| Here("next")))
+            .build(cx);
+        cx.set_root(router);
+        cx.on_widget_action(|_, _| async { RAN.store(true, Ordering::SeqCst) });
+    });
+    let (app, dir) = web_app(init, "s19");
+    let page = Page::open(&app, "/ws?path=%2F");
+    page.next();
+    page.send(json!({ "t": "link", "path": "/__prism/widget-action?kind=w&action=go&payload=1" }));
+    page.send(json!({ "t": "link", "path": "/__prism/widget-action?kind=w&action=go&payload=1&token=00000000000000000000000000000000" }));
+    // Messages are applied in order: once `/next` shows, both links were.
+    page.send(json!({ "t": "link", "path": "/next" }));
+    let mut shown = false;
+    for _ in 0..3 {
+        if page.next()["p"].to_string().contains(r#""next""#) {
+            shown = true;
+            break;
+        }
+    }
+    assert!(shown, "the page link navigates");
+    assert!(
+        !RAN.load(Ordering::SeqCst),
+        "a page link ran a widget action"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // --- S14, S15: sign-ins and cookies the server completes ------------------------------------
 
 /// S14: two sessions wait for sign-ins under the same call number. One

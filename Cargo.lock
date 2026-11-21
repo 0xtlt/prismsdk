@@ -2395,9 +2395,11 @@ name = "prismsdk-core"
 version = "0.1.0"
 dependencies = [
  "gltf-json",
+ "hmac",
  "prismsdk-testing",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -2466,6 +2468,7 @@ version = "0.1.0"
 dependencies = [
  "block2",
  "dispatch2",
+ "getrandom 0.3.4",
  "objc2",
  "objc2-app-kit",
  "objc2-core-graphics",

@@ -27,6 +27,8 @@ objc2-quartz-core.workspace = true
 objc2-core-graphics.workspace = true
 block2.workspace = true
 dispatch2.workspace = true
+# The widget-link key (S19).
+getrandom = "0.3"
 
 [build-dependencies]
 prism-apple-build.workspace = true
