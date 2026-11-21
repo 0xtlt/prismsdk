@@ -185,6 +185,12 @@ impl Win {
             {
                 let _ = controls::set_paths(&v.content, &n.paths, &self.palette_for(id));
             }
+            if let (Some(n), Some(Content::Rich(r))) =
+                (self.scene.get(id), self.views.get(&id).map(|v| &v.content))
+                && let Err(e) = r.retheme(&n.style, &self.palette_for(id), self.scale())
+            {
+                log!("rich input {id}: {e}");
+            }
         }
     }
 
