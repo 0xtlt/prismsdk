@@ -123,7 +123,15 @@ impl Island {
             }
         }
         let bridge = source.SiteBridge()?;
+        if let Some(k) = crate::system::scale_override() {
+            let _ = bridge.SetOverrideScale(k);
+        }
         Ok(Island { source, bridge })
+    }
+
+    /// XAML's scale in place of the monitor's (`PRISM_SCALE`).
+    pub fn set_scale(&self, k: f32) {
+        let _ = self.bridge.SetOverrideScale(k);
     }
 
     /// The client area changed size (pixels).

@@ -1,16 +1,21 @@
 //! 3D scenes (`scene3d()`): the frames of the core's [`ScenePlayer`] drawn
 //! by prism-native's OpenGL renderer ([`prism_native::gl3d`], the GTK
 //! backend's), in a WGL context of the app's (OpenGL 3.3 core, the GPU
-//! driver's), and shown by a XAML `Image`.
+//! driver's), and shown by a XAML `SwapChainPanel`.
 //!
 //! WinUI composes with DirectX, so OpenGL cannot draw into the island
 //! itself: each scene draws into a framebuffer of its own at its size in
-//! pixels, reads it back and copies it into a `WriteableBitmap`. Every
-//! scene shares the one context (a hidden window's), so meshes, textures
-//! and environments are uploaded once for all of them.
+//! pixels, which goes to the panel's DXGI swap chain on the GPU
+//! (`dxgl.rs`, `WGL_NV_DX_interop2`); a driver without that extension
+//! reads it back into a `WriteableBitmap` shown by an `Image` in the
+//! panel. Every scene shares the one context (a hidden window's), so
+//! meshes, textures and environments are uploaded once for all of them;
+//! it starts after the window's first frame (loading the GPU driver takes
+//! a while).
 //!
 //! Drawn on change only: while the player says something moves, a frame
-//! every 16 ms; none when it stops (idle: no CPU). Input as on the other
+//! at each of XAML's frames (`CompositionTarget::Rendering`, the display's
+//! rate); none when it stops (idle: no CPU). Input as on the other
 //! backends: drag to turn (right or Shift drag: pan), two fingers or the
 //! wheel zoom, a click that did not move taps (`UiEvent::SceneTap`).
 //! Textures load and decode (WIC) off the UI thread.
@@ -52,8 +57,9 @@ use crate::imp::{dispatch, with_state};
 use crate::win::log;
 use crate::winui::bindings::Microsoft::UI::Dispatching::{DispatcherQueue, DispatcherQueueHandler};
 use crate::winui::bindings::Microsoft::UI::Input::{PointerDeviceType, PointerUpdateKind};
-use crate::winui::xaml::Controls::Image;
+use crate::winui::xaml::Controls::{Image, SwapChainPanel};
 use crate::winui::xaml::Input::{PointerEventHandler, PointerRoutedEventArgs};
+use crate::winui::xaml::Media::CompositionTarget;
 use crate::winui::xaml::Media::Imaging::WriteableBitmap;
 use crate::winui::xaml::Media::Stretch;
 use crate::winui::xaml::UIElement;
@@ -61,7 +67,7 @@ use crate::winui::xaml::UIElement;
 /// A wheel notch scrolls 100 points (browsers' unit for the player's
 /// `exp(-delta_y * 0.002)` zoom), so a notch zooms the same everywhere.
 const POINTS_PER_NOTCH: f32 = 100.;
-/// While the scene moves: a frame this often (ms).
+/// While the scene moves, without XAML's frames: a frame this often (ms).
 const FRAME_MS: u32 = 16;
 
 // --- The OpenGL context -------------------------------------------------------------------
@@ -71,6 +77,8 @@ struct Context {
     hdc: HDC,
     hglrc: HGLRC,
     shared: Rc<RefCell<Shared>>,
+    /// Frames to the swap chains on the GPU (else read back).
+    interop: Option<crate::dxgl::Interop>,
     /// The framebuffer scenes draw into, and its size.
     target: RefCell<Option<Target>>,
 }
@@ -142,6 +150,8 @@ unsafe extern "system" fn window_proc(
 /// A hidden window with an OpenGL pixel format, and a 3.3 core context on
 /// it (`WGL_ARB_create_context`).
 unsafe fn create() -> std::result::Result<Context, String> {
+    let started = std::time::Instant::now();
+    let before = crate::imp::memory_counters();
     unsafe {
         let instance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
         let class = w!("PrismGL");
@@ -212,16 +222,38 @@ unsafe fn create() -> std::result::Result<Context, String> {
             gl.get_parameter_i32(glow::MINOR_VERSION),
         );
         gl3d::check_version(major, minor, false, false)?;
+        let after = crate::imp::memory_counters();
+        let mb = |a: usize, b: usize| (a as f64 - b as f64) / 1048576.;
         log!(
-            "3D scenes: {} {}",
+            "3D scenes: {} {} (OpenGL started in {:.0} ms, +{:.1} MB working set, +{:.1} MB \
+             private)",
             gl.get_parameter_string(glow::RENDERER),
-            gl.get_parameter_string(glow::VERSION)
+            gl.get_parameter_string(glow::VERSION),
+            started.elapsed().as_secs_f64() * 1000.,
+            mb(after.WorkingSetSize, before.WorkingSetSize),
+            mb(after.PrivateUsage, before.PrivateUsage)
         );
-        GL.with(|g| *g.borrow_mut() = Some(Rc::new(gl)));
+        let gl = Rc::new(gl);
+        GL.with(|g| *g.borrow_mut() = Some(gl.clone()));
+        let interop = if crate::win::env("PRISM_3D_READBACK").is_some() {
+            None
+        } else {
+            match crate::dxgl::Interop::new(hdc, proc_address, &gl) {
+                Ok(i) => {
+                    log!("3D scenes: frames on the GPU ({})", i.describe());
+                    Some(i)
+                }
+                Err(e) => {
+                    log!("3D scenes: frames read back through the CPU ({e})");
+                    None
+                }
+            }
+        };
         Ok(Context {
             hdc,
             hglrc,
             shared: Rc::default(),
+            interop,
             target: RefCell::new(None),
         })
     }
@@ -281,9 +313,9 @@ unsafe fn bind_target(ctx: &Context, gl: &glow::Context, size: (i32, i32)) -> bo
 
 // --- Scenes ---------------------------------------------------------------------------------
 
-/// A scene node's `Image` and what draws in it.
+/// A scene node's panel and what draws in it.
 pub struct SceneView {
-    pub element: Image,
+    pub element: SwapChainPanel,
     state: Rc<RefCell<State>>,
 }
 
@@ -295,7 +327,18 @@ struct State {
     wanted: Wanted,
     prune: bool,
     animating: bool,
+    panel: SwapChainPanel,
+    /// The panel's swap chain (frames on the GPU), until it fails.
+    surface: Option<crate::dxgl::Surface>,
+    gpu_failed: bool,
+    /// The rounded clip on the panel: size and radius (DIPs).
+    clipped: Option<(f32, f32, f32)>,
+    /// Else an image in the panel, and its bitmap.
+    image: Option<Image>,
     bitmap: Option<(WriteableBitmap, (i32, i32))>,
+    /// Frames drawn and the time they took, since the first
+    /// (`PRISM_TRACE`).
+    frames: (u32, f64, Option<std::time::Instant>),
     sources: ImageSources,
     /// A drag in progress: the pointer, where it was, whether it pans, how
     /// far it went in all.
@@ -310,6 +353,8 @@ thread_local! {
     /// Scenes to draw at the next frame, and whether the timer runs.
     static DIRTY: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
     static TIMER: Cell<usize> = const { Cell::new(0) };
+    /// The per-frame handler while scenes draw.
+    static RENDERING: Cell<Option<i64>> = const { Cell::new(None) };
     static START: std::time::Instant = std::time::Instant::now();
 }
 
@@ -319,8 +364,15 @@ fn now() -> f64 {
 
 impl SceneView {
     pub fn new(id: NodeId) -> Result<SceneView> {
-        let element = Image::new()?;
-        element.SetStretch(Stretch::Fill)?;
+        let element = SwapChainPanel::new()?;
+        // Hit everywhere, for the input below (the panel takes no
+        // background): a transparent rectangle over the frames.
+        let hit = crate::winui::xaml::Shapes::Rectangle::new()?;
+        hit.SetFill(&crate::winui::transparent()?)?;
+        element
+            .cast::<crate::winui::xaml::Controls::Panel>()?
+            .Children()?
+            .Append(&hit)?;
         let state = Rc::new(RefCell::new(State {
             id,
             player: None,
@@ -329,13 +381,19 @@ impl SceneView {
             wanted: Wanted::default(),
             prune: false,
             animating: false,
+            panel: element.clone(),
+            surface: None,
+            gpu_failed: false,
+            clipped: None,
+            image: None,
             bitmap: None,
+            frames: (0, 0., None),
             sources: ImageSources::default(),
             drag: None,
             pinch: Default::default(),
         }));
         SCENES.with(|s| s.borrow_mut().insert(id, Rc::downgrade(&state)));
-        attach_input(&element, id)?;
+        attach_input(&element.cast()?, id)?;
         Ok(SceneView { element, state })
     }
 
@@ -394,33 +452,88 @@ impl Drop for SceneView {
     fn drop(&mut self) {
         let mut st = self.state.borrow_mut();
         SCENES.with(|s| s.borrow_mut().remove(&st.id));
-        if let Some(gpu) = st.gpu.take()
-            && context().is_ok()
+        let gpu = st.gpu.take();
+        let surface = st.surface.take();
+        if (gpu.is_some() || surface.is_some())
+            && let Ok(ctx) = context()
         {
             // SAFETY: the context that made its objects is current.
-            unsafe { gpu.delete() };
+            unsafe {
+                if let Some(gpu) = gpu {
+                    gpu.delete();
+                }
+                if let (Some(s), Some(i), Some(gl)) =
+                    (surface, &ctx.interop, GL.with(|g| g.borrow().clone()))
+                {
+                    s.delete(i, &gl);
+                }
+            }
         }
     }
 }
 
-/// Draws scene `id` at the next frame.
+/// Draws scene `id` at the next frame: after the window's first one
+/// (starting OpenGL loads the GPU driver, which takes a while).
 pub fn queue(id: NodeId) {
     DIRTY.with(|d| d.borrow_mut().insert(id));
-    if TIMER.get() == 0 {
-        let t = unsafe { SetTimer(None::<HWND>, 0, 1, Some(tick)) };
-        TIMER.set(t);
+    if crate::imp::framed() {
+        frames_on();
     }
 }
 
-/// The frame timer: draws the scenes that changed or move.
+/// The window's scale changed: every scene draws again at its new size
+/// in pixels.
+pub fn redraw_all() {
+    let ids: Vec<NodeId> = SCENES.with(|s| s.borrow().keys().copied().collect());
+    for id in ids {
+        queue(id);
+    }
+}
+
+/// The window showed its first frame: the scenes waiting for it draw.
+pub fn first_frame() {
+    if DIRTY.with(|d| !d.borrow().is_empty()) {
+        frames_on();
+    }
+}
+
+/// Draws at each of XAML's frames (`CompositionTarget::Rendering`, at the
+/// display's rate) while a scene changes or moves; a timer if XAML
+/// cannot say.
+fn frames_on() {
+    if RENDERING.get().is_some() || TIMER.get() != 0 {
+        return;
+    }
+    let handler = windows::Foundation::EventHandler::<windows_core::IInspectable>::new(|_, _| {
+        frame();
+        Ok(())
+    });
+    match CompositionTarget::Rendering(&handler) {
+        Ok(t) => RENDERING.set(Some(t)),
+        Err(_) => {
+            let t = unsafe { SetTimer(None::<HWND>, 0, FRAME_MS, Some(tick)) };
+            TIMER.set(t);
+        }
+    }
+}
+
+/// The fallback timer.
 unsafe extern "system" fn tick(_: HWND, _: u32, timer: usize, _: u32) {
     unsafe {
         let _ = KillTimer(None::<HWND>, timer);
     }
     TIMER.set(0);
+    frame();
+    if DIRTY.with(|d| !d.borrow().is_empty()) {
+        frames_on();
+    }
+}
+
+/// Draws the scenes that changed or move.
+fn frame() {
     let ids: Vec<NodeId> = DIRTY.with(|d| d.borrow_mut().drain().collect());
     // Where each scene is and the theme (the window's state is free here:
-    // timers run from the message loop).
+    // frames come from the message loop).
     let info = with_state(|s| {
         let w = &s.renderer.widgets;
         let dark = w.dark();
@@ -428,38 +541,54 @@ unsafe extern "system" fn tick(_: HWND, _: u32, timer: usize, _: u32) {
         ids.iter()
             .filter_map(|id| {
                 let n = w.scene.get(*id)?;
-                Some((*id, (n.frame.w, n.frame.h), k, dark))
+                let (fw, fh) = (n.frame.w, n.frame.h);
+                let box_ = Look {
+                    background: n.style.background.map(|c| {
+                        let c = w.palette.fill(c);
+                        [c.r * c.a, c.g * c.a, c.b * c.a, c.a]
+                    }),
+                    radius: match crate::style::corners(&n.style, fw, fh) {
+                        (a, b, c, d) if a == b && b == c && c == d => a,
+                        _ => 0.,
+                    },
+                };
+                Some((*id, (fw, fh), k, dark, box_))
             })
             .collect::<Vec<_>>()
     });
     let Some(info) = info else {
         // The window is busy (a modal loop): next frame.
         DIRTY.with(|d| d.borrow_mut().extend(ids));
-        let t = unsafe { SetTimer(None::<HWND>, 0, FRAME_MS, Some(tick)) };
-        TIMER.set(t);
         return;
     };
     let mut again = Vec::new();
-    for (id, size, k, dark) in info {
+    for (id, size, k, dark, look) in info {
         let Some(state) = SCENES.with(|s| s.borrow().get(&id).and_then(Weak::upgrade)) else {
             continue;
         };
-        if render(&state, size, k, dark) {
+        if render(&state, size, k, dark, look) {
             again.push(id);
         }
     }
-    if !again.is_empty() {
-        DIRTY.with(|d| d.borrow_mut().extend(again));
-        if TIMER.get() == 0 {
-            let t = unsafe { SetTimer(None::<HWND>, 0, FRAME_MS, Some(tick)) };
-            TIMER.set(t);
-        }
+    DIRTY.with(|d| d.borrow_mut().extend(again));
+    // Nothing moves: no more frames until something changes.
+    if DIRTY.with(|d| d.borrow().is_empty())
+        && let Some(t) = RENDERING.take()
+    {
+        let _ = CompositionTarget::RemoveRendering(t);
     }
 }
 
 /// Draws a scene `size` DIPs big (`k` pixels per DIP) into its bitmap.
 /// Returns whether it moves (draw again next frame).
-fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> bool {
+/// A scene node's box: its background (premultiplied) and corner radius.
+#[derive(Clone, Copy, PartialEq)]
+struct Look {
+    background: Option<[f32; 4]>,
+    radius: f32,
+}
+
+fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool, look: Look) -> bool {
     let (w, h) = (
         (size.0 * k).round().max(1.) as i32,
         (size.1 * k).round().max(1.) as i32,
@@ -467,6 +596,7 @@ fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> b
     if size.0 < 1. || size.1 < 1. {
         return false;
     }
+    let started = std::time::Instant::now();
     let ctx = match context() {
         Ok(c) => c,
         Err(e) => {
@@ -499,12 +629,18 @@ fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> b
         wanted,
         prune,
         animating,
+        panel,
+        surface,
+        gpu_failed,
+        clipped,
+        image,
         bitmap,
+        frames,
         ..
     } = &mut *st;
     let Some(gpu) = gpu else { return false };
+    let gpu_path = ctx.interop.is_some() && !*gpu_failed;
     let mut lost = Vec::new();
-    let mut pixels = vec![0u8; (w * h * 4) as usize];
     // SAFETY (here and below): the context is current.
     unsafe {
         if !bind_target(&ctx, &gl, (w, h)) {
@@ -516,7 +652,16 @@ fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> b
         match player {
             Some(player) => {
                 player.advance(now());
-                let frame = player.frame(size.0, size.1, dark);
+                let mut frame = player.frame(size.0, size.1, dark);
+                // A swap chain's transparent pixels show what is behind the
+                // window, not the box under the scene: on the GPU path the
+                // box's background is the frame's.
+                if gpu_path
+                    && frame.clear[3] == 0.
+                    && let Some(bg) = look.background
+                {
+                    frame.clear = bg;
+                }
                 gpu.draw((w, h), &frame, player, images, &mut lost);
                 *animating = frame.animating;
             }
@@ -525,30 +670,99 @@ fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> b
                 *animating = false;
             }
         }
-        gl.bind_framebuffer(
-            glow::READ_FRAMEBUFFER,
-            ctx.target.borrow().as_ref().map(|t| t.fb),
-        );
-        gl.read_pixels(
-            0,
-            0,
-            w,
-            h,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelPackData::Slice(Some(&mut pixels)),
-        );
+    }
+    let fb = ctx.target.borrow().as_ref().map(|t| t.fb);
+    // On the GPU: into the panel's swap chain.
+    let mut shown = false;
+    if let (Some(interop), Some(fb), false) = (&ctx.interop, fb, *gpu_failed) {
+        if surface.is_none() {
+            match crate::dxgl::Surface::new(interop, panel, (w, h), k) {
+                Ok(s) => *surface = Some(s),
+                Err(e) => {
+                    log!("3D scene {id}: swap chain: {e}; frames read back");
+                    *gpu_failed = true;
+                }
+            }
+        }
+        if let Some(s) = surface {
+            // SAFETY: the context is current.
+            match unsafe { s.present(interop, &gl, fb, (w, h), k) } {
+                Ok(()) => {
+                    shown = true;
+                    // The box's rounded corners clip the swap chain.
+                    let clip = (size.0, size.1, look.radius);
+                    if *clipped != Some(clip) {
+                        if let Err(e) = round(panel, clip) {
+                            log!("3D scene {id}: clip: {e}");
+                        }
+                        *clipped = Some(clip);
+                    }
+                }
+                Err(e) => {
+                    // Once: the read-back takes over.
+                    log!("3D scene {id}: present: {e}; frames read back");
+                    *gpu_failed = true;
+                    if let Some(s) = surface.take() {
+                        // SAFETY: the context is current.
+                        unsafe { s.delete(interop, &gl) };
+                    }
+                }
+            }
+        }
+    }
+    // Else through the CPU: read back into a bitmap.
+    if !shown {
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        // SAFETY: the context is current.
+        unsafe {
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, fb);
+            gl.read_pixels(
+                0,
+                0,
+                w,
+                h,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut pixels)),
+            );
+        }
+        if let Err(e) = show(bitmap, &pixels, (w, h)) {
+            log!("3D scene {id}: {e}");
+        }
+        if let Some((b, _)) = bitmap.as_ref()
+            && let Err(e) = set_source(panel, image, b)
+        {
+            log!("3D scene {id}: {e}");
+        }
     }
     let moving = *animating;
-    if let Err(e) = show(bitmap, &pixels, (w, h)) {
-        log!("3D scene {id}: {e}");
+    if crate::perf::on() {
+        // The first frame compiles shaders and uploads meshes: apart.
+        let took = crate::perf::ms(started);
+        frames.0 += 1;
+        let first = *frames.2.get_or_insert(started);
+        let n = frames.0;
+        if n == 1 {
+            log!(
+                "3D scene {id}: first frame {took:.1} ms ({}, {w}x{h} pixels)",
+                if shown { "GPU" } else { "read back" }
+            );
+        } else {
+            frames.1 += took;
+        }
+        if n > 1 && (n % 60 == 1 || !moving) {
+            log!(
+                "3D scene {id}: {} more frames in {:.1} s, {:.2} ms each ({}){}",
+                n - 1,
+                first.elapsed().as_secs_f64(),
+                frames.1 / (n - 1) as f64,
+                if shown { "GPU" } else { "read back" },
+                if moving { "" } else { ", at rest" }
+            );
+        }
     }
-    let element = bitmap.as_ref().map(|(b, _)| b.clone());
     let sources = st.sources.clone();
     drop(st);
-    if let Some(b) = element {
-        set_source(id, &b);
-    }
     // Textures another scene freed between our update and this frame.
     for src in lost {
         request_image(id, &sources, src);
@@ -593,24 +807,51 @@ fn show(
     wb.Invalidate()
 }
 
-/// Scene `id`'s `Image` shows `bitmap` (once: the bitmap stays the same
-/// until the size changes).
-fn set_source(id: NodeId, bitmap: &WriteableBitmap) {
-    with_state(|s| {
-        if let Some(v) = s.renderer.widgets.views.get(&id)
-            && let crate::controls::Content::Scene(scene) = &v.content
-        {
-            let same = scene
-                .element
-                .Source()
-                .ok()
-                .and_then(|src| src.cast::<WriteableBitmap>().ok())
-                .is_some_and(|b| b == *bitmap);
-            if !same {
-                let _ = scene.element.SetSource(bitmap);
-            }
-        }
-    });
+/// Clips `panel` to a `w` × `h` rounded rectangle of radius `r` (DIPs; no
+/// clip without a radius): Composition, which clips the swap chain too.
+fn round(panel: &SwapChainPanel, (w, h, r): (f32, f32, f32)) -> Result<()> {
+    use crate::winui::xaml::Hosting::ElementCompositionPreview;
+    use windows_numerics::Vector2;
+    let e: UIElement = panel.cast()?;
+    let visual = ElementCompositionPreview::GetElementVisual(&e)?;
+    if r <= 0. {
+        return visual
+            .SetClip(None::<&crate::winui::bindings::Microsoft::UI::Composition::CompositionClip>);
+    }
+    let comp = visual.Compositor()?;
+    let g = comp.CreateRoundedRectangleGeometry()?;
+    g.SetSize(Vector2 { X: w, Y: h })?;
+    g.SetCornerRadius(Vector2 { X: r, Y: r })?;
+    visual.SetClip(&comp.CreateGeometricClipWithGeometry(&g)?)
+}
+
+/// The panel's image shows `bitmap` (made the first time; the bitmap
+/// stays the same until the size changes).
+fn set_source(
+    panel: &SwapChainPanel,
+    image: &mut Option<Image>,
+    bitmap: &WriteableBitmap,
+) -> Result<()> {
+    if image.is_none() {
+        let i = Image::new()?;
+        i.SetStretch(Stretch::Fill)?;
+        // Under the input's rectangle.
+        panel
+            .cast::<crate::winui::xaml::Controls::Panel>()?
+            .Children()?
+            .InsertAt(0, &i)?;
+        *image = Some(i);
+    }
+    let Some(i) = image else { return Ok(()) };
+    let same = i
+        .Source()
+        .ok()
+        .and_then(|src| src.cast::<WriteableBitmap>().ok())
+        .is_some_and(|b| b == *bitmap);
+    if !same {
+        i.SetSource(bitmap)?;
+    }
+    Ok(())
 }
 
 // --- Textures -------------------------------------------------------------------------------
@@ -736,7 +977,7 @@ fn orbit(id: NodeId) -> Option<Orbit> {
 
 /// Drag to turn (right or Shift drag: pan), the wheel zooms, a click that
 /// did not move taps.
-fn attach_input(element: &Image, id: NodeId) -> Result<()> {
+fn attach_input(element: &UIElement, id: NodeId) -> Result<()> {
     let handler = |f: fn(&UIElement, NodeId, &PointerRoutedEventArgs) -> Result<()>| {
         PointerEventHandler::new(move |s, a| {
             let (Some(s), Some(a)) = (s.as_ref(), a.as_ref()) else {

@@ -231,14 +231,18 @@ impl Win {
         }
     }
 
-    fn update_visibility(&self, id: NodeId) {
+    pub fn update_visibility(&self, id: NodeId) {
         if let Some(v) = self.views.get(&id) {
-            let _ = v.set_visible(self.shown_in_parent(id));
+            let _ = v.set_visible(self.shown_in_parent(id) && !crate::defer::deferred(id));
         }
     }
 
     /// After a commit: bars, the pages shown, overlays, sticky views.
     pub fn flush(&mut self) {
+        let _t = crate::perf::span(crate::perf::Cost::Flush);
+        // New nodes out of view wait; those scrolled into view show.
+        crate::defer::collapse_fresh(self);
+        crate::defer::scrolled(self);
         let bars: Vec<NodeId> = self.bars.drain().collect();
         for id in bars {
             let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
@@ -378,6 +382,10 @@ impl Win {
 
     /// Gives node `id` the keyboard focus (`None`: away from fields).
     pub fn focus_node(&mut self, id: Option<NodeId>) {
+        if let Some(i) = id {
+            // A collapsed control cannot take the focus.
+            crate::defer::reveal(self, i);
+        }
         let control = id
             .and_then(|i| self.views.get(&i))
             .and_then(|v| v.content.control());
@@ -442,7 +450,9 @@ impl Widgets for Win {
     type View = NodeId;
 
     fn create(&mut self, id: NodeId, kind: NodeKind) -> NodeId {
+        let _t = crate::perf::span(crate::perf::Cost::Create);
         self.scene.create(id, kind);
+        crate::defer::created(id);
         if kind == NodeKind::DatePicker
             && let Some(n) = self.scene.get_mut(id)
         {
@@ -469,6 +479,7 @@ impl Widgets for Win {
     }
 
     fn set_style(&mut self, view: &NodeId, style: &Style) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         // Shown at once: a running animation stops.
         crate::motion::settle(id);
@@ -477,7 +488,10 @@ impl Widgets for Win {
         };
         let axis = n.style.scroll_axis != style.scroll_axis;
         n.style = style.clone();
-        self.measurer.forget(id);
+        if !matches!(n.kind, NodeKind::Text | NodeKind::Timer) {
+            // A text's sizes stay while its text and font do (`Measurer`).
+            self.measurer.forget(id);
+        }
         if (axis || n.kind == NodeKind::Scroll)
             && let Some(sv) = self.views.get(&id).and_then(|v| v.scroll.as_ref())
         {
@@ -487,6 +501,7 @@ impl Widgets for Win {
     }
 
     fn set_text(&mut self, view: &NodeId, text: &str) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -521,6 +536,7 @@ impl Widgets for Win {
     }
 
     fn set_placeholder(&mut self, view: &NodeId, text: &str) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -547,6 +563,7 @@ impl Widgets for Win {
     }
 
     fn set_children(&mut self, parent: &NodeId, children: &[NodeId]) {
+        let _t = crate::perf::span(crate::perf::Cost::Children);
         let id = *parent;
         // A closing panel keeps its content while it animates out.
         self.overlay_children(id, children);
@@ -624,6 +641,7 @@ impl Widgets for Win {
             p.children.retain(|c| *c != id);
         }
         self.measurer.forget(id);
+        crate::defer::forget(id);
         crate::pointer::forget(id);
         crate::drops::forget(id);
         crate::edit::forget(id);
@@ -642,6 +660,7 @@ impl Widgets for Win {
     }
 
     fn measure(&mut self, view: &NodeId, max_width: Option<f32>) -> (f32, f32) {
+        let _t = crate::perf::span(crate::perf::Cost::Measure);
         let Some(n) = self.scene.get(*view) else {
             return (0., 0.);
         };
@@ -656,6 +675,7 @@ impl Widgets for Win {
     }
 
     fn measure_min_content(&mut self, view: &NodeId) -> f32 {
+        let _t = crate::perf::span(crate::perf::Cost::Measure);
         let id = *view;
         if let Some(n) = self.scene.get(id)
             && matches!(n.kind, NodeKind::Text | NodeKind::Timer)
@@ -664,12 +684,13 @@ impl Widgets for Win {
             if st.no_wrap || st.max_lines.is_some() {
                 return 0.;
             }
-            return self.measurer.min_width(&st);
+            return self.measurer.node_min(id, &st);
         }
         self.measure(view, None).0
     }
 
     fn set_frame(&mut self, view: &NodeId, x: f32, y: f32, w: f32, h: f32) {
+        let _t = crate::perf::span(crate::perf::Cost::Place);
         let id = *view;
         let frame = Rect::new(x, y, w, h);
         let Some(n) = self.scene.get_mut(id) else {
@@ -798,6 +819,7 @@ impl Widgets for Win {
     }
 
     fn set_accessibility(&mut self, view: &NodeId, a11y: &Accessibility) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -817,6 +839,7 @@ impl Widgets for Win {
     }
 
     fn set_value(&mut self, view: &NodeId, value: f64) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -868,6 +891,7 @@ impl Widgets for Win {
     }
 
     fn set_config(&mut self, view: &NodeId, kind: NodeKind, config: &str) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -1033,6 +1057,7 @@ impl Widgets for Win {
     }
 
     fn baseline(&mut self, view: &NodeId, width: f32, height: f32) -> Option<f32> {
+        let _t = crate::perf::span(crate::perf::Cost::Measure);
         let n = self.scene.get(*view)?;
         controls::baseline(&self.measurer, n, width, height)
     }
@@ -1189,6 +1214,7 @@ impl Widgets for Win {
     }
 
     fn scroll_into_view(&mut self, view: &NodeId) {
+        crate::defer::reveal(self, *view);
         if let Some(e) = self.outer(*view) {
             let _ = e.StartBringIntoView();
         }

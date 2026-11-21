@@ -8,7 +8,9 @@
 //!   types into the text field with that placeholder; `submit:Placeholder`
 //!   presses Enter in it; `menu:Title` opens the context menu of the view
 //!   showing Title; `scroll:600` scrolls the visible scroll views before
-//!   the next steps; `key:Escape` (`Tab`, `Enter`) presses a key;
+//!   the next steps; `wait:500` waits before them (milliseconds);
+//!   `dpi:144` moves the window to a simulated monitor at that DPI;
+//!   `key:Escape` (`Tab`, `Enter`) presses a key;
 //!   `contrast:night-sky` switches the contrast theme (`PRISM_HIGH_CONTRAST`'s
 //!   values) through the system's settings message; `hover:`,
 //!   `drag:`, `swipe:` and `wheel:` move the real mouse over a view
@@ -80,21 +82,33 @@ pub fn automation(main: HWND) {
 fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
     while !steps.is_empty() {
         let step = steps.remove(0);
+        let started = std::time::Instant::now();
         let found = run_step(&step);
         if !found {
             eprintln!("prism-windows: PRISM_CLICK: nothing labelled {step:?}");
         }
         // Each step sees what the previous one did.
         drain();
+        if crate::perf::on() && !step.starts_with("wait:") {
+            // The event it caused logged where its time went.
+            let name = format!("step {step}");
+            log!("{name}: {:.1} ms", crate::perf::ms(started));
+            crate::perf::committed(&name, started);
+        }
         // Real input plays over a few hundred milliseconds: the next steps
         // (a key after a click) and the snapshot's delay come after it.
         if crate::inject::playing() {
             after_input(main, steps);
             return;
         }
-        if (step.starts_with("scroll:") || step.starts_with("key:")) && !steps.is_empty() {
+        let wait = step.strip_prefix("wait:").and_then(|ms| ms.parse().ok());
+        let waits = step.starts_with("scroll:")
+            || step.starts_with("key:")
+            || step.starts_with("dpi:")
+            || wait.is_some();
+        if waits && !steps.is_empty() {
             crate::motion::after(
-                std::time::Duration::from_millis(400),
+                std::time::Duration::from_millis(wait.unwrap_or(400)),
                 Box::new(move || steps_then_snapshot(main, steps)),
             );
             return;
@@ -124,6 +138,15 @@ fn after_input(main: HWND, steps: Vec<String>) {
 }
 
 fn run_step(step: &str) -> bool {
+    // `wait:500`: the next steps wait that many milliseconds (frames run).
+    if step.starts_with("wait:") {
+        return true;
+    }
+    // `dpi:144`: the window moves to a (simulated) monitor at 144 DPI.
+    if let Some(dpi) = step.strip_prefix("dpi:").and_then(|d| d.parse().ok()) {
+        crate::system::simulate_dpi(crate::imp::main_hwnd(), dpi);
+        return true;
+    }
     // `contrast:night-sky` (`0`, `1`, a theme): the contrast theme changes
     // as the app runs, through the system's own message.
     if let Some(value) = step.strip_prefix("contrast:") {

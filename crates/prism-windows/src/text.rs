@@ -269,6 +269,26 @@ pub fn apply(tb: &TextBlock, st: &StyledText, pal: &Palette, color: Color) -> Re
     set_runs(tb, st, Some(pal))
 }
 
+thread_local! {
+    /// XAML text layouts by why (`PRISM_TRACE`): on one line, wrapped,
+    /// narrowest, baseline, a control's label.
+    static WHY: std::cell::Cell<[u32; 5]> = const { std::cell::Cell::new([0; 5]) };
+}
+
+fn count(why: usize) {
+    if crate::perf::on() {
+        let mut w = WHY.get();
+        w[why] += 1;
+        WHY.set(w);
+    }
+}
+
+/// The XAML text layouts since the last call, by why.
+pub fn take_counts() -> String {
+    let [a, b, c, d, e] = WHY.replace([0; 5]);
+    format!("one line {a}, wrapped {b}, narrowest {c}, baseline {d}, labels {e}")
+}
+
 /// Natural sizes of text, from a scratch TextBlock.
 pub struct Measurer {
     tb: TextBlock,
@@ -277,13 +297,21 @@ pub struct Measurer {
     paragraph: RefCell<Option<Paragraph>>,
     /// Sizes by text and width limit (labels of buttons, pickers…).
     sizes: RefCell<HashMap<String, (f32, f32)>>,
-    /// A node's sizes by width limit (quarter DIPs), dropped when its text
-    /// or style changes.
-    cache: HashMap<NodeId, (StyledText, Vec<Sized>)>,
+    /// First baselines by text and width (each layout asks again).
+    baselines: RefCell<HashMap<String, Option<f32>>>,
+    /// Each text node's sizes, kept while its text and style stay the
+    /// same (a restyle that changes neither measures nothing).
+    cache: HashMap<NodeId, Measured>,
 }
 
-/// A size measured within a width limit (quarter DIPs).
-type Sized = (Option<u32>, (f32, f32));
+/// What a node's text measured: on one line, at its narrowest, and within
+/// a few width limits (quarter DIPs).
+struct Measured {
+    text: StyledText,
+    natural: Option<(f32, f32)>,
+    min: Option<f32>,
+    within: Vec<(u32, (f32, f32))>,
+}
 
 impl Measurer {
     pub fn new() -> Result<Measurer> {
@@ -291,6 +319,7 @@ impl Measurer {
             tb: TextBlock::new()?,
             paragraph: RefCell::new(None),
             sizes: RefCell::new(HashMap::new()),
+            baselines: RefCell::new(HashMap::new()),
             cache: HashMap::new(),
         })
     }
@@ -299,28 +328,66 @@ impl Measurer {
         self.cache.remove(&id);
     }
 
-    /// The size of node `id`'s text `st` within `max_width`.
+    fn entry(&mut self, id: NodeId, st: &StyledText) -> &mut Measured {
+        let m = self.cache.entry(id).or_insert_with(|| Measured {
+            text: st.clone(),
+            natural: None,
+            min: None,
+            within: Vec::new(),
+        });
+        if m.text != *st {
+            *m = Measured {
+                text: st.clone(),
+                natural: None,
+                min: None,
+                within: Vec::new(),
+            };
+        }
+        m
+    }
+
+    /// The size of node `id`'s text `st` within `max_width`. A text that
+    /// fits on its lines (its natural width is within the limit) is not
+    /// laid out again: it would not wrap.
     pub fn node(&mut self, id: NodeId, st: &StyledText, max_width: Option<f32>) -> (f32, f32) {
-        let key = max_width.map(|w| (w * 4.).round().max(0.) as u32);
-        if let Some((text, sizes)) = self.cache.get(&id)
-            && text == st
-            && let Some((_, size)) = sizes.iter().find(|(k, _)| *k == key)
-        {
+        let natural = match self.entry(id, st).natural {
+            Some(n) => n,
+            None => {
+                count(0);
+                let n = self.measure_uncached(st, None);
+                self.entry(id, st).natural = Some(n);
+                n
+            }
+        };
+        let Some(w) = max_width else {
+            return natural;
+        };
+        if w >= natural.0 {
+            return natural;
+        }
+        let key = (w * 4.).round().max(0.) as u32;
+        if let Some((_, size)) = self.entry(id, st).within.iter().find(|(k, _)| *k == key) {
             return *size;
         }
-        let size = self.measure(st, max_width);
-        let entry = self
-            .cache
-            .entry(id)
-            .or_insert_with(|| (st.clone(), Vec::new()));
-        if entry.0 != *st {
-            *entry = (st.clone(), Vec::new());
+        count(1);
+        let size = self.measure_uncached(st, Some(w));
+        let m = self.entry(id, st);
+        if m.within.len() >= 4 {
+            m.within.remove(0);
         }
-        if entry.1.len() >= 4 {
-            entry.1.remove(0);
-        }
-        entry.1.push((key, size));
+        m.within.push((key, size));
         size
+    }
+
+    /// The narrowest node `id`'s text `st` can be: its longest word.
+    pub fn node_min(&mut self, id: NodeId, st: &StyledText) -> f32 {
+        if let Some(min) = self.entry(id, st).min {
+            return min;
+        }
+        count(2);
+        let min = self.min_width(st);
+        self.entry(id, st).min = Some(min);
+        min
     }
 
     /// The scratch TextBlock showing `st` (no colors: not drawn).
@@ -339,10 +406,8 @@ impl Measurer {
         if let Some(size) = self.sizes.borrow().get(&key) {
             return *size;
         }
-        if self.load(st).is_err() {
-            return (0., 0.);
-        }
-        let size = self.desired(max_width.unwrap_or(f32::INFINITY));
+        count(4);
+        let size = self.measure_uncached(st, max_width);
         let mut sizes = self.sizes.borrow_mut();
         if sizes.len() > 4096 {
             sizes.clear();
@@ -351,7 +416,30 @@ impl Measurer {
         size
     }
 
+    /// `st` laid out by XAML within `max_width`.
+    fn measure_uncached(&self, st: &StyledText, max_width: Option<f32>) -> (f32, f32) {
+        if self.load(st).is_err() {
+            return (0., 0.);
+        }
+        let size = self.desired(max_width.unwrap_or(f32::INFINITY));
+        // On one line: its first baseline comes with it (no second layout).
+        if max_width.is_none() && uniform(st) {
+            let b = self.tb.BaselineOffset().ok().map(|b| b as f32);
+            self.remember_baseline(format!("{st:?}"), b.filter(|b| *b > 0.));
+        }
+        size
+    }
+
+    fn remember_baseline(&self, key: String, b: Option<f32>) {
+        let mut baselines = self.baselines.borrow_mut();
+        if baselines.len() > 4096 {
+            baselines.clear();
+        }
+        baselines.insert(key, b);
+    }
+
     fn desired(&self, width: f32) -> (f32, f32) {
+        let _t = crate::perf::span(crate::perf::Cost::TextLayout);
         let _ = self.tb.Measure(Size {
             Width: width.max(0.),
             Height: f32::INFINITY,
@@ -362,23 +450,54 @@ impl Measurer {
     }
 
     /// The narrowest the text can be: its longest word.
-    pub fn min_width(&self, st: &StyledText) -> f32 {
+    fn min_width(&self, st: &StyledText) -> f32 {
         if self.load(st).is_err() {
             return 0.;
         }
         let _ = self.tb.SetTextWrapping(TextWrapping::WrapWholeWords);
-        // The wrapping changed behind the cached settings.
-        *self.paragraph.borrow_mut() = None;
-        self.desired(0.).0
+        let w = self.desired(0.).0;
+        // Back to the cached settings' wrapping.
+        if let Some(p) = self.paragraph.borrow().as_ref() {
+            let _ = self.tb.SetTextWrapping(if p.no_wrap {
+                TextWrapping::NoWrap
+            } else {
+                TextWrapping::Wrap
+            });
+        }
+        w
     }
 
-    /// Distance from the top to the first baseline of `st` at `width`.
+    /// Distance from the top to the first baseline of `st` at `width`. A
+    /// text in one font size has its first line's baseline at any width:
+    /// the one measured on one line.
     pub fn baseline(&self, st: &StyledText, width: f32) -> Option<f32> {
-        self.load(st).ok()?;
-        self.desired(width);
-        let b = self.tb.BaselineOffset().ok()? as f32;
-        (b > 0.).then_some(b)
+        let key = if uniform(st) {
+            format!("{st:?}")
+        } else {
+            format!("{}|{st:?}", (width * 4.).round() as i64)
+        };
+        if let Some(b) = self.baselines.borrow().get(&key) {
+            return *b;
+        }
+        count(3);
+        let b = (|| {
+            self.load(st).ok()?;
+            self.desired(if uniform(st) { f32::INFINITY } else { width });
+            let b = self.tb.BaselineOffset().ok()? as f32;
+            (b > 0.).then_some(b)
+        })();
+        self.remember_baseline(key, b);
+        b
     }
+}
+
+/// Whether every run of `st` has the first one's size and is text (not
+/// an icon): its first baseline does not depend on where lines wrap.
+fn uniform(st: &StyledText) -> bool {
+    let size = st.runs[0].font.size;
+    st.runs
+        .iter()
+        .all(|r| r.icon.is_none() && (r.font.size - size).abs() < 0.01)
 }
 
 /// A one-run text in a control's font: a button's title, a picker's

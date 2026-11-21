@@ -1231,15 +1231,15 @@ pub struct Environment {
 impl Environment {
     /// Soft boxes over a gray gradient: a neutral product-shot light.
     pub fn studio() -> Self {
-        Self::builtin("studio", env::studio)
+        Self::builtin("studio", || env::studio().encode())
     }
     /// An even gray room.
     pub fn neutral() -> Self {
-        Self::builtin("neutral", env::neutral)
+        Self::builtin("neutral", || env::neutral().encode())
     }
     /// A warm sky with a low sun.
     pub fn sunset() -> Self {
-        Self::builtin("sunset", env::sunset)
+        Self::builtin("sunset", || env::sunset().encode())
     }
     /// A Radiance `.hdr` image (equirectangular); `None` if unreadable.
     pub fn from_hdr(bytes: &[u8]) -> Option<Self> {
@@ -1257,20 +1257,30 @@ impl Environment {
             background: false,
         }
     }
-    /// The built-in environments are made once per process.
-    fn builtin(name: &'static str, make: fn() -> env::EnvMap) -> Self {
+    /// The built-in environments: made once per process, when a renderer
+    /// first reads them (prefiltering one takes tens of milliseconds, more
+    /// with a slow math library: not while the app's tree is built).
+    fn builtin(name: &'static str, encode: fn() -> Vec<u8>) -> Self {
         static MADE: std::sync::Mutex<Vec<(&str, BlobRef)>> = std::sync::Mutex::new(Vec::new());
         let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((_, b)) = made.iter().find(|(n, _)| *n == name) {
-            return Environment {
-                blob: b.clone(),
-                intensity: 1.,
-                background: false,
-            };
+        let blob = match made.iter().find(|(n, _)| *n == name) {
+            Some((_, b)) => b.clone(),
+            None => {
+                let b = blobs::put_lazy(
+                    blobs::BlobKind::Environment,
+                    blobs::BINARY_MIME,
+                    &format!("environment:{name}"),
+                    encode,
+                );
+                made.push((name, b.clone()));
+                b
+            }
+        };
+        Environment {
+            blob,
+            intensity: 1.,
+            background: false,
         }
-        let e = Self::from_map(&make());
-        made.push((name, e.blob.clone()));
-        e
     }
     /// Its strength (default 1).
     pub fn intensity(mut self, intensity: f32) -> Self {

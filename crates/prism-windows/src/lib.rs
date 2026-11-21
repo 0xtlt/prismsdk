@@ -29,6 +29,7 @@
 //! | `view` | one node's XAML elements: box, children, content, bars |
 //! | `style` | backgrounds, gradients, borders, radii, shadows, transforms |
 //! | `decor` | inset shadows, conic gradients, sides of several colors, rounded clips |
+//! | `defer` | off-screen content joins XAML's layout after the first frame |
 //! | `clip` | clips whose corners differ (a Direct2D path for Composition) |
 //! | `fieldicon` | a one-line field's leading icon |
 //! | `motion` | transitions, enter and exit poses, loops, moving frames |
@@ -48,9 +49,10 @@
 //! | `drops` | files dragged from Explorer onto `on_drop_files` targets |
 //! | `stream` | a remote video read by HTTP ranges with the app's headers |
 //! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
-//! | `scene3d` | 3D scenes: prism-native's OpenGL renderer, in WGL |
+//! | `scene3d`, `dxgl` | 3D scenes: prism-native's OpenGL renderer, in WGL, to a swap chain |
 //! | `keyboard` | key presses for Prism's key listeners |
 //! | `smoke`, `inject`, `touch` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
+//! | `perf`, `profile` | `PRISM_TRACE`: where startup and update time goes; `PRISM_PROFILE`: the UI thread's stacks |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
 //! | `images` | decoding pictures |
 //! | `package` | what a shipped app brings: its icon, its assets |
@@ -98,7 +100,11 @@ mod controls;
 #[cfg(target_os = "windows")]
 mod decor;
 #[cfg(target_os = "windows")]
+mod defer;
+#[cfg(target_os = "windows")]
 mod drops;
+#[cfg(target_os = "windows")]
+mod dxgl;
 #[cfg(target_os = "windows")]
 mod edit;
 #[cfg(target_os = "windows")]
@@ -143,10 +149,14 @@ mod peers;
 mod paint;
 // Two-finger pinches: no Win32, tested everywhere.
 #[cfg(target_os = "windows")]
+mod perf;
+#[cfg(target_os = "windows")]
 mod pickers;
 mod pinch;
 #[cfg(target_os = "windows")]
 mod pointer;
+#[cfg(target_os = "windows")]
+mod profile;
 #[cfg(target_os = "windows")]
 mod rich;
 // The tree's model: no Win32, tested everywhere.

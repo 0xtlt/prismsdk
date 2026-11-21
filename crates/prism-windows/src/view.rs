@@ -12,7 +12,9 @@
 //! └─ dash: Rectangle         a dashed or dotted border
 //! ```
 //!
-//! The box, shadows, decor and dash exist only once a style needs them.
+//! The box, shadows, decor and dash exist only once a style needs them;
+//! `kids` joins the tree with the first child (a leaf has none: an empty
+//! canvas in the tree still costs XAML a layout and a visual).
 
 use prism_core::{NodeId, NodeKind};
 use windows_core::{Interface, Result};
@@ -43,6 +45,8 @@ pub struct View {
     pub shadows: Option<Shadows>,
     pub boxed: Option<Border>,
     pub kids: Canvas,
+    /// `kids` is in the tree (in `outer`, the scroll viewer or the button).
+    kids_in: bool,
     pub scroll: Option<ScrollViewer>,
     pub content: Content,
     pub bar: Bar,
@@ -73,6 +77,9 @@ impl View {
         };
         let kids = Canvas::new()?;
         let mut scroll = None;
+        // An overlay's content is drawn above the window (`Win::layer`);
+        // other nodes' children canvas joins the tree with the first child.
+        let kids_in = matches!(kind, NodeKind::Scroll | NodeKind::Overlay);
         if kind == NodeKind::Scroll {
             let sv = ScrollViewer::new()?;
             sv.SetContent(&kids)?;
@@ -82,9 +89,6 @@ impl View {
             crate::events::scrolled(&sv, id)?;
             outer.Children()?.Append(&sv)?;
             scroll = Some(sv);
-        } else if kind != NodeKind::Overlay {
-            // An overlay's content is drawn above the window (`Win::layer`).
-            outer.Children()?.Append(&kids)?;
         }
         if let Some(e) = content.element() {
             outer.Children()?.Append(&e)?;
@@ -110,6 +114,7 @@ impl View {
             shadows: None,
             boxed: None,
             kids,
+            kids_in,
             scroll,
             content,
             bar,
@@ -125,6 +130,43 @@ impl View {
 
     pub fn outer(&self) -> UIElement {
         ui(&self.outer).expect("UIElement")
+    }
+
+    /// Where `kids` goes in `outer`: under the content, the bar and the
+    /// dash.
+    fn kids_index(&self) -> Result<u32> {
+        let coll = self.outer.Children()?;
+        let above: Vec<UIElement> = [
+            self.content.element(),
+            match &self.bar {
+                Bar::Header(h) => ui(&h.root).ok(),
+                Bar::Tabs(t) => ui(&t.root).ok(),
+                Bar::None => None,
+            },
+            self.dash.as_ref().and_then(|d| ui(d).ok()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let mut first = coll.Size()?;
+        for e in above {
+            let mut at = 0u32;
+            if coll.IndexOf(&e, &mut at)? {
+                first = first.min(at);
+            }
+        }
+        Ok(first)
+    }
+
+    /// Puts `kids` in the tree (the node has children now).
+    fn attach_kids(&mut self) -> Result<()> {
+        if self.kids_in {
+            return Ok(());
+        }
+        let at = self.kids_index()?;
+        self.outer.Children()?.InsertAt(at, &self.kids)?;
+        self.kids_in = true;
+        Ok(())
     }
 
     fn insert_under(&self, e: &impl Interface, before_kids: bool) -> Result<()> {
@@ -287,17 +329,15 @@ impl View {
         let coll = self.outer.Children()?;
         let kids: UIElement = self.kids.cast()?;
         let mut at = 0u32;
-        let found = coll.IndexOf(&kids, &mut at)?;
-        if found {
+        if coll.IndexOf(&kids, &mut at)? {
             coll.RemoveAt(at)?;
+        } else {
+            at = self.kids_index()?;
         }
         b.SetContent(&self.kids)?;
         let e: UIElement = b.cast()?;
-        if found {
-            coll.InsertAt(at, &e)?;
-        } else {
-            coll.Append(&e)?;
-        }
+        coll.InsertAt(at, &e)?;
+        self.kids_in = true;
         size(&b, self.frame.w, self.frame.h)?;
         self.button = Some(b.clone());
         Ok(Some(b))
@@ -331,6 +371,9 @@ impl View {
     /// Children, in order, keeping the elements that stay (a focused text
     /// box keeps its focus).
     pub fn set_children(&mut self, children: &[(NodeId, UIElement)]) -> Result<()> {
+        if !children.is_empty() {
+            self.attach_kids()?;
+        }
         let coll: UIElementCollection = self.kids.Children()?;
         let want: Vec<NodeId> = children.iter().map(|(id, _)| *id).collect();
         // Those that leave.
