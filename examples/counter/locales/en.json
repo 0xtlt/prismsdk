@@ -450,6 +450,7 @@
     "level": "Level",
     "pointer_hint": "Move the pointer here",
     "pointer_at": "Pointer at {x}, {y}",
+    "zoom": "zoom {percent} %",
     "pad": "Arrow-key pad",
     "pad_hint": "Click the pad, then use the arrow keys (TV remote, D-pad).",
     "open_sheet": "Open a sheet",
@@ -508,6 +509,7 @@
     "ended": "The video ended.",
     "drop_heading": "Files from the file manager",
     "drop_hint": "Drop files here",
+    "drop_images_hint": "Pictures only",
     "dropped": "Dropped: {names}"
   },
   "scene3d": {

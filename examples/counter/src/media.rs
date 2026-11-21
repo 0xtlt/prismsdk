@@ -4,9 +4,14 @@
 //!   temporary files) that talks to the app both ways: it posts "ready"
 //!   once loaded and a message per tap on its button; "Send a message"
 //!   posts to it, and it answers `got "hello 1"`. On the web, a public
-//!   page in a frame.
+//!   page in a frame. Tests load their own page under a sandbox:
+//!   `PRISM_WEB_URL`, `PRISM_WEB_SANDBOX` (`scripts,forms,popups,same-origin`,
+//!   empty for none).
 //! - `video`: a short film with the platform's controls, playing muted.
-//! - `on_drop_files`: files dropped from the file manager, listed.
+//!   Tests point it at a server that wants a request header:
+//!   `PRISM_VIDEO_URL` and `PRISM_VIDEO_HEADER` (`Name: value`).
+//! - `on_drop_files`: files dropped from the file manager, listed; the
+//!   second zone takes pictures only (it lights up for them alone).
 
 use prism::prelude::*;
 use prism::ui::{self, Theme};
@@ -54,17 +59,20 @@ pub(crate) struct MediaDemo {
     sent: u32,
     ended: bool,
     dropped: Vec<String>,
+    dropped_images: Vec<String>,
 }
 
 impl MediaDemo {
     pub fn new(cx: &mut Context<Self>) -> Self {
         MediaDemo {
-            url: page_url(cx.platform() == Platform::Web),
+            url: std::env::var("PRISM_WEB_URL")
+                .unwrap_or_else(|_| page_url(cx.platform() == Platform::Web)),
             from_page: None,
             loaded: None,
             sent: 0,
             ended: false,
             dropped: Vec::new(),
+            dropped_images: Vec::new(),
         }
     }
 }
@@ -114,6 +122,7 @@ impl Render for MediaDemo {
                             .on_load(cx.listener(|this, e: &WebLoadEvent, _| {
                                 this.loaded = Some(e.url.clone());
                             }))
+                            .when_some(test_sandbox(), |w, s| w.sandbox(s))
                             .w_full()
                             .h(px(200.))
                             .rounded(t.radius)
@@ -150,7 +159,7 @@ impl Render for MediaDemo {
                 ui::card()
                     .child(ui::heading(strings::media_video_heading(cx)))
                     .child(
-                        video(VIDEO)
+                        test_video()
                             .poster(POSTER)
                             .autoplay(true)
                             .muted(true)
@@ -172,33 +181,90 @@ impl Render for MediaDemo {
             .child(
                 ui::card()
                     .child(ui::heading(strings::media_drop_heading(cx)))
-                    .child(
-                        div()
-                            .id("drop-zone")
-                            .h(px(80.))
-                            .p(12.)
-                            .rounded(t.radius)
-                            .border(1.)
-                            .border_color(t.border)
-                            .items_center()
-                            .justify_center()
-                            .drop_hover(move |s| s.bg(t.accent.with_alpha(0.12)))
-                            .on_drop_files(
-                                Vec::<String>::new(),
-                                cx.listener(|this, e: &FileDropEvent, _| {
-                                    this.dropped = e.files.iter().map(|f| f.name.clone()).collect();
-                                }),
-                            )
-                            .child(
-                                text(if self.dropped.is_empty() {
-                                    strings::media_drop_hint(cx)
-                                } else {
-                                    strings::media_dropped(cx, self.dropped.join(", "))
-                                })
-                                .text_color(t.muted),
-                            ),
-                    ),
+                    .child(drop_zone(
+                        "drop-zone",
+                        Vec::new(),
+                        &self.dropped,
+                        strings::media_drop_hint(cx),
+                        cx.listener(|this, e: &FileDropEvent, _| {
+                            this.dropped = e.files.iter().map(|f| f.name.clone()).collect();
+                        }),
+                        cx,
+                    ))
+                    .child(drop_zone(
+                        "drop-images",
+                        vec!["image/*".into()],
+                        &self.dropped_images,
+                        strings::media_drop_images_hint(cx),
+                        cx.listener(|this, e: &FileDropEvent, _| {
+                            this.dropped_images = e.files.iter().map(|f| f.name.clone()).collect();
+                        }),
+                        cx,
+                    )),
             ),
         )
     }
+}
+
+/// A zone taking files of `types` (any file when empty), lit while they
+/// are dragged over it, listing the last ones dropped.
+fn drop_zone(
+    id: &str,
+    types: Vec<String>,
+    dropped: &[String],
+    hint: String,
+    on_drop: Handler<FileDropEvent>,
+    cx: &mut Context<MediaDemo>,
+) -> impl IntoElement + use<> {
+    let t = Theme::of(cx);
+    div()
+        .id(id)
+        .h(px(80.))
+        .p(12.)
+        .rounded(t.radius)
+        .border(1.)
+        .border_color(t.border)
+        .items_center()
+        .justify_center()
+        .drop_hover(move |s| s.bg(t.accent.with_alpha(0.12)).border_color(t.accent))
+        .on_drop_files(types, on_drop)
+        .child(
+            text(if dropped.is_empty() {
+                hint
+            } else {
+                strings::media_dropped(cx, dropped.join(", "))
+            })
+            .text_color(t.muted),
+        )
+}
+
+/// The film, or the test server's video with its header.
+fn test_video() -> prism::Video {
+    let Ok(url) = std::env::var("PRISM_VIDEO_URL") else {
+        return video(VIDEO);
+    };
+    let v = video(url);
+    match std::env::var("PRISM_VIDEO_HEADER").ok().and_then(|h| {
+        h.split_once(':')
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+    }) {
+        Some((name, value)) => v.header(name, value),
+        None => v,
+    }
+}
+
+/// The sandbox a test asks for (`PRISM_WEB_SANDBOX`).
+fn test_sandbox() -> Option<WebSandbox> {
+    let list = std::env::var("PRISM_WEB_SANDBOX").ok()?;
+    let mut s = WebSandbox::new();
+    for name in list.split(',').map(str::trim) {
+        s = match name {
+            "scripts" => s.scripts(),
+            "forms" => s.forms(),
+            "popups" => s.popups(),
+            "same-origin" => s.same_origin(),
+            _ => s,
+        };
+    }
+    Some(s)
 }

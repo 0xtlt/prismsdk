@@ -209,7 +209,7 @@ fn set_runs(tb: &TextBlock, st: &StyledText, pal: Option<&Palette>) -> Result<()
         run.SetFontWeight(weight(r.font.weight))?;
         run.SetFontStyle(style(r.font.italic))?;
         if let (Some(c), Some(pal)) = (r.color, pal) {
-            run.SetForeground(&brush(pal.resolve(c))?)?;
+            run.SetForeground(&brush(pal.ink(c))?)?;
         }
         let mut deco = TextDecorations::None;
         if r.underline {
@@ -245,8 +245,11 @@ fn hyperlink(link: u64, r: &StyledRun, pal: Option<&Palette>) -> Result<Hyperlin
     } else {
         UnderlineStyle::None
     })?;
-    if let (Some(c), Some(pal)) = (r.color, pal) {
-        a.SetForeground(&brush(pal.resolve(c))?)?;
+    // Under a contrast theme, the theme's link color.
+    if let Some(pal) = pal
+        && (r.color.is_some() || pal.forced.is_some())
+    {
+        a.SetForeground(&brush(pal.link(r.color.unwrap_or(pal.accent)))?)?;
     }
     a.Click(&windows::Foundation::TypedEventHandler::<
         Hyperlink,

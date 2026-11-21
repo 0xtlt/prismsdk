@@ -5,14 +5,20 @@ use std::ffi::c_void;
 
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
+use windows::Win32::Graphics::Gdi::{
+    COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
+    COLOR_HOTLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT, GetSysColor, SYS_COLOR_INDEX,
+};
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SystemParametersInfoW,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
+use crate::contrast::SystemColors;
 use crate::fluent::Accent;
 
 fn reg_dword(key: PCWSTR, value: PCWSTR) -> Option<u32> {
@@ -32,14 +38,18 @@ fn reg_dword(key: PCWSTR, value: PCWSTR) -> Option<u32> {
     (r == ERROR_SUCCESS).then_some(v)
 }
 
-/// Whether apps should be dark (`AppsUseLightTheme` = 0), unless
-/// `PRISM_APPEARANCE=light|dark` says otherwise (development, smoke tests:
-/// the app's own choice still wins).
+/// Whether apps should be dark (`AppsUseLightTheme` = 0; under a
+/// contrast theme, the theme's), unless `PRISM_APPEARANCE=light|dark`
+/// says otherwise (development, smoke tests: the app's own choice still
+/// wins).
 pub fn dark_mode() -> bool {
     match std::env::var("PRISM_APPEARANCE").as_deref() {
         Ok("dark") => return true,
         Ok("light") => return false,
         _ => {}
+    }
+    if let Some(hc) = high_contrast() {
+        return hc.dark();
     }
     reg_dword(
         w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
@@ -85,6 +95,86 @@ pub fn reduce_motion() -> bool {
         )
     };
     ok.is_ok() && !on.as_bool()
+}
+
+thread_local! {
+    /// `PRISM_CLICK=contrast:<value>`: `PRISM_HIGH_CONTRAST` changed while
+    /// the app runs.
+    static CONTRAST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Sets the value `PRISM_HIGH_CONTRAST` stands for from now on (the
+/// `contrast:` test step), as if the user changed the contrast theme.
+pub fn override_contrast(value: &str) {
+    CONTRAST.with(|c| *c.borrow_mut() = Some(value.to_string()));
+}
+
+/// The contrast theme's colors while one is on (Settings › Accessibility
+/// › Contrast themes), else `None`. `PRISM_HIGH_CONTRAST` stands in for
+/// the system's setting, for this app only: `0` (off), `1` (on, with the
+/// system colors as they are) or the name of one of Windows 11's themes
+/// (`aquatic`, `desert`, `dusk`, `night-sky`: their colors).
+pub fn high_contrast() -> Option<SystemColors> {
+    let forced = CONTRAST
+        .with(|c| c.borrow().clone())
+        .or_else(|| crate::win::env("PRISM_HIGH_CONTRAST"));
+    match forced.as_deref() {
+        Some("0") => None,
+        Some("1") => Some(system_colors()),
+        Some(name) => SystemColors::theme(name).or_else(|| Some(system_colors())),
+        None => high_contrast_on().then(system_colors),
+    }
+}
+
+/// `SPI_GETHIGHCONTRAST`: a contrast theme is on.
+fn high_contrast_on() -> bool {
+    /// `HIGHCONTRASTW`.
+    #[repr(C)]
+    struct HighContrast {
+        size: u32,
+        flags: u32,
+        scheme: *mut u16,
+    }
+    const HCF_HIGHCONTRASTON: u32 = 1;
+    let mut hc = HighContrast {
+        size: size_of::<HighContrast>() as u32,
+        flags: 0,
+        scheme: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            hc.size,
+            Some(&mut hc as *mut HighContrast as *mut c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    ok.is_ok() && hc.flags & HCF_HIGHCONTRASTON != 0
+}
+
+/// The system colors (`GetSysColor`): the contrast theme's while one is on.
+fn system_colors() -> SystemColors {
+    let c = |i: SYS_COLOR_INDEX| {
+        // COLORREF: 0x00BBGGRR.
+        let v = unsafe { GetSysColor(i) };
+        prism_core::Color {
+            r: (v & 0xff) as f32 / 255.,
+            g: ((v >> 8) & 0xff) as f32 / 255.,
+            b: ((v >> 16) & 0xff) as f32 / 255.,
+            a: 1.,
+            dark: None,
+        }
+    };
+    SystemColors {
+        window: c(COLOR_WINDOW),
+        window_text: c(COLOR_WINDOWTEXT),
+        hotlight: c(COLOR_HOTLIGHT),
+        gray_text: c(COLOR_GRAYTEXT),
+        highlight: c(COLOR_HIGHLIGHT),
+        highlight_text: c(COLOR_HIGHLIGHTTEXT),
+        button_face: c(COLOR_BTNFACE),
+        button_text: c(COLOR_BTNTEXT),
+    }
 }
 
 /// The user's locale (`fr-FR`).

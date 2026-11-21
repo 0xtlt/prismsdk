@@ -11,7 +11,10 @@
 //! the caret, the selection and the undo history untouched; other runs
 //! replace the text, the caret keeping its distance from the end (#73).
 //! Return calls `on_submit`, Shift+Return inserts a line break; pastes
-//! are plain text. A chip (#115) is its object character, highlighted.
+//! are plain text. A chip (#115) is a picture embedded in the text
+//! (`chips.rs`): one character the caret jumps over.
+//! The editing hooks (#217: copies, pastes, clicks, the selection's
+//! rectangle) are `edit.rs`'.
 
 use std::cell::RefCell;
 
@@ -24,7 +27,7 @@ use windows_core::{HSTRING, Interface, Result};
 use crate::fluent::Palette;
 use crate::imp::dispatch;
 use crate::winui::bindings::Microsoft::UI::Text::{
-    FormatEffect, RichEditTextDocument, TextConstants, TextGetOptions, TextSetOptions,
+    FormatEffect, ITextRange, RichEditTextDocument, TextConstants, TextGetOptions, TextSetOptions,
     UnderlineType,
 };
 use crate::winui::xaml::Controls::{RichEditBox, TextControlPasteEventHandler};
@@ -40,6 +43,8 @@ pub struct Rich {
     pub element: RichEditBox,
     /// The text the app asked for (`set_text`), shown with the next runs.
     replace: RefCell<Option<String>>,
+    /// The chips shown, in order.
+    chips: RefCell<Vec<crate::chips::Look>>,
 }
 
 impl Rich {
@@ -57,6 +62,8 @@ impl Rich {
                     crate::win::log!("input: rich input {id} shows {text:?}");
                 }
                 crate::imp::typed(id, text);
+                crate::edit::changed(id, &r);
+                crate::carets::changed(id);
             }
             Ok(())
         }))?;
@@ -66,6 +73,7 @@ impl Rich {
                 let sel = doc.Selection()?;
                 let (a, b) = (sel.StartPosition()?, sel.EndPosition()?);
                 crate::imp::selected(id, &text(&doc)?, a.max(0) as usize, b.max(0) as usize);
+                crate::edit::changed(id, &r);
             }
             Ok(())
         }))?;
@@ -87,13 +95,24 @@ impl Rich {
                 a.as_ref(),
             ) {
                 a.SetHandled(true)?;
-                r.Document()?.Selection()?.Paste(PLAIN_TEXT)?;
+                // The app's (`on_paste`), else plain text.
+                if !crate::edit::paste(id, &r)? {
+                    r.Document()?.Selection()?.Paste(PLAIN_TEXT)?;
+                }
             }
             Ok(())
         }))?;
+        // The hooks: without them the field still edits.
+        if let Err(e) = crate::edit::connect(id, &r) {
+            crate::win::log!("rich input {id}: editing hooks: {e}");
+        }
+        if let Err(e) = crate::across::connect(id, &r.cast()?) {
+            crate::win::log!("rich input {id}: drags across fields: {e}");
+        }
         Ok(Rich {
             element: r,
             replace: RefCell::new(None),
+            chips: RefCell::new(Vec::new()),
         })
     }
 
@@ -115,14 +134,16 @@ impl Rich {
             .SetRange(start as i32, end as i32)
     }
 
-    /// Shows `runs` (`set_rich_value`) in `style`, its colors from `pal`.
-    pub fn set_runs(&self, runs: &str, style: &Style, pal: &Palette) -> Result<()> {
+    /// Shows `runs` (`set_rich_value`) in `style`, its colors from `pal`,
+    /// its chips drawn at `scale` (pixels per DIP).
+    pub fn set_runs(&self, runs: &str, style: &Style, pal: &Palette, scale: f32) -> Result<()> {
         let runs: Vec<TextRun> = decode_runs(runs);
         let shown: String = runs.iter().map(|r| r.text.as_str()).collect();
         let doc = self.element.Document()?;
         let current = text(&doc)?;
         let replace = self.replace.borrow_mut().take();
-        if shown != current {
+        let replaced = shown != current;
+        if replaced {
             // Not the text shown: the app's own (else a stale echo of the
             // typing, which the next one corrects).
             if replace.as_deref() != Some(shown.as_str()) {
@@ -140,12 +161,70 @@ impl Rich {
             text_transform: TextTransform::None,
             ..style.clone()
         };
-        format(
-            &doc,
-            &StyledText::from_runs(&shown, &runs, &style),
-            &runs,
-            pal,
-        )
+        let st = StyledText::from_runs(&shown, &runs, &style);
+        format(&doc, &st, &runs, pal)?;
+        self.place_chips(&doc, &st, &runs, pal, scale, replaced)
+    }
+
+    /// Puts the chips' pictures in place of their characters: all of them
+    /// after new text, else those whose look changed. When their number
+    /// changed (the user deleted one, an undo brought one back), the
+    /// pictures in the text are already the right ones.
+    fn place_chips(
+        &self,
+        doc: &RichEditTextDocument,
+        st: &StyledText,
+        runs: &[TextRun],
+        pal: &Palette,
+        scale: f32,
+        replaced: bool,
+    ) -> Result<()> {
+        let want: Vec<(i32, crate::chips::Look)> = st
+            .runs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let t = runs.get(i).filter(|t| t.chip.is_some())?;
+                let color = pal.ink(r.color.unwrap_or(pal.text));
+                let family = crate::text::family_name(&r.font.family, r.font.size);
+                let look = crate::chips::Look {
+                    label: t.chip_label.clone().unwrap_or_default(),
+                    icon: t.chip_icon.as_deref().and_then(crate::keys::fluent_icon),
+                    family: family.split(',').next().unwrap_or("").trim().to_string(),
+                    size: r.font.size.max(1.),
+                    weight: r.font.weight.css(),
+                    color,
+                    background: r
+                        .background
+                        .map_or_else(|| crate::chips::tint(color), |c| pal.fill(c)),
+                    scale,
+                };
+                Some((r.utf16_start as i32, look))
+            })
+            .collect();
+        let had = self.chips.borrow().clone();
+        let redo: Vec<usize> = if replaced {
+            (0..want.len()).collect()
+        } else if had.len() == want.len() {
+            (0..want.len()).filter(|&i| had[i] != want[i].1).collect()
+        } else {
+            Vec::new()
+        };
+        *self.chips.borrow_mut() = want.iter().map(|(_, l)| l.clone()).collect();
+        if redo.is_empty() {
+            return Ok(());
+        }
+        doc.BatchDisplayUpdates()?;
+        let r = (|| -> Result<()> {
+            for i in redo {
+                let (at, look) = &want[i];
+                let range: ITextRange = doc.GetRange(*at, at + 1)?.cast()?;
+                crate::chips::place(&range, look)?;
+            }
+            Ok(())
+        })();
+        doc.ApplyDisplayUpdates()?;
+        r
     }
 }
 
@@ -206,15 +285,14 @@ fn format(
             if cf.Underline()? != line {
                 cf.SetUnderline(line)?;
             }
-            let fg = r.color.map_or(auto, |c| win_color(pal.resolve(c)));
+            let fg = r.color.map_or(auto, |c| win_color(pal.ink(c)));
             if cf.ForegroundColor()? != fg {
                 cf.SetForegroundColor(fg)?;
             }
+            // A chip's picture draws its own background.
             let chip = runs.get(i).is_some_and(|t| t.chip.is_some());
-            let background = r
-                .background
-                .or_else(|| chip.then(|| pal.accent.with_alpha(0.2)));
-            let bg = background.map_or(auto, |c| win_color(pal.resolve(c)));
+            let background = r.background.filter(|_| !chip);
+            let bg = background.map_or(auto, |c| win_color(pal.fill(c)));
             if cf.BackgroundColor()? != bg {
                 cf.SetBackgroundColor(bg)?;
             }

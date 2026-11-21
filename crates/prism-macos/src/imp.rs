@@ -4584,12 +4584,15 @@ impl Widgets for AppKit {
     }
 
     fn set_appearance(&mut self, appearance: Appearance) {
-        let name = match appearance {
-            Appearance::System => None,
-            Appearance::Light => Some(unsafe { objc2_app_kit::NSAppearanceNameAqua }),
-            Appearance::Dark => Some(unsafe { objc2_app_kit::NSAppearanceNameDarkAqua }),
+        let appearance = match appearance {
+            Appearance::System => env_appearance(),
+            Appearance::Light => objc2_app_kit::NSAppearance::appearanceNamed(unsafe {
+                objc2_app_kit::NSAppearanceNameAqua
+            }),
+            Appearance::Dark => objc2_app_kit::NSAppearance::appearanceNamed(unsafe {
+                objc2_app_kit::NSAppearanceNameDarkAqua
+            }),
         };
-        let appearance = name.and_then(objc2_app_kit::NSAppearance::appearanceNamed);
         NSApplication::sharedApplication(self.mtm).setAppearance(appearance.as_deref());
     }
 
@@ -5309,6 +5312,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         MainThreadMarker::new().expect("prism-macos: run() must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    app.setAppearance(env_appearance().as_deref());
     let target = Target::new(mtm);
     crate::menus::install_main_menu(mtm, &config.title, &target, &[]);
     let root = PrismView::new(mtm, 0);
@@ -6155,6 +6159,18 @@ fn run_automation(mtm: MainThreadMarker) {
         for (i, sheet) in sheet_roots().iter().enumerate() {
             write_png(sheet, &format!("{path}.sheet{i}.png"));
         }
+        // An alert (`cx.show_alert`: NSAlert's sheet). The system shows it
+        // in a glass window of its own that no view draws: its content
+        // (title, message, buttons) goes to `<path>.alert.png`.
+        if let Some(alert) = root
+            .window()
+            .and_then(|w| w.attachedSheet())
+            .filter(|s| s.class().name().to_str().is_ok_and(|n| n.contains("Alert")))
+            && let Some(content) = alert.contentView()
+        {
+            write_png(&content, &format!("{path}.alert.png"));
+            println!("prism-macos: alert snapshot written to {path}.alert.png");
+        }
         // Layers (toasts) and popovers drawn over the window.
         if std::env::var_os("PRISM_SNAPSHOT_OVERLAYS").is_some()
             && let Some(window) = root.window()
@@ -6560,6 +6576,17 @@ fn cloud_storage(dir: &std::path::Path) -> Box<dyn prism_core::Storage> {
         Some(icloud) => Box::new(icloud),
         None => Box::new(prism_core::FileStorage::new(dir.join("cloud"))),
     }
+}
+
+/// `PRISM_APPEARANCE=light|dark` in place of the system's appearance
+/// (development, snapshots: the app's own choice still wins).
+fn env_appearance() -> Option<Retained<objc2_app_kit::NSAppearance>> {
+    let name = match std::env::var("PRISM_APPEARANCE").as_deref() {
+        Ok("dark") => unsafe { objc2_app_kit::NSAppearanceNameDarkAqua },
+        Ok("light") => unsafe { objc2_app_kit::NSAppearanceNameAqua },
+        _ => return None,
+    };
+    objc2_app_kit::NSAppearance::appearanceNamed(name)
 }
 
 /// The configured window size; `PRISM_WINDOW=1200x800` overrides it.

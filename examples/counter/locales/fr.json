@@ -450,6 +450,7 @@
     "level": "Niveau",
     "pointer_hint": "Passez le pointeur ici",
     "pointer_at": "Pointeur en {x}, {y}",
+    "zoom": "zoom {percent} %",
     "pad": "Pavé fléché",
     "pad_hint": "Cliquez sur le pavé puis utilisez les flèches (télécommande, croix directionnelle).",
     "open_sheet": "Ouvrir une feuille",
@@ -508,6 +509,7 @@
     "ended": "La vidéo est finie.",
     "drop_heading": "Des fichiers du gestionnaire de fichiers",
     "drop_hint": "Déposez des fichiers ici",
+    "drop_images_hint": "Images uniquement",
     "dropped": "Déposés : {names}"
   },
   "scene3d": {

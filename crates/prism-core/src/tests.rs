@@ -2800,6 +2800,16 @@ fn unsaved_changes_reach_the_backend_on_change() {
         "キャンセル"
     );
     assert_eq!(rt.app.chrome_text("discard"), "Discard Changes");
+    // File dialogs name their filters in the app's language.
+    assert_eq!(
+        crate::i18n::chrome_text(None, &fr, "all_files"),
+        "Tous les fichiers"
+    );
+    assert_eq!(crate::i18n::chrome_text(None, &fr, "files"), "Fichiers");
+    assert_eq!(
+        crate::i18n::chrome_text(None, &crate::Locale::new("de"), "images"),
+        "Bilder"
+    );
 }
 
 /// #156: on_dismiss says how the user closed the overlay.

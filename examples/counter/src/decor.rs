@@ -1,6 +1,6 @@
 //! The Decorations card of the Components tab: shadows (drop, inset,
 //! stacked), dashed and per-side borders, gradients, clipping to rounded
-//! corners, a frosted (backdrop-blurred) bar, colors relative to the text
+//! corners (all, or only some), a frosted (backdrop-blurred) bar, colors relative to the text
 //! color, and interaction states (hover, press, focus within, groups).
 
 use prism::prelude::*;
@@ -167,6 +167,30 @@ impl Render for Decor {
                                     .text_color(t.text),
                             ),
                     ),
+            )
+            .child(
+                // Only some corners rounded: opposite ones, three, one.
+                div().flex_row().gap(8.).children(
+                    [
+                        Corners::TOP_LEADING | Corners::BOTTOM_TRAILING,
+                        Corners::TOP_TRAILING | Corners::BOTTOM_LEADING,
+                        Corners::TOP | Corners::BOTTOM_LEADING,
+                        Corners::TOP_LEADING,
+                    ]
+                    .map(|corners| {
+                        div()
+                            .flex_1()
+                            .h(48.)
+                            .rounded_corners(20., corners)
+                            .clip()
+                            .child(
+                                div()
+                                    .flex_row()
+                                    .size_full()
+                                    .children(stripes.map(|c| div().flex_1().bg(rgb(c)))),
+                            )
+                    }),
+                ),
             )
             .child(
                 text(strings::decor_focus_hint(cx))

@@ -61,13 +61,21 @@ pub struct View {
     pub button: Option<Button>,
     /// The frame the elements were sized for.
     pub frame: Rect,
+    /// A text field's leading icon (`fieldicon.rs`).
+    pub field_icon: Option<crate::winui::xaml::Controls::FontIcon>,
 }
 
 impl View {
     pub fn new(id: NodeId, kind: NodeKind) -> Result<View> {
-        let outer = Canvas::new()?;
-        let kids = Canvas::new()?;
         let content = controls::create(id, kind)?;
+        // A container stands for its node in UI Automation: its custom
+        // peer gives it the node's role (`peers.rs`).
+        let outer = if content.element().is_none() {
+            crate::peers::canvas(crate::peers::Key::Node(id))?
+        } else {
+            Canvas::new()?
+        };
+        let kids = Canvas::new()?;
         let mut scroll = None;
         // An overlay's content is drawn above the window (`Win::layer`);
         // other nodes' children canvas joins the tree with the first child.
@@ -116,6 +124,7 @@ impl View {
             hit: false,
             button: None,
             frame: Rect::default(),
+            field_icon: None,
         })
     }
 
@@ -225,6 +234,7 @@ impl View {
         };
         self.decor.apply(&self.outer, under, n, pal, text)?;
         controls::style(&self.content, n, pal)?;
+        crate::fieldicon::sync(&mut self.field_icon, &self.outer, n, pal)?;
         style::apply_transform(&self.outer, s, r, sticky)?;
         self.clip(n)?;
         Ok(())
@@ -306,7 +316,13 @@ impl View {
     /// Makes the view a button (`set_clickable`): its children go inside a
     /// chrome-less WinUI `Button` in their place.
     pub fn make_button(&mut self, id: NodeId) -> Result<Option<Button>> {
-        if self.button.is_some() || self.scroll.is_some() || self.kind == NodeKind::Overlay {
+        // A native button is clicked through itself: another button around
+        // it would be an empty Tab stop, nameless for screen readers.
+        if self.button.is_some()
+            || self.scroll.is_some()
+            || self.kind == NodeKind::Overlay
+            || matches!(self.content, Content::Button(..))
+        {
             return Ok(None);
         }
         let b = controls::clickable_host(id)?;

@@ -3,6 +3,13 @@
 //! Edit, View…), with access keys (Alt+F opens File) and keyboard
 //! accelerators. The app's view starts under it.
 //!
+//! The bar is on the window's solid color (`SolidBackgroundFillColorBase`,
+//! like Prism's tab bars and stack headers under it), so it reads as one
+//! band with them under the title bar's Mica, as Notepad's menu row does,
+//! rather than a strip of Mica between two solid surfaces. It stays a row
+//! under the title bar: the title bar keeps the system's caption buttons,
+//! drag and snap layouts, and narrow windows keep room for every menu.
+//!
 //! Shortcuts are `KeyboardAccelerator`s of the bar itself, so they work
 //! with every menu closed, and items show their text (`Ctrl+N`). A hint
 //! (#247) is only shown: the key stays the focused view's. Platform
@@ -23,9 +30,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows_core::{Interface, Ref, Result};
 
+use crate::fluent::Palette;
 use crate::imp::{State, dispatch};
 use crate::win::log;
-use crate::winui::h;
 use crate::winui::xaml::Controls::{
     Canvas, MenuBar, MenuBarItem, MenuFlyoutItem, MenuFlyoutItemBase, MenuFlyoutSeparator,
     MenuFlyoutSubItem, PasswordBox, TextBox, ToggleMenuFlyoutItem,
@@ -34,6 +41,7 @@ use crate::winui::xaml::Input::{
     FocusManager, KeyboardAccelerator, KeyboardAcceleratorInvokedEventArgs,
 };
 use crate::winui::xaml::{RoutedEventHandler, UIElement};
+use crate::winui::{brush, h};
 
 /// WinUI's `MenuBarHeight`.
 const HEIGHT: f32 = 40.;
@@ -57,6 +65,17 @@ pub fn resize(width: f32) {
     });
 }
 
+/// The theme changed: the bar's color again.
+pub fn retheme(pal: &Palette) {
+    BAR.with(|b| {
+        if let Some(bar) = b.borrow().as_ref()
+            && let Ok(c) = brush(pal.window)
+        {
+            let _ = bar.SetBackground(&c);
+        }
+    });
+}
+
 /// Replaces the menu bar (none when `menus` is empty), then lays the app
 /// out again under it.
 pub fn set(s: &mut State, menus: Vec<MenuSpec>) {
@@ -76,6 +95,7 @@ pub fn set(s: &mut State, menus: Vec<MenuSpec>) {
         match build(&menus) {
             Ok(bar) => {
                 let placed = (|| -> Result<()> {
+                    bar.SetBackground(&brush(w.palette.window)?)?;
                     bar.SetHeight(HEIGHT as f64)?;
                     bar.SetWidth(w.size.0 as f64)?;
                     // Above the app, under its overlays.

@@ -276,9 +276,14 @@ fn field(id: NodeId, single: bool) -> Result<Content> {
     t.TextChanged(&TextChangedEventHandler::new(move |s, _| {
         if let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) {
             typed(id, t.Text()?.to_string());
+            crate::carets::changed(id);
         }
         Ok(())
     }))?;
+    // Drags across a selection group's fields (#264).
+    if let Err(e) = crate::across::connect(id, &t.cast()?) {
+        crate::win::log!("text field {id}: drags across fields: {e}");
+    }
     t.SelectionChanged(&RoutedEventHandler::new(move |s, _| {
         if let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) {
             let text = t.Text()?.to_string();
@@ -387,7 +392,7 @@ pub fn date_time(unix: f64) -> DateTime {
 
 /// The node's text color, resolved (`None` in the style: the theme's).
 pub fn text_color(s: &Style, pal: &Palette) -> Color {
-    s.text_color.map_or(pal.text, |c| pal.resolve(c))
+    pal.ink(s.text_color.unwrap_or(pal.text))
 }
 
 /// Lightweight styling: these theme resources of one control, every state
@@ -485,7 +490,7 @@ pub fn style(c: &Content, n: &Node, pal: &Palette) -> Result<()> {
                 r.SetFontSize(s.font_size as f64)?;
                 r.SetIsEnabled(!n.a11y.disabled)?;
                 if let Some(c) = s.text_color {
-                    r.SetForeground(&brush(pal.resolve(c))?)?;
+                    r.SetForeground(&brush(pal.ink(c))?)?;
                 }
             }
         }
@@ -503,12 +508,12 @@ pub fn style(c: &Content, n: &Node, pal: &Palette) -> Result<()> {
         Content::Time(t) => t.SetIsEnabled(!n.a11y.disabled)?,
         Content::Progress(p) => {
             if let Some(c) = s.text_color {
-                p.SetForeground(&brush(pal.resolve(c))?)?;
+                p.SetForeground(&brush(pal.ink(c))?)?;
             }
         }
         Content::Ring(r) => {
             if let Some(c) = s.text_color {
-                r.SetForeground(&brush(pal.resolve(c))?)?;
+                r.SetForeground(&brush(pal.ink(c))?)?;
             }
         }
         Content::Rich(r) => {
@@ -547,14 +552,16 @@ fn field_look(c: Control, n: &Node, color: Color) -> Result<()> {
         }
         c.SetBorderThickness(uniform(0.))?;
         let p = s.padding;
+        // A leading icon (`fieldicon.rs`) takes the start of the field.
+        let lead = crate::fieldicon::leading(n);
         c.SetPadding(if s.has_padding() {
-            thickness(p.left, p.top, p.right, p.bottom)
+            thickness(lead, p.top, p.right, p.bottom)
         } else {
-            uniform(0.)
+            thickness(lead, 0., 0., 0.)
         })?;
     } else {
-        let (l, t, r, b) = FIELD_PADDING;
-        c.SetPadding(thickness(l, t, r, b))?;
+        let (_, t, r, b) = FIELD_PADDING;
+        c.SetPadding(thickness(crate::fieldicon::leading(n), t, r, b))?;
     }
     Ok(())
 }
@@ -563,7 +570,8 @@ fn field_look(c: Control, n: &Node, color: Color) -> Result<()> {
 /// inside, Invoke, keyboard activation, focus visuals and UI Automation
 /// from WinUI; Prism draws the look (box, states) under it.
 pub fn clickable_host(id: NodeId) -> Result<Button> {
-    let b = Button::new()?;
+    // Its custom automation peer gives it the node's role (`peers.rs`).
+    let b = crate::peers::button(id)?;
     override_brushes(&b.Resources()?, &BUTTON_CHROME, &transparent()?.cast()?)?;
     b.SetBorderThickness(uniform(0.))?;
     b.SetPadding(uniform(0.))?;
@@ -828,10 +836,10 @@ pub fn set_paths(c: &Content, paths: &[prism_core::Path], pal: &Palette) -> Resu
         let path = XPath::new()?;
         path.SetData(&geometry)?;
         if let Some(f) = p.fill {
-            path.SetFill(&brush(pal.resolve(f))?)?;
+            path.SetFill(&brush(pal.graphic(f))?)?;
         }
         if let Some(s) = p.stroke {
-            path.SetStroke(&brush(pal.resolve(s))?)?;
+            path.SetStroke(&brush(pal.graphic(s))?)?;
             path.SetStrokeThickness(p.width as f64)?;
             if p.round {
                 path.SetStrokeStartLineCap(PenLineCap::Round)?;
@@ -927,7 +935,22 @@ pub fn measure(
                 };
                 text_h.max(lh * rows)
             };
-            let w = max_width.map_or(200., |m| m.min(200.));
+            // A one-line field is as wide as its placeholder or its text,
+            // at least 120 (macOS's `fittingSize`, at least 120): two short
+            // fields share a row. Taller fields keep 200.
+            let natural = if k == NodeKind::TextInput {
+                // A secure field's dots are not its text.
+                let secure = InputConfig::decode(&n.config).secure;
+                let widest = [&n.placeholder, &n.text]
+                    .into_iter()
+                    .filter(|t| !t.is_empty() && !(secure && std::ptr::eq(*t, &n.text)))
+                    .map(|t| text_size(m, t).0)
+                    .fold(0., f32::max);
+                widest.ceil().max(120.)
+            } else {
+                200.
+            };
+            let w = max_width.map_or(natural, |m| m.min(natural));
             if own || s.has_padding() {
                 (w, content_h)
             } else {

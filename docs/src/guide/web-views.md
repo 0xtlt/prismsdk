@@ -66,12 +66,12 @@ The app gets the value as JSON either way (`WebMessageEvent::data::<T>()`, `data
 web_view(url).sandbox(WebSandbox::new().scripts().same_origin())
 ```
 
-| `WebSandbox` | Web (`sandbox` attribute) | Apple | Android |
-|---|---|---|---|
-| `scripts()` | `allow-scripts` | `allowsContentJavaScript` | `setJavaScriptEnabled` |
-| `forms()` | `allow-forms` | form navigations cancelled otherwise | not enforced |
-| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open`: the system browser; ignored otherwise | the same |
-| `same_origin()` | `allow-same-origin` | otherwise a private, non-persistent data store | otherwise DOM storage off |
+| `WebSandbox` | Web (`sandbox` attribute) | Apple | Android | Windows |
+|---|---|---|---|---|
+| `scripts()` | `allow-scripts` | `allowsContentJavaScript` | `setJavaScriptEnabled` | `IsScriptEnabled` |
+| `forms()` | `allow-forms` | form navigations cancelled otherwise | not enforced | otherwise a script in every frame stops submissions (`submit`, `form.submit()`, `requestSubmit()`) and every POST of a document is answered 403 before it leaves |
+| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open`: the system browser; ignored otherwise | the same | the same (`NewWindowRequested`) |
+| `same_origin()` | `allow-same-origin` | otherwise a private, non-persistent data store | otherwise DOM storage off | otherwise InPrivate |
 
 A window the page opens with `popups()` is not sandboxed: on the web it is a normal tab (`allow-popups-to-escape-sandbox`), as natively, where it opens in the system browser.
 

@@ -175,7 +175,12 @@ pub fn commit(s: &mut State, patches: Vec<Patch>) {
             }
             prism_core::PlatformRequest::SetUnsavedChanges(on) => UNSAVED.set(on),
             prism_core::PlatformRequest::LoadFont(face) => crate::fonts::load(s, face),
-            other => prism_core::PlatformServices::handle(&mut s.services, other),
+            other => {
+                if matches!(other, prism_core::PlatformRequest::Device { .. }) {
+                    s.services.filter_names = crate::pickers::FilterNames::of(&s.runtime.app);
+                }
+                prism_core::PlatformServices::handle(&mut s.services, other)
+            }
         }
     }
     if let Some(at) = s.runtime.next_timer() {
@@ -372,6 +377,31 @@ fn local_offset() -> f64 {
             tz.StandardBias
         };
     -(bias as f64) * 60.
+}
+
+/// Tells window `h` the contrast theme changed, as the system does
+/// (`WM_SETTINGCHANGE`, `SPI_SETHIGHCONTRAST`): its colors are read again.
+pub fn post_contrast_changed(h: HWND) {
+    unsafe {
+        let _ = PostMessageW(
+            Some(h),
+            WM_SETTINGCHANGE,
+            WPARAM(SPI_SETHIGHCONTRAST.0 as usize),
+            LPARAM(0),
+        );
+    }
+}
+
+/// The same, at once (the `contrast:` test step, outside any work).
+pub fn send_contrast_changed(h: HWND) {
+    unsafe {
+        SendMessageW(
+            h,
+            WM_SETTINGCHANGE,
+            Some(WPARAM(SPI_SETHIGHCONTRAST.0 as usize)),
+            Some(LPARAM(0)),
+        );
+    }
 }
 
 pub fn set_dark_title_bar(h: HWND, dark: bool) {
@@ -662,8 +692,15 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 } else {
                     String::new()
                 };
-                if what == "ImmersiveColorSet" || what.is_empty() {
-                    with_state(|s| {
+                // Light or dark, the accent; a contrast theme on or off.
+                let contrast =
+                    wp.0 == SPI_SETHIGHCONTRAST.0 as usize || what == "WindowsThemeElement";
+                if contrast {
+                    let on = system::high_contrast().is_some();
+                    log!("contrast theme {}", if on { "on" } else { "off" });
+                }
+                if what == "ImmersiveColorSet" || what.is_empty() || contrast {
+                    let done = with_state(|s| {
                         let w = &mut s.renderer.widgets;
                         w.system_dark = system::dark_mode();
                         w.accent = system::accent();
@@ -672,7 +709,16 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         let patches = s.runtime.poll();
                         commit(s, patches);
                     });
+                    if done.is_none() {
+                        // Busy: once the current work is done.
+                        post_contrast_changed(h);
+                    }
                 }
+                LRESULT(0)
+            }
+            // The system colors changed (a contrast theme's).
+            WM_SYSCOLORCHANGE => {
+                post_contrast_changed(h);
                 LRESULT(0)
             }
             WM_CLOSE => {
@@ -783,6 +829,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         let assets = crate::package::assets_dir(config.assets.as_deref());
         let data = system::data_dir(&config.title);
         let _ = std::fs::create_dir_all(&data);
+        crate::fonts::set_data_dir(&data);
         let images = Images::new(prism_native::images::ImageSources {
             embedded: config.embedded_assets.clone(),
             asset_dirs: assets.into_iter().collect(),
@@ -820,7 +867,7 @@ pub fn run(config: AppConfig, init: AppInit) {
                 std::process::exit(3);
             }
         };
-        set_dark_title_bar(main, win.dark());
+        set_dark_title_bar(main, win.palette.dark);
         // WinUI renders through DWM: no island in session 0 (SSH).
         if host::has_desktop() {
             match Island::new(main, &win.root, &xaml.app) {

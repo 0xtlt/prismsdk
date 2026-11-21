@@ -50,6 +50,10 @@ pub fn start() -> std::result::Result<Runtime, String> {
              prism_build::link_app(), which embeds the manifest that registers it"
         )
     })?;
+    // Run-time fonts in the app's data folder (before XAML's first lookup).
+    if let Err(e) = crate::fonts::install_resolver(&app) {
+        log!("run-time fonts: {e}");
+    }
     let manager = WindowsXamlManager::InitializeForCurrentThread()
         .map_err(|e| format!("WindowsXamlManager: {e}"))?;
     // The Windows 11 styles of every control.

@@ -1,0 +1,29 @@
+# Accessibility (`a11y.rs`, `peers.rs`): roles, states, custom automation
+# peers, high contrast.
+Microsoft.UI.Xaml.Automation.Peers.AutomationControlType
+Microsoft.UI.Xaml.Automation.Peers.AutomationLandmarkType
+Microsoft.UI.Xaml.Automation.Peers.AutomationOrientation
+Microsoft.UI.Xaml.Automation.Peers.AutomationNavigationDirection
+Microsoft.UI.Xaml.Automation.Peers.IAutomationPeerOverrides
+Microsoft.UI.Xaml.Automation.Peers.IButtonAutomationPeerFactory
+Microsoft.UI.Xaml.Automation.Peers.IFrameworkElementAutomationPeerFactory
+Microsoft.UI.Xaml.Automation.Provider.IToggleProvider
+Microsoft.UI.Xaml.Automation.Provider.ISelectionItemProvider
+Microsoft.UI.Xaml.Automation.Provider.IValueProvider
+Microsoft.UI.Xaml.Automation.Provider.IRangeValueProvider
+Microsoft.UI.Xaml.Automation.Provider.IExpandCollapseProvider
+Microsoft.UI.Xaml.Automation.Provider.IRawElementProviderSimple
+Microsoft.UI.Xaml.Automation.ToggleState
+Microsoft.UI.Xaml.Automation.ExpandCollapseState
+Microsoft.UI.Xaml.Automation.AutomationProperty
+Microsoft.UI.Xaml.Automation.TogglePatternIdentifiers
+Microsoft.UI.Xaml.Automation.SelectionItemPatternIdentifiers
+Microsoft.UI.Xaml.Automation.ValuePatternIdentifiers
+Microsoft.UI.Xaml.Automation.AutomationElementIdentifiers
+Microsoft.UI.Xaml.IUIElementOverrides
+Microsoft.UI.Xaml.Controls.IButtonFactory
+Microsoft.UI.Xaml.Controls.ICanvasFactory
+# WinUI's words for a tab item (`TabViewItem`'s peer).
+Microsoft.UI.Xaml.Controls.TabViewItem
+Microsoft.UI.Xaml.Controls.ListViewItem
+Microsoft.UI.Xaml.Controls.Primitives.SelectorItem

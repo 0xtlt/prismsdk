@@ -10,7 +10,9 @@
 //!   showing Title; `scroll:600` scrolls the visible scroll views before
 //!   the next steps; `wait:500` waits before them (milliseconds);
 //!   `dpi:144` moves the window to a simulated monitor at that DPI;
-//!   `key:Escape` (`Tab`, `Enter`) presses a key; `hover:`,
+//!   `key:Escape` (`Tab`, `Enter`) presses a key;
+//!   `contrast:night-sky` switches the contrast theme (`PRISM_HIGH_CONTRAST`'s
+//!   values) through the system's settings message; `hover:`,
 //!   `drag:`, `swipe:` and `wheel:` move the real mouse over a view
 //!   (`inject.rs`).
 //! - `PRISM_SCROLL=600` scrolls the visible scroll views.
@@ -93,6 +95,12 @@ fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
             log!("{name}: {:.1} ms", crate::perf::ms(started));
             crate::perf::committed(&name, started);
         }
+        // Real input plays over a few hundred milliseconds: the next steps
+        // (a key after a click) and the snapshot's delay come after it.
+        if crate::inject::playing() {
+            after_input(main, steps);
+            return;
+        }
         let wait = step.strip_prefix("wait:").and_then(|ms| ms.parse().ok());
         let waits = step.starts_with("scroll:")
             || step.starts_with("key:")
@@ -117,6 +125,18 @@ fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
     }
 }
 
+/// Goes on with `steps` once the real input queued so far has played.
+fn after_input(main: HWND, steps: Vec<String>) {
+    if crate::inject::playing() {
+        crate::motion::after(
+            std::time::Duration::from_millis(100),
+            Box::new(move || after_input(main, steps)),
+        );
+        return;
+    }
+    steps_then_snapshot(main, steps);
+}
+
 fn run_step(step: &str) -> bool {
     // `wait:500`: the next steps wait that many milliseconds (frames run).
     if step.starts_with("wait:") {
@@ -126,6 +146,15 @@ fn run_step(step: &str) -> bool {
     if let Some(dpi) = step.strip_prefix("dpi:").and_then(|d| d.parse().ok()) {
         crate::system::simulate_dpi(crate::imp::main_hwnd(), dpi);
         return true;
+    }
+    // `contrast:night-sky` (`0`, `1`, a theme): the contrast theme changes
+    // as the app runs, through the system's own message.
+    if let Some(value) = step.strip_prefix("contrast:") {
+        crate::system::override_contrast(value);
+        log!("PRISM_CLICK: contrast theme {value}");
+        return with_state(|s| s.renderer.widgets.hwnd)
+            .map(crate::imp::send_contrast_changed)
+            .is_some();
     }
     // `key:Escape`, `key:Tab`, `key:Enter`: the key, as the keyboard sends
     // it (to the window with the keyboard focus, through the message loop).

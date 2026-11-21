@@ -5,7 +5,10 @@
 //!
 //! The source is a remote URL, a file or an app asset (copied out of the
 //! binary when it is compiled in, `prism_native::images::media_url`); the
-//! poster a picture shown until playback starts. The player's events come
+//! poster a picture shown until playback starts. A remote video with
+//! request headers (`Video::header`) is read through `stream.rs` (HTTP
+//! ranges with the headers), or an `AdaptiveMediaSource` whose
+//! `HttpClient` sends them for HLS and DASH. The player's events come
 //! on a thread of the media stack: they are brought back to the UI thread
 //! through its dispatcher queue: the end of the playback
 //! (`UiEvent::Ended`, not while looping) and the video's natural size (the
@@ -18,6 +21,7 @@ use prism_core::{NodeId, UiEvent, VideoConfig};
 use windows::Foundation::{TypedEventHandler, Uri};
 use windows::Media::Core::MediaSource;
 use windows::Media::Playback::MediaPlayer;
+use windows::Media::Streaming::Adaptive::{AdaptiveMediaSource, AdaptiveMediaSourceCreationStatus};
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::imp::{defer, dispatch};
@@ -115,6 +119,85 @@ impl Video {
     }
 }
 
+/// Opens remote video `url` of node `id` with its request `headers`,
+/// then plays it if the node still shows `src` (its text).
+fn open_with_headers(
+    id: NodeId,
+    src: String,
+    url: String,
+    headers: Vec<(String, String)>,
+) -> Result<()> {
+    let queue = DispatcherQueue::GetForCurrentThread()?;
+    // Back on the UI thread: the node may show another video by now.
+    let play = move |source: MediaSource| {
+        let src = src.clone();
+        let _ = queue.TryEnqueue(&DispatcherQueueHandler::new(move || {
+            crate::imp::with_state(|s| {
+                if let Some(crate::controls::Content::Video(v)) =
+                    s.renderer.widgets.views.get(&id).map(|v| &v.content)
+                    && *v.src.borrow() == src
+                {
+                    let _ = v.player.SetSource(&source);
+                }
+            });
+            Ok(())
+        }));
+    };
+    if crate::stream::adaptive(&url) {
+        // HLS, DASH: the manifest and every segment through this client.
+        let client = windows::Web::Http::HttpClient::new()?;
+        let defaults = client.DefaultRequestHeaders()?;
+        for (k, v) in &headers {
+            defaults.TryAppendWithoutValidation(&h(k), &h(v))?;
+        }
+        let op = AdaptiveMediaSource::CreateFromUriWithDownloaderAsync(
+            &Uri::CreateUri(&h(&url))?,
+            &client,
+        )?;
+        op.SetCompleted(&windows_future::AsyncOperationCompletedHandler::<
+            windows::Media::Streaming::Adaptive::AdaptiveMediaSourceCreationResult,
+        >::new(move |op, _| {
+            let Some(op) = op.as_ref() else { return Ok(()) };
+            let r = op.GetResults()?;
+            if r.Status()? != AdaptiveMediaSourceCreationStatus::Success {
+                crate::win::log!(
+                    "video {id}: the adaptive stream did not open ({:?})",
+                    r.Status()?
+                );
+                return Ok(());
+            }
+            play(MediaSource::CreateFromAdaptiveMediaSource(
+                &r.MediaSource()?,
+            )?);
+            Ok(())
+        }))?;
+        return Ok(());
+    }
+    let refs: Vec<(String, String)> = headers;
+    std::thread::spawn(move || {
+        let pairs: Vec<(&str, &str)> = refs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        match crate::stream::Remote::open(&url, &pairs) {
+            Ok((remote, kind)) => {
+                let source =
+                    MediaSource::CreateFromStream(&crate::stream::Stream::open(remote), &h(&kind));
+                match source {
+                    Ok(s) => play(s),
+                    Err(e) => crate::win::log!("video {id}: {e}"),
+                }
+            }
+            Err(e) => {
+                // Never the headers: they hold tokens.
+                crate::win::log!("video {id}: {e}; played without its headers");
+                if let Ok(s) = Uri::CreateUri(&h(&url)).and_then(|u| MediaSource::CreateFromUri(&u))
+                {
+                    play(s);
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
 /// The stream of node `id` knows its size: it lays out again.
 fn natural_size(id: NodeId, size: (f32, f32)) {
     NATURAL.with(|n| n.borrow_mut().insert(id, size));
@@ -172,11 +255,20 @@ impl Win {
                 *video.src.borrow_mut() = text.clone();
                 match prism_native::images::media_url(&text, &self.images.sources) {
                     Some(url) => {
-                        // Headers (`Video::header`) need a stream of our own:
-                        // not sent yet.
-                        let url = prism_core::picture_source(&url).0.to_string();
-                        let source = MediaSource::CreateFromUri(&Uri::CreateUri(&h(&url))?)?;
-                        video.player.SetSource(&source)?;
+                        let (plain, headers) = prism_core::picture_source(&url);
+                        if headers.is_empty() || !prism_native::images::is_remote(plain) {
+                            let source = MediaSource::CreateFromUri(&Uri::CreateUri(&h(plain))?)?;
+                            video.player.SetSource(&source)?;
+                        } else {
+                            video.player.SetSource(
+                                None::<&windows::Media::Playback::IMediaPlaybackSource>,
+                            )?;
+                            let headers: Vec<(String, String)> = headers
+                                .iter()
+                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                .collect();
+                            open_with_headers(id, text.clone(), plain.to_string(), headers)?;
+                        }
                     }
                     None => video
                         .player
