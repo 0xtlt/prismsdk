@@ -84,7 +84,7 @@ text(tab.title.clone()).truncate().tooltip_when_truncated()
 | Web | the `title` attribute | `title` set as the pointer comes over it when `scrollWidth` / `scrollHeight` exceed the box |
 | Linux (GTK) | `gtk_widget_set_tooltip_text` | `query-tooltip`, while the label's layout is ellipsized |
 | Android | `setTooltipText` (a long press, or a mouse hover) | set after each layout while the last line is ellipsized |
-| Windows | `ToolTipService.ToolTip` | none yet |
+| Windows | `ToolTipService.ToolTip` | set while the `TextBlock` is trimmed (`IsTextTrimmed`, followed through `IsTextTrimmedChanged`) |
 
 Screen readers read a tooltip as a description where the platform does (the web's `title`). Touch screens without a pointer show none.
 

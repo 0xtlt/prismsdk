@@ -243,6 +243,7 @@ impl View {
         if let Content::Text(t) = &self.content {
             let st = StyledText::new(&n.text, &n.config, s);
             crate::underlay::sync(self.id, &self.outer, t, &st, pal, text)?;
+            crate::tips::restyled(self.id, t);
         }
         crate::fieldicon::sync(&mut self.field_icon, &self.outer, n, pal)?;
         style::apply_transform(&self.outer, s, r, sticky)?;
