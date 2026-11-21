@@ -394,6 +394,14 @@ impl Win {
         if let Err(e) = controls::set_picture(&v.content, bitmap.as_ref()) {
             log!("picture {:?}: {e}", n.text);
         }
+        self.fit_picture(id);
+    }
+
+    /// A picture's image placed for its fit and focal point (#218).
+    fn fit_picture(&mut self, id: NodeId) {
+        if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) {
+            let _ = v.fit_picture(n);
+        }
     }
 
     /// Gives node `id` the keyboard focus (`None`: away from fields).
@@ -886,6 +894,10 @@ impl Widgets for Win {
                 {
                     log!("value of node {id}: {e}");
                 }
+                if kind == NodeKind::Picture {
+                    // Filled or fitted.
+                    self.fit_picture(id);
+                }
             }
         }
     }
@@ -1367,6 +1379,10 @@ impl Win {
         if kind == NodeKind::Video {
             // The poster.
             self.show_video(id);
+        }
+        if kind == NodeKind::Picture {
+            // Its focal point.
+            self.fit_picture(id);
         }
         let value = self.scene.get(id).map_or(0., |n| n.value);
         if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {
