@@ -751,12 +751,16 @@ impl Live {
             // The page described its device (on connect, rotation, fold).
             Some("device") => {
                 crate::device_info::apply_report(&mut self.device, &v);
-                // A platform authenticator (WebAuthn) for `authenticate`.
+                // A platform authenticator (WebAuthn) for `authenticate`:
+                // its answer often comes in a later report of the same
+                // device, which re-renders for the capabilities alone.
+                let mut patches = Vec::new();
                 if let Some(uvpa) = v.get("uvpa").and_then(Value::as_bool) {
                     self.services.uvpa = uvpa;
-                    rt.app.set_capabilities(self.services.capabilities());
+                    patches = rt.set_capabilities(self.services.capabilities());
                 }
-                rt.set_device_info(self.device.clone())
+                patches.extend(rt.set_device_info(self.device.clone()));
+                patches
             }
             // The page was hidden or shown again.
             Some("lifecycle") => rt.set_lifecycle(match v.get("state").and_then(Value::as_str) {
