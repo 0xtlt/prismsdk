@@ -133,7 +133,7 @@ impl Assets {
             .collect();
         if let Some(dir) = &dir {
             let mut found = Vec::new();
-            walk(dir, dir, &mut found);
+            walk(dir, &mut found);
             for (logical, file) in found {
                 if assets.embedded.get(&logical).is_some() {
                     continue;
@@ -237,7 +237,7 @@ impl Assets {
         }
         let body = match self.embedded.get(name) {
             Some(bytes) => bytes.to_vec(),
-            None => std::fs::read(self.dir.as_ref()?.join(name)).ok()?,
+            None => std::fs::read(file_under(self.dir.as_ref()?, name)?).ok()?,
         };
         Some(StaticFile {
             etag: format!("\"{}\"", content_hash(&body)),
@@ -370,35 +370,118 @@ fn opens_or_closes(line: &str) -> bool {
     ticks % 2 == 1
 }
 
-/// A relative path that stays inside its directory.
+/// A relative path that names a file inside its directory on every OS:
+/// `/`-separated plain segments. Checked as text, the same way on every
+/// host: no dot segments or dotfiles, and nothing Windows reads as a drive
+/// (`C:`), a UNC or verbatim prefix, a stream (`a:b`), a device (`NUL.txt`)
+/// or a separator (`\`).
 pub(crate) fn safe(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('/')
-        && !path
-            .split('/')
-            .any(|seg| seg == ".." || seg.is_empty() || seg.contains('\\'))
+    !path.is_empty() && path.split('/').all(plain_segment)
 }
 
-/// Every file under `dir` as (path relative to `root` with `/`, full path).
-fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+/// One segment of a [`safe`] path.
+fn plain_segment(seg: &str) -> bool {
+    !seg.is_empty()
+        && !seg.starts_with('.')
+        // Windows drops trailing dots and spaces: `a.png.` is `a.png`.
+        && !seg.ends_with(['.', ' '])
+        && !seg.chars().any(|c| {
+            c.is_control() || matches!(c, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
+        })
+        && !windows_device(seg)
+}
+
+/// `CON`, `nul.txt`, `Com1.png`…: Windows opens a device for these names,
+/// in any directory, whatever their extension.
+fn windows_device(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or(seg).trim_end_matches(' ');
+    let stem = stem.to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+    ) {
+        return true;
+    }
+    let port = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"));
+    port.is_some_and(|n| {
+        let mut chars = n.chars();
+        matches!(
+            (chars.next(), chars.next()),
+            (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+        )
+    })
+}
+
+/// The file `name` ([`safe`]) names under `root`, links resolved, if it is
+/// still under `root` once they are: a link out of the directory is never
+/// followed.
+pub(crate) fn file_under(root: &Path, name: &str) -> Option<PathBuf> {
+    if !safe(name) {
+        return None;
+    }
+    let mut path = root.to_path_buf();
+    path.extend(name.split('/'));
+    let real = path.canonicalize().ok()?;
+    (real.starts_with(root.canonicalize().ok()?) && real.is_file()).then_some(real)
+}
+
+/// Every file under `root` as (its [`safe`] path relative to `root`, the
+/// file). Links are followed only inside `root`, each directory once (a
+/// cycle ends); dotfiles and names that are not [`safe`] are skipped.
+fn walk(root: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(real_root) = root.canonicalize() else {
+        return;
+    };
+    let mut seen = std::collections::HashSet::new();
+    walk_dir(&real_root, root, "", &mut seen, out);
+}
+
+fn walk_dir(
+    real_root: &Path,
+    dir: &Path,
+    prefix: &str,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    out: &mut Vec<(String, PathBuf)>,
+) {
+    let Ok(real) = dir.canonicalize() else {
+        return;
+    };
+    if !seen.insert(real) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|n| !n.starts_with('.')) else {
+            continue;
+        };
+        let logical = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if !plain_segment(name) {
+            eprintln!("prism-web: assets/{logical} is not served: not a portable file name");
             continue;
         }
-        if path.is_dir() {
-            walk(root, &path, out);
-        } else if let Ok(rel) = path.strip_prefix(root) {
-            let rel = rel
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/");
-            out.push((rel, path));
+        let Ok(target) = path.canonicalize() else {
+            continue;
+        };
+        if !target.starts_with(real_root) {
+            eprintln!(
+                "prism-web: assets/{logical} is not served: it links out of the assets directory"
+            );
+            continue;
+        }
+        if target.is_dir() {
+            walk_dir(real_root, &path, &logical, seen, out);
+        } else if target.is_file() {
+            out.push((logical, target));
         }
     }
 }
@@ -520,5 +603,128 @@ mod tests {
         assert_eq!(assets.export(&out).unwrap(), 5);
         assert_eq!(std::fs::read(out.join(&logo)).unwrap(), b"binary");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// S4 (security review): a requested name is checked as text, the same
+    /// way on every host, before it meets a path. Windows reads a drive
+    /// (`C:`), a UNC or verbatim prefix, a stream (`a:b`) or a device
+    /// (`NUL.txt`) in names Unix calls ordinary.
+    #[test]
+    fn s4_only_plain_relative_names_are_safe() {
+        for name in [
+            // Drive-qualified and drive-relative.
+            "C:/Windows/win.ini",
+            "c:/x",
+            "C:win.ini",
+            "C:",
+            "img/C:/x.png",
+            // UNC and verbatim (`\\?\`), with either separator.
+            "\\\\server\\share\\x.png",
+            "//server/share/x.png",
+            "\\\\?\\C:\\Windows\\win.ini",
+            "//?/C:/Windows/win.ini",
+            "\\\\.\\pipe\\x",
+            // Alternate data streams.
+            "logo.png:secret",
+            "logo.png::$DATA",
+            // Devices, with or without an extension, in any case.
+            "CON",
+            "nul.txt",
+            "img/Aux.png",
+            "COM1",
+            "lpt9.js",
+            "COM\u{b9}.png",
+            "CONIN$",
+            "prn .css",
+            // Dotfiles, dot segments, empty segments, other separators.
+            ".env",
+            ".git/config",
+            "img/.hidden.png",
+            ".",
+            "./a.png",
+            "a/../b.png",
+            "../secret",
+            "a//b.png",
+            "a\\b.png",
+            "/etc/passwd",
+            // Trailing dots and spaces (Windows drops them), reserved and
+            // control characters.
+            "a.png.",
+            "a.png ",
+            "a\0b.png",
+            "a\nb.png",
+            "a<b.png",
+            "a|b.png",
+            "a?b.png",
+            "a*b.png",
+            "a\"b.png",
+            "",
+        ] {
+            assert!(!safe(name), "{name:?} must be refused");
+        }
+        for name in [
+            "logo.png",
+            "img/a.png",
+            "fonts/Inter-Regular.woff2",
+            "icons/a.b.svg",
+            "console.js",
+            "com10.png",
+            "nul-free.png",
+            "LICENSE",
+            "caf\u{e9}.png",
+        ] {
+            assert!(safe(name), "{name:?} must be accepted");
+        }
+    }
+
+    /// S4: the unhashed fallback serves what the index would publish, and
+    /// nothing a link takes out of the directory.
+    #[test]
+    fn s4_the_fallback_serves_only_published_files() {
+        let root = std::env::temp_dir().join(format!("prism-assets-s4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir, outside) = (root.join("assets"), root.join("outside"));
+        std::fs::create_dir_all(dir.join("img")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(dir.join("img/logo.png"), b"logo").unwrap();
+        std::fs::write(dir.join(".env"), b"SECRET=1").unwrap();
+        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink(&outside, dir.join("out")).unwrap();
+            symlink(outside.join("secret.txt"), dir.join("secret.txt")).unwrap();
+            symlink(dir.join("img/logo.png"), dir.join("alias.png")).unwrap();
+            // A cycle.
+            symlink(&dir, dir.join("img/loop")).unwrap();
+        }
+        let assets = Assets::new(
+            "js".into(),
+            "css".into(),
+            Some(dir.clone()),
+            EmbeddedAssets::new(),
+        );
+        assert_eq!(assets.get("assets/img/logo.png").unwrap().body, b"logo");
+        assert!(assets.get("assets/.env").is_none());
+        #[cfg(unix)]
+        {
+            // Links out of the directory: neither published nor served.
+            for name in ["out/secret.txt", "secret.txt"] {
+                assert!(!assets.app.contains_key(name), "{name} published");
+                assert!(
+                    assets.get(&format!("assets/{name}")).is_none(),
+                    "{name} served"
+                );
+            }
+            // A link inside it still works; the cycle is walked once.
+            assert!(assets.app_path("alias.png").starts_with("assets/alias."));
+            assert_eq!(assets.get("assets/alias.png").unwrap().body, b"logo");
+            assert!(
+                assets.app.keys().all(|k| !k.contains("loop/")),
+                "{:?}",
+                assets.app.keys()
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

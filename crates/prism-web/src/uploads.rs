@@ -151,9 +151,9 @@ impl Uploads {
             let ext = std::path::Path::new(name)
                 .extension()
                 .and_then(|e| e.to_str())
-                .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric()))
-                .unwrap_or("bin")
-                .to_ascii_lowercase();
+                .map(str::to_ascii_lowercase)
+                .filter(|e| stored_name(&format!("{}.{e}", "0".repeat(32))))
+                .unwrap_or_else(|| "bin".into());
             let stored = format!("{}.{ext}", crate::app::new_session_id());
             let path = dir.join(&stored);
             let Ok(file) = std::fs::File::create(&path) else {
@@ -249,6 +249,54 @@ impl Uploads {
                     })
                     .collect()))
             }
+        }
+    }
+}
+
+/// Whether `name` is one this module stores files under: 32 lowercase hex
+/// digits, a dot, an extension of 1 to 16 lowercase letters or digits. The
+/// only names `/files/…` reads.
+pub(crate) fn stored_name(name: &str) -> bool {
+    name.split_once('.').is_some_and(|(id, ext)| {
+        id.len() == 32
+            && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            && (1..=16).contains(&ext.len())
+            && ext
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_name;
+
+    /// S4 (security review): `/files/…` reads a stored name or nothing, on
+    /// every host.
+    #[test]
+    fn s4_only_stored_names_are_read() {
+        let id = crate::app::new_session_id();
+        assert!(stored_name(&format!("{id}.png")));
+        assert!(stored_name(&format!("{id}.bin")));
+        for name in [
+            "C:/Windows/win.ini".to_string(),
+            format!("C:{id}.png"),
+            format!("\\\\server\\share\\{id}.png"),
+            format!("//server/share/{id}.png"),
+            format!("\\\\?\\C:\\{id}.png"),
+            format!("{id}.png:secret"),
+            format!("{id}.png/../../x.png"),
+            format!("../{id}.png"),
+            format!("{id}.PNG"),
+            format!("{id}."),
+            format!("{id}.png."),
+            format!("{id}.{}", "a".repeat(17)),
+            "NUL.png".to_string(),
+            format!(".{id}.png"),
+            format!("{}.png", &id[1..]),
+            format!("{}.png", id.to_ascii_uppercase()),
+        ] {
+            assert!(!stored_name(&name), "{name:?} must be refused");
         }
     }
 }

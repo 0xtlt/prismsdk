@@ -405,7 +405,7 @@ impl WebApp {
         let Some(sid) = cookie_header(headers).and_then(session_id) else {
             return status(StatusCode::NOT_FOUND);
         };
-        if !crate::assets::safe(name) {
+        if !crate::uploads::stored_name(name) {
             return status(StatusCode::NOT_FOUND);
         }
         match std::fs::read(self.files_dir(&sid).join(name)) {

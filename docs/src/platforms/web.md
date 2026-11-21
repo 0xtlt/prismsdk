@@ -54,7 +54,7 @@ Layers (`cx.add_layer`: the toaster of `ui::show_toast`, an app-wide confirmatio
 
 ### Assets compiled into the binary
 
-`Application::assets(dir)` (or `PRISM_ASSETS_DIR`) names a folder read when the server starts. A server shipped as one file, or in a scratch container, can carry its assets inside the binary instead:
+`Application::assets(dir)` (or `PRISM_ASSETS_DIR`) names a folder read when the server starts. Only portable names are served: dotfiles, names Windows reads as a drive, a stream or a device (`C:`, `a:b`, `NUL.png`), and symbolic links that point out of the folder are skipped, with a warning for the last two. A server shipped as one file, or in a scratch container, can carry its assets inside the binary instead:
 
 ```rust
 let assets = EmbeddedAssets::new()
