@@ -4,13 +4,14 @@
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::ERROR_SUCCESS;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::Gdi::{
     COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
     COLOR_HOTLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT, GetSysColor, SYS_COLOR_INDEX,
 };
 use windows::Win32::System::Registry::{
-    HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
+    HKEY, HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -266,18 +267,117 @@ pub fn text_scale() -> f32 {
 }
 
 /// What the app sees of the device: a desktop, Windows' version, the
-/// primary monitor.
-pub fn device_info(width: f32, height: f32, scale: f32) -> prism_core::DeviceInfo {
+/// monitor showing `hwnd` (`monitor.rs`) at the app's `scale`.
+pub fn device_info(hwnd: HWND, scale: f32) -> prism_core::DeviceInfo {
     let mut info = prism_core::DeviceInfo::guess(prism_core::Platform::Windows, (0., 0.));
     info.os.version = os_version();
-    info.orientation = prism_core::Orientation::of(width, height);
-    info.screen = prism_core::ScreenInfo {
-        width,
-        height,
-        scale,
+    if let Some(screen) = screen(hwnd, scale) {
+        info.orientation = prism_core::Orientation::of(screen.width, screen.height);
+        info.screen = screen;
+    }
+    info
+}
+
+thread_local! {
+    /// The monitor and scale `device_info` last reported.
+    static SCREEN: std::cell::Cell<(isize, u32)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// `device_info` when the window is on another monitor, at another scale,
+/// or the monitor changed (`force`: a resolution or refresh rate change).
+pub fn device_info_changed(hwnd: HWND, scale: f32, force: bool) -> Option<prism_core::DeviceInfo> {
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromWindow};
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY) };
+    let now = (monitor.0 as isize, scale.to_bits());
+    if SCREEN.replace(now) == now && !force {
+        return None;
+    }
+    Some(device_info(hwnd, scale))
+}
+
+/// The monitor showing `hwnd`: its pixels, the size its EDID declares,
+/// its refresh rate.
+fn screen(hwnd: HWND, scale: f32) -> Option<prism_core::ScreenInfo> {
+    use windows::Win32::Graphics::Gdi::{
+        DEVMODEW, DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, EnumDisplayDevicesW,
+        EnumDisplaySettingsW, GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
+        MONITORINFOEXW, MonitorFromWindow,
+    };
+    use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+    use windows::Win32::UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME;
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY) };
+    let mut mi = MONITORINFOEXW::default();
+    mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    unsafe { GetMonitorInfoW(monitor, &mut mi as *mut MONITORINFOEXW as *mut MONITORINFO) }
+        .ok()
+        .ok()?;
+    let r = mi.monitorInfo.rcMonitor;
+    let pixels = ((r.right - r.left) as f32, (r.bottom - r.top) as f32);
+    let device = PCWSTR(mi.szDevice.as_ptr());
+    let mut mode = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
         ..Default::default()
     };
-    info
+    let hz = unsafe { EnumDisplaySettingsW(device, ENUM_CURRENT_SETTINGS, &mut mode) }
+        .as_bool()
+        .then_some(mode.dmDisplayFrequency);
+    let mut dd = DISPLAY_DEVICEW {
+        cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+        ..Default::default()
+    };
+    let mm = unsafe { EnumDisplayDevicesW(device, 0, &mut dd, EDD_GET_DEVICE_INTERFACE_NAME) }
+        .as_bool()
+        .then(|| {
+            let end = dd
+                .DeviceID
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(dd.DeviceID.len());
+            String::from_utf16_lossy(&dd.DeviceID[..end])
+        })
+        .and_then(|id| crate::monitor::edid_key(&id))
+        .and_then(|key| reg_binary(HKEY_LOCAL_MACHINE, &key, "EDID"))
+        .and_then(|edid| crate::monitor::edid_size_mm(&edid));
+    Some(crate::monitor::screen_info(pixels, scale, mm, hz))
+}
+
+/// A binary registry value.
+fn reg_binary(root: HKEY, key: &str, value: &str) -> Option<Vec<u8>> {
+    let (key, value) = (
+        windows::core::HSTRING::from(key),
+        windows::core::HSTRING::from(value),
+    );
+    let mut size = 0u32;
+    let r = unsafe {
+        RegGetValueW(
+            root,
+            &key,
+            &value,
+            RRF_RT_REG_BINARY,
+            None,
+            None,
+            Some(&mut size),
+        )
+    };
+    if r != ERROR_SUCCESS || size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size as usize];
+    let r = unsafe {
+        RegGetValueW(
+            root,
+            &key,
+            &value,
+            RRF_RT_REG_BINARY,
+            None,
+            Some(buf.as_mut_ptr() as *mut c_void),
+            Some(&mut size),
+        )
+    };
+    (r == ERROR_SUCCESS).then(|| {
+        buf.truncate(size as usize);
+        buf
+    })
 }
 
 thread_local! {

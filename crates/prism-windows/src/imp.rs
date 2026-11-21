@@ -205,6 +205,7 @@ pub fn relayout(s: &mut State) {
                 prism_core::Backend::apply(&mut s.renderer, &patches);
             }
         }
+        screen_changed(s, false);
         crate::perf::layout(|| s.renderer.layout(w, h, Insets::default()));
         let more = prism_native::report_layout(&mut s.runtime, &mut s.renderer);
         if !more.is_empty() {
@@ -213,6 +214,18 @@ pub fn relayout(s: &mut State) {
     }
     crate::perf::layout(|| s.renderer.widgets.flush());
     UPDATING.set(was);
+}
+
+/// The window on another monitor, at another scale, or the monitor
+/// changed (`force`): `cx.device_info().screen` follows.
+fn screen_changed(s: &mut State, force: bool) {
+    let k = s.renderer.widgets.scale();
+    if let Some(info) = system::device_info_changed(main_hwnd(), k, force) {
+        let patches = s.runtime.set_device_info(info);
+        if !patches.is_empty() {
+            prism_core::Backend::apply(&mut s.renderer, &patches);
+        }
+    }
 }
 
 fn poll() {
@@ -541,6 +554,11 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     unsafe {
         match msg {
             WM_ERASEBKGND => LRESULT(1),
+            // Moved to another monitor; a resolution or refresh rate change.
+            WM_EXITSIZEMOVE | WM_DISPLAYCHANGE => {
+                with_state(|s| screen_changed(s, msg == WM_DISPLAYCHANGE));
+                DefWindowProcW(h, msg, wp, lp)
+            }
             WM_SIZE => {
                 let (pw, ph) = (loword(lp.0 as usize) as i32, hiword(lp.0 as usize) as i32);
                 with_state(|s| {
@@ -824,7 +842,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         trace("services");
         let target = hwnd_value(main);
         let environment = system::environment();
-        let device_info = system::device_info(width, height, k);
+        let device_info = system::device_info(main, k);
         trace("environment");
         let runtime = Runtime::with_options(
             &init,

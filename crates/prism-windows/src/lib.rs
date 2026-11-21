@@ -70,7 +70,7 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates`, `inputs` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates`, `inputs`, `monitor` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -102,6 +102,8 @@ mod clipboard;
 mod controls;
 #[cfg(target_os = "windows")]
 mod datebox;
+// A date picker's arithmetic: no Win32, tested everywhere.
+mod dates;
 #[cfg(target_os = "windows")]
 mod decor;
 #[cfg(target_os = "windows")]
@@ -118,9 +120,6 @@ mod events;
 mod fieldicon;
 // Theme colors and control metrics: no Win32, tested everywhere.
 mod fluent;
-// A date picker's arithmetic: no Win32, tested everywhere.
-mod dates;
-// Text inputs' scopes and suggestions: no Win32, tested everywhere.
 #[cfg(target_os = "windows")]
 mod fonts;
 #[cfg(target_os = "windows")]
@@ -133,6 +132,7 @@ mod images;
 mod imp;
 #[cfg(target_os = "windows")]
 mod inject;
+// Text inputs' scopes and suggestions: no Win32, tested everywhere.
 mod inputs;
 #[cfg(target_os = "windows")]
 mod keyboard;
@@ -142,6 +142,8 @@ mod keys;
 mod media;
 #[cfg(target_os = "windows")]
 mod menubar;
+// The screen's size, density and refresh rate: no Win32, tested everywhere.
+mod monitor;
 #[cfg(target_os = "windows")]
 mod motion;
 #[cfg(target_os = "windows")]
