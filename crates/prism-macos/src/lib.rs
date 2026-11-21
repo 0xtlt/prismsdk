@@ -32,6 +32,8 @@ mod navbar;
 #[cfg(target_os = "macos")]
 mod padding;
 #[cfg(target_os = "macos")]
+mod refresh;
+#[cfg(target_os = "macos")]
 mod rich;
 #[cfg(target_os = "macos")]
 mod scene;

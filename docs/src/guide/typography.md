@@ -211,8 +211,8 @@ rich_text([
 
 `UnderlineStyle` is `Single` (the default), `Thick`, `Double`, `Dotted` or
 `Dashed`. They apply in read-only text and in a
-[`rich_input`](forms.md#rich-text-input) that draws its runs (the web,
-macOS, Windows).
+[`rich_input`](forms.md#rich-text-input) that draws its runs (every
+backend but tvOS and watchOS).
 
 | | Color | Styles |
 |---|---|---|

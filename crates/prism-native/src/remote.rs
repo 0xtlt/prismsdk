@@ -144,6 +144,8 @@ pub struct RemoteWidgets {
     measure: Measure,
     /// The root view (overlays default to its size).
     root: Option<NodeId>,
+    /// Whether the host edits rich text (#115, [`with_rich_inputs`](Self::with_rich_inputs)).
+    rich: bool,
 }
 
 impl RemoteWidgets {
@@ -161,7 +163,17 @@ impl RemoteWidgets {
             frames: HashMap::new(),
             measure,
             root: None,
+            rich: false,
         }
+    }
+
+    /// The host edits rich text (#115): a rich input is created as a
+    /// `text_area` with `"rich": true`, and its runs come in a `rich` op
+    /// (decoded like a text's, chips included). Otherwise it is a plain
+    /// text area.
+    pub fn with_rich_inputs(mut self) -> Self {
+        self.rich = true;
+        self
     }
 }
 
@@ -562,6 +574,14 @@ pub fn runs_json(config: &str) -> Value {
                 m.insert("glyph".into(), json!(prism_core::glyphs::glyph(&g)));
                 m.insert("icon".into(), json!(g));
             }
+            // A rich input's chip (#115): its key, label and icon's glyph.
+            if let Some(k) = r.chip {
+                m.insert("chip".into(), json!(k));
+                m.insert("cl".into(), json!(r.chip_label.unwrap_or_default()));
+                if let Some(g) = r.chip_icon {
+                    m.insert("ci".into(), json!(prism_core::glyphs::glyph(&g)));
+                }
+            }
             Value::Object(m)
         })
         .collect();
@@ -751,10 +771,28 @@ impl Widgets for RemoteWidgets {
     type View = NodeId;
 
     fn create(&mut self, id: NodeId, kind: NodeKind) -> NodeId {
+        // A rich input is a text area that shows runs (#115): it measures
+        // and takes its config as one.
+        if kind == NodeKind::RichInput {
+            self.kinds.insert(id, NodeKind::TextArea);
+            self.ops.push(
+                json!({ "op": "create", "id": id, "kind": NodeKind::TextArea.name(), "rich": true }),
+            );
+            return id;
+        }
         self.kinds.insert(id, kind);
         self.ops
             .push(json!({ "op": "create", "id": id, "kind": kind.name() }));
         id
+    }
+
+    fn rich_input(&self) -> bool {
+        self.rich
+    }
+
+    fn set_rich_value(&mut self, id: &NodeId, runs: &str) {
+        self.ops
+            .push(json!({ "op": "rich", "id": id, "runs": runs_json(runs) }));
     }
 
     /// Only what SwiftUI draws: layout is ours (frames).
@@ -1631,5 +1669,43 @@ mod scene_tests {
         assert_eq!(SceneUpdate::from_json(&op["u"].to_string()), Some(update));
         // Floats as short as the app's (not widened to f64).
         assert!(op.to_string().contains(r#""near":0.1,"#), "{op}");
+    }
+    /// #115: where the host edits rich text, a rich input is a text area
+    /// marked rich, and its runs (chips included) come in a `rich` op;
+    /// elsewhere (watchOS) it stays a plain text area.
+    #[test]
+    fn a_rich_input_is_a_rich_text_area_with_its_runs() {
+        use prism_core::{Backend, NodeKind, Patch};
+        let runs = "Hi \u{1e}\u{fffc}\u{1f}k=p1\u{1f}n=Road\u{1f}m=star\u{1f}l=9";
+        let patches = [
+            Patch::Create {
+                id: 1,
+                kind: NodeKind::RichInput,
+            },
+            Patch::SetRichValue {
+                id: 1,
+                runs: runs.into(),
+            },
+            Patch::SetRoot { id: 1 },
+        ];
+        let mut r =
+            crate::NativeRenderer::new(super::RemoteWidgets::new(|_| (0., 0.)).with_rich_inputs());
+        r.apply(&patches);
+        let ops = &r.widgets.ops;
+        assert_eq!(ops[0]["kind"], "text_area");
+        assert_eq!(ops[0]["rich"], true);
+        let rich = ops.iter().find(|o| o["op"] == "rich").expect("a rich op");
+        assert_eq!(rich["runs"][0]["t"], "Hi ");
+        let chip = &rich["runs"][1];
+        assert_eq!(chip["t"], "\u{fffc}");
+        assert_eq!((&chip["chip"], &chip["cl"]), (&"p1".into(), &"Road".into()));
+        assert_eq!(chip["ci"], prism_core::glyphs::glyph("star"));
+        assert_eq!(chip["link"], 9);
+
+        let mut plain = crate::NativeRenderer::new(super::RemoteWidgets::new(|_| (0., 0.)));
+        plain.apply(&patches);
+        assert_eq!(plain.widgets.ops[0]["kind"], "text_area");
+        assert!(plain.widgets.ops[0].get("rich").is_none());
+        assert!(!plain.widgets.ops.iter().any(|o| o["op"] == "rich"));
     }
 }

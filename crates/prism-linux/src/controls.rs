@@ -452,7 +452,8 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
     let label = placeholder.clone();
     let weak = view.downgrade();
     view.buffer().connect_changed(move |b| {
-        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        // A rich input's chips are characters of its value (#115).
+        let text = crate::rich::slice(b);
         label.set_visible(text.is_empty());
         crate::imp::dispatch_typed(id, text);
         crate::imp::report_selection(id, crate::imp::buffer_selection(b));
@@ -485,8 +486,7 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
 
 impl TextArea {
     pub fn text(&self) -> String {
-        let b = self.view.buffer();
-        b.text(&b.start_iter(), &b.end_iter(), false).to_string()
+        crate::rich::slice(&self.view.buffer())
     }
 
     /// Draws `start..end` (characters) like a selection without selecting
@@ -563,10 +563,12 @@ impl TextArea {
     }
 
     /// Content height for `width`: at least three lines, insets included.
-    pub fn measure_height(&self, width: f32) -> f32 {
+    /// Its height at `width`; `attrs`: a rich input's fonts and chips.
+    pub fn measure_height(&self, width: f32, attrs: Option<gtk::pango::AttrList>) -> f32 {
         let (l, r, t, b) = self.pad.get();
         let inner = (width - (l + r) as f32).max(1.);
         let layout = self.view.create_pango_layout(Some(&self.text()));
+        layout.set_attributes(attrs.as_ref());
         layout.set_width((inner * gtk::pango::SCALE as f32) as i32);
         layout.set_wrap(gtk::pango::WrapMode::WordChar);
         let text_h = layout.pixel_size().1 as f32;

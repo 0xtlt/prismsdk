@@ -1,7 +1,7 @@
 //! A rich input's editing hooks (#217) in UIKit: the selection's
 //! rectangle, the app's copy, cut and paste through `UIPasteboard`. A rich
-//! input is a plain `UITextView` here ([`PrismTextView`]); tvOS has no text
-//! area and no pasteboard.
+//! input is a `UITextView` here ([`PrismTextView`], `crate::rich`); tvOS
+//! has no text area and no pasteboard.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -77,28 +77,31 @@ define_class!(
             crate::table::enclosing_range(self, true)
         }
 
+        /// Without the app's hook, a rich input copies plain text, each
+        /// chip as its label (#115).
         #[unsafe(method(copy:))]
         fn copy(&self, sender: Option<&AnyObject>) {
-            if !report_copy(self, false) {
+            if !report_copy(self, false) && !crate::rich::copy(self) {
                 let _: () = unsafe { msg_send![super(self), copy: sender] };
             }
         }
 
         #[unsafe(method(cut:))]
         fn cut(&self, sender: Option<&AnyObject>) {
-            if report_copy(self, true) {
+            if report_copy(self, true) || crate::rich::copy(self) {
                 self.deleteBackward();
             } else {
                 let _: () = unsafe { msg_send![super(self), cut: sender] };
             }
         }
 
+        /// Without the app's hook, a rich input pastes plain text (#115).
         #[unsafe(method(paste:))]
         fn paste(&self, sender: Option<&AnyObject>) {
             let id = self.tag() as NodeId;
             if mask(id) & PASTE != 0 {
                 crate::imp::dispatch(UiEvent::Paste(id, paste_event(self)));
-            } else {
+            } else if !crate::rich::paste(self) {
                 let _: () = unsafe { msg_send![super(self), paste: sender] };
             }
         }

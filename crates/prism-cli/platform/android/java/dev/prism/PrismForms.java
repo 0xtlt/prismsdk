@@ -434,11 +434,15 @@ final class PrismForms {
                 PrismInput.rectChanged(this);
             }
             // Copy, cut and paste go to the app when it has the hooks (#217).
+            // A rich input's are plain text, its chips their labels (#115).
             @Override public boolean onTextContextMenuItem(int item) {
-                return PrismInput.menuItem(this, item) || super.onTextContextMenuItem(item);
+                return PrismInput.menuItem(this, item) || PrismRich.menuItem(this, item)
+                        || super.onTextContextMenuItem(item);
             }
-            // A mouse drag into the other fields of a selection group (#231).
+            // A mouse drag into the other fields of a selection group (#231);
+            // a tap on a rich input's chip (#115).
             @Override public boolean dispatchTouchEvent(MotionEvent ev) {
+                PrismRich.touch(this, ev);
                 return PrismInput.acrossTouch(this, ev) || super.dispatchTouchEvent(ev);
             }
         };

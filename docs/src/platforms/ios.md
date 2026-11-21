@@ -26,6 +26,9 @@ languages, background tasks) and bundles the app.
 - **Device APIs:** CoreLocation, CoreMotion (device only), PHPicker and the
   camera, haptics, the share sheet ([Device APIs](../guide/device-apis.md)).
 - **Text:** Dynamic Type is followed live ([Languages, text size](../guide/i18n.md)).
+- **Rich inputs:** a `UITextView` showing the runs as attributes, each chip
+  or icon a text attachment drawn from its SF Symbol and label
+  ([Rich text input](../guide/forms.md#rich-text-input)); visionOS too.
 - **Background:** `beginBackgroundTask` and `BGTaskScheduler`; the simulator
   cannot run `BGTaskScheduler` ([Background execution](../guide/background.md)).
 

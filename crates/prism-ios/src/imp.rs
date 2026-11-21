@@ -2200,8 +2200,17 @@ impl Widgets for UiKit {
             // A text field: the remote opens the full-screen keyboard.
             #[cfg(target_os = "tvos")]
             NodeKind::TextArea => return self.create(id, NodeKind::TextInput),
-            // Not rich here (`Widgets::rich_input`): the renderer asks for a
-            // text area instead (#115).
+            // A text area showing runs as attributes, chips as
+            // attachments (#115, `crate::rich`).
+            #[cfg(not(target_os = "tvos"))]
+            NodeKind::RichInput => {
+                let t = crate::forms::TextArea::new(mtm, ProtocolObject::from_ref(&*self.target));
+                t.view.setTag(id as isize);
+                crate::rich::setup(&t.view);
+                View::TextArea(Rc::new(t))
+            }
+            // Not rich on tvOS (`Widgets::rich_input`): never asked.
+            #[cfg(target_os = "tvos")]
             NodeKind::RichInput => return self.create(id, NodeKind::TextArea),
             NodeKind::Spinner => {
                 let s = objc2_ui_kit::UIActivityIndicatorView::initWithActivityIndicatorStyle(
@@ -2333,6 +2342,7 @@ impl Widgets for UiKit {
                 crate::padding::style_text_area(t, style);
                 t.line_height.set(style.line_height_points());
                 t.apply_line_height();
+                crate::rich::set_style(&t.view, style);
             }
             View::Spinner(s) => unsafe { s.setColor(text_color.as_deref()) },
             View::Image(v) => {
@@ -2732,6 +2742,8 @@ impl Widgets for UiKit {
         crate::carets::forget(id);
         #[cfg(not(target_os = "tvos"))]
         crate::edit::forget(id);
+        #[cfg(not(target_os = "tvos"))]
+        crate::rich::forget(id);
         crate::decor::destroy(id);
         crate::navbar::forget(id);
         crate::padding::forget(id);
@@ -3605,6 +3617,19 @@ impl Widgets for UiKit {
             View::TextArea(t) => crate::edit::highlight(&t.view, start, end),
             View::Input(f) => crate::edit::highlight_field(f, start, end),
             _ => {}
+        }
+    }
+
+    /// Rich inputs edit their runs as attributes and attachments (#115,
+    /// `crate::rich`); tvOS has no text area.
+    fn rich_input(&self) -> bool {
+        cfg!(not(target_os = "tvos"))
+    }
+
+    #[cfg(not(target_os = "tvos"))]
+    fn set_rich_value(&mut self, view: &View, runs: &str) {
+        if let View::TextArea(t) = view {
+            crate::rich::set_runs(&t.view, runs);
         }
     }
 

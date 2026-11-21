@@ -108,10 +108,10 @@ public class PrismActivity extends Activity {
         return e;
     }
 
-    /** Keys for Prism (`on_key_down`, `on_global_key_down`): D-pad, keyboards, TV remotes. */
+    /** Keys for Prism (`on_key_down`, `on_global_key_down`): D-pad, keyboards, TV remotes. F5 and Ctrl+R refresh. */
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent e) {
-        if (ready && PrismInput.key(e, getCurrentFocus())) return true;
+        if (ready && (PrismRefresh.key(e) || PrismInput.key(e, getCurrentFocus()))) return true;
         return super.dispatchKeyEvent(e);
     }
 

@@ -123,7 +123,7 @@ pub fn set_root(view: &UIView) {
 
 /// The appearance `view` draws in: the app's (the root controller's last
 /// traits, else the root's), as every view shares it; its own before any.
-fn traits_of(view: &UIView) -> Retained<objc2_ui_kit::UITraitCollection> {
+pub(crate) fn traits_of(view: &UIView) -> Retained<objc2_ui_kit::UITraitCollection> {
     if let Some(t) = TRAITS.with(|t| t.borrow().clone()) {
         return t;
     }
@@ -617,6 +617,9 @@ pub fn appearance_changed(traits: &objc2_ui_kit::UITraitCollection) {
     for (view, color) in borders {
         view.layer().setBorderColor(Some(&cg_color(color, &view)));
     }
+    // Rich inputs' chips are images (#115).
+    #[cfg(not(target_os = "tvos"))]
+    crate::rich::appearance_changed();
 }
 
 // ---------------------------------------------------------------------------

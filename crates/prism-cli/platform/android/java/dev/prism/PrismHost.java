@@ -195,6 +195,10 @@ public final class PrismHost {
         String placeholder = "";
         /** A rich text's runs (PrismText), null when plain. */
         JSONArray runs;
+        /** A rich input (#115, PrismRich): its runs and the spans they put in its text. */
+        boolean rich;
+        JSONArray richRuns;
+        List<Object> richSpans = new ArrayList<>();
         String a11yLabel, a11yValue, announced;
         /** The ARIA role name the app gave (`radio`, `checkbox`…), and its checked state. */
         String a11yRole;
@@ -396,6 +400,7 @@ public final class PrismHost {
         switch (op) {
             case "create": {
                 Node created = create(id, p.getString("kind"));
+                created.rich = p.optBoolean("rich");
                 nodes.put(id, created);
                 // Text fields always report focus (for focus-within).
                 installFocus(created);
@@ -449,6 +454,8 @@ public final class PrismHost {
                 // Bar tint (#30).
                 if (n.kind.equals("tabs")) refreshTabs(n);
                 if (n.kind.equals("stack")) { styleChrome(n); PrismNavbar.refresh(n); }
+                // A rich input's runs take the new font (#115).
+                if (n.rich) PrismRich.show(n);
                 break;
             }
             case "sticky": {
@@ -497,6 +504,8 @@ public final class PrismHost {
                 }
                 else PrismForms.config(n, p.optString("config"));
                 break;
+            // A rich input's runs (#115).
+            case "rich": PrismRich.setRuns(n, p.optJSONArray("runs")); break;
             case "runs": {
                 JSONArray runs = p.optJSONArray("runs");
                 n.runs = runs != null && runs.length() > 0 ? runs : null;
@@ -1087,6 +1096,7 @@ public final class PrismHost {
                 break;
             }
             case "overlay": PrismInput.open(n, value != 0); break;
+            case "scroll": PrismRefresh.setRefreshing(n, value != 0); break;
         }
     }
 
@@ -1312,7 +1322,8 @@ public final class PrismHost {
             h.setFillViewport(false);
             s = h;
         } else {
-            ScrollView v = new ScrollView(activity);
+            // Pulled down at its top, it refreshes (`on_refresh`).
+            ScrollView v = new PrismRefresh.Scroll(activity, n);
             v.setFillViewport(false);
             s = v;
         }
@@ -1375,7 +1386,9 @@ public final class PrismHost {
     static void setClickable(Node n) {
         View v = n.view;
         PrismText.clickable(n);
-        boolean gestures = n.clickable || n.menu != null || n.swipeLeft || n.swipeRight || n.pointerMask != 0;
+        // A "clickable" scroll view refreshes when pulled (PrismRefresh), not tapped.
+        boolean click = n.clickable && !n.kind.equals("scroll");
+        boolean gestures = click || n.menu != null || n.swipeLeft || n.swipeRight || n.pointerMask != 0;
         if (!gestures || n.noHit || n.inert) return;
         switch (n.kind) {
             // Controls handle their own touches.
@@ -1388,7 +1401,7 @@ public final class PrismHost {
                 // A link inside a clickable text wins over the text's own click.
                 if (PrismText.tapLink(n, e)) return true;
                 // With its position (ClickEvent::position).
-                if (n.clickable) { PrismInput.click(n, e); return true; }
+                if (click) { PrismInput.click(n, e); return true; }
                 return false;
             }
             @Override public void onLongPress(MotionEvent e) { if (n.menu != null) showMenu(n); }
@@ -1410,13 +1423,13 @@ public final class PrismHost {
         n.gesture = g;
         installTouch(n);
         // Pointer events only: no click, focus or menu.
-        if (!n.clickable && n.menu == null) { applyCursor(n); return; }
+        if (!click && n.menu == null) { applyCursor(n); return; }
         v.setClickable(true);
         // Remotes and keyboards (Android TV, D-pad): select clicks, holding it
         // opens the menu. Touches never get here (the gesture detector takes them).
-        v.setOnClickListener(n.clickable ? x -> send(event("click", n.id)) : null);
+        v.setOnClickListener(click ? x -> send(event("click", n.id)) : null);
         v.setOnLongClickListener(n.menu != null ? x -> { showMenu(n); return true; } : null);
-        v.setFocusable(n.clickable || n.menu != null || n.keysLocal);
+        v.setFocusable(click || n.menu != null || n.keysLocal);
         n.focusRing = true;
         installFocus(n);
         applyCursor(n);
@@ -1525,7 +1538,8 @@ public final class PrismHost {
         String name = n.style.isNull("cursor") ? null : n.style.optString("cursor", null);
         int type;
         if (name == null) {
-            type = n.clickable || n.kind.equals("button") ? android.view.PointerIcon.TYPE_HAND : -1;
+            boolean click = n.clickable && !n.kind.equals("scroll");
+            type = click || n.kind.equals("button") ? android.view.PointerIcon.TYPE_HAND : -1;
         } else {
             switch (name) {
                 case "pointer": type = android.view.PointerIcon.TYPE_HAND; break;

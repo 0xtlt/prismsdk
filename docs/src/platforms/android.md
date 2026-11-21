@@ -29,4 +29,6 @@ The app runs in Rust, and a small Java host (`crates/prism-cli/platform/android`
   - *Watches:* dark, compact header, icon-only tabs, margins inside a round screen. Back is the swipe to the right. The app is standalone (no phone needed).
   - *TVs:* the remote moves the focus; the focused view rises with a ring. Select clicks, and holding it opens the context menu. Android TV's safe area applies, and the app gets a launcher banner made from the icon.
   - *Emulators:* `system-images;android-34;android-wear;arm64-v8a` (device `wearos_large_round`) and `system-images;android-34;android-tv;arm64-v8a` (device `tv_1080p`).
+- **Pull to refresh:** pulled down at its top, a refreshable scroll view shows a disc that follows the finger, like androidx's `SwipeRefreshLayout`; released past 64 dp it spins until `refreshing` turns off. F5 or Ctrl+R refresh from a hardware keyboard.
+- **Rich inputs:** an `EditText` with the runs as spans, each chip or icon a span drawn as one character (its glyph and label in a rounded box). Copies keep the app's own types (Markdown, `ClipboardContent::custom`) in the clip's description and extras, and pastes read them back ([Rich text input](../guide/forms.md#rich-text-input)).
 - **Not on Android:** tray and menu bar (desktop surfaces).

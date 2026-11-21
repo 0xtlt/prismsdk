@@ -214,7 +214,7 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeReady(
         Some((width / density, height / density)),
         Some(device_info(&info, width, height, density)),
     );
-    let mut renderer = NativeRenderer::new(RemoteWidgets::new(measure));
+    let mut renderer = NativeRenderer::new(RemoteWidgets::new(measure).with_rich_inputs());
     renderer.set_zoom(density);
     STATE.with(|st| {
         *st.borrow_mut() = Some(State {

@@ -39,6 +39,8 @@ mod navbar;
 mod overlay;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod padding;
+#[cfg(any(target_os = "ios", target_os = "visionos"))]
+mod rich;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod scene;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]

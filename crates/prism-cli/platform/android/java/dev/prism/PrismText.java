@@ -182,39 +182,50 @@ final class PrismText {
                 b.append(t);
                 int end = b.length();
                 if (start == end) continue;
-                String f = r.optString("ff", family);
-                int w = r.optInt("w", weight);
-                boolean it = italic || r.optBoolean("i");
-                if (!f.equals(family) || w != weight || it != italic) {
-                    b.setSpan(new TypefaceSpan(font(f, w, it)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                }
-                double z = r.optDouble("z", 0);
-                if (z > 0 && z != 1) b.setSpan(new RelativeSizeSpan((float) z), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                Integer c = PrismHost.color(r.optJSONArray("c"));
-                if (c != null) b.setSpan(new ForegroundColorSpan(c), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                Integer bg = PrismHost.color(r.optJSONArray("bg"));
-                if (bg != null) b.setSpan(new BackgroundColorSpan(bg), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                boolean u = r.optBoolean("u");
-                // Its own underline color or style (#221): drawn by the span,
-                // not the paint's underline.
-                Integer uc = PrismHost.color(r.optJSONArray("uc"));
-                String us = r.optString("us", "");
-                boolean styled = u && (uc != null || !us.isEmpty());
-                if (styled) {
-                    b.setSpan(new StyledUnderline(uc != null ? uc : c, us), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                }
-                if (r.has("link")) {
-                    b.setSpan(new Link(r.optLong("link"), u && !styled), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                } else if (u && !styled) {
-                    b.setSpan(new UnderlineSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                }
-                if (r.optBoolean("s")) b.setSpan(new StrikethroughSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                runSpans(b, start, end, r, family, weight, italic, null);
             }
         }
         int len = b.length();
         if (len > 0 && s.optBoolean("ul")) b.setSpan(new UnderlineSpan(), 0, len, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         if (len > 0 && s.optBoolean("st")) b.setSpan(new StrikethroughSpan(), 0, len, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         return b;
+    }
+
+    /** One run's spans over `start..end` of `b` (`out`, when given, collects them). */
+    static void runSpans(android.text.Spannable b, int start, int end, JSONObject r, String family, int weight,
+            boolean italic, List<Object> out) {
+        String f = r.optString("ff", family);
+        int w = r.optInt("w", weight);
+        boolean it = italic || r.optBoolean("i");
+        if (!f.equals(family) || w != weight || it != italic) {
+            span(b, new TypefaceSpan(font(f, w, it)), start, end, out);
+        }
+        double z = r.optDouble("z", 0);
+        if (z > 0 && z != 1) span(b, new RelativeSizeSpan((float) z), start, end, out);
+        Integer c = PrismHost.color(r.optJSONArray("c"));
+        if (c != null) span(b, new ForegroundColorSpan(c), start, end, out);
+        Integer bg = PrismHost.color(r.optJSONArray("bg"));
+        if (bg != null) span(b, new BackgroundColorSpan(bg), start, end, out);
+        boolean u = r.optBoolean("u");
+        // Its own underline color or style (#221): drawn by the span,
+        // not the paint's underline.
+        Integer uc = PrismHost.color(r.optJSONArray("uc"));
+        String us = r.optString("us", "");
+        boolean styled = u && (uc != null || !us.isEmpty());
+        if (styled) {
+            span(b, new StyledUnderline(uc != null ? uc : c, us), start, end, out);
+        }
+        if (r.has("link")) {
+            span(b, new Link(r.optLong("link"), u && !styled), start, end, out);
+        } else if (u && !styled) {
+            span(b, new UnderlineSpan(), start, end, out);
+        }
+        if (r.optBoolean("s")) span(b, new StrikethroughSpan(), start, end, out);
+    }
+
+    private static void span(android.text.Spannable b, Object what, int start, int end, List<Object> out) {
+        b.setSpan(what, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (out != null) out.add(what);
     }
 
     /** A clickable run: reported like a menu item; keeps the text's color. */

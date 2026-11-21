@@ -34,6 +34,10 @@ borders, corners and pictures are layer properties ([Performance](../performance
   takes it on click but shows the ring only when focused from the keyboard
   or by the app (#177).
 - **Background:** `NSBackgroundActivityScheduler` ([Background execution](../guide/background.md)).
+- **Pull to refresh:** a trackpad or Magic Mouse gesture that pulls the
+  content 60 points past the top (elastic scrolling), or ⌘R while the scroll
+  view is in the key window; a spinner sits above the content while
+  `refreshing` is on.
 
 The Swift bridge (`crates/prism-apple-build/apple/Bridge`) is compiled by
 `prism-macos`'s build script, so Xcode is required. The deployment target is
