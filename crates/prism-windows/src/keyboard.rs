@@ -53,6 +53,10 @@ pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: 
     {
         return true;
     }
+    // F5 and Ctrl+R refresh the refreshable scroll views (`refresh.rs`).
+    if !up && !repeat && crate::refresh::key(vk) {
+        return true;
+    }
     let Some(name) = crate::keys::key_name(vk, typed) else {
         return false;
     };

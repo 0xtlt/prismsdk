@@ -305,3 +305,10 @@ Microsoft.UI.Xaml.FontNumeralAlignment
 # Drawn underlines (underlay.rs)
 Microsoft.UI.Xaml.Documents.TextPointer
 Microsoft.UI.Xaml.Documents.LogicalDirection
+# Pull to refresh (refresh.rs)
+Microsoft.UI.Xaml.Controls.RefreshContainer
+Microsoft.UI.Xaml.Controls.RefreshRequestedEventArgs
+Microsoft.UI.Xaml.Controls.RefreshVisualizer
+Microsoft.UI.Xaml.Controls.RefreshPullDirection
+Microsoft.UI.Xaml.Controls.RefreshVisualizerState
+Microsoft.UI.Xaml.Controls.RefreshStateChangedEventArgs

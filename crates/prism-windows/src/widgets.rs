@@ -328,11 +328,18 @@ impl Win {
         let hover = n.reports.contains(prism_core::Interaction::Hover)
             || n.reports.contains(prism_core::Interaction::Active);
         let pointer = crate::pointer::wants(id);
-        let wants = n.clickable || hover || n.menu.is_some() || n.pointer_mask != 0 || pointer;
-        let clickable = n.clickable;
+        // A clickable scroll view refreshes (`refresh.rs`), like Linux's.
+        let refreshes = n.kind == NodeKind::Scroll && n.clickable;
+        let clickable = n.clickable && !refreshes;
+        let wants = clickable || hover || n.menu.is_some() || n.pointer_mask != 0 || pointer;
         let Some(v) = self.views.get_mut(&id) else {
             return;
         };
+        if let Some(sv) = &v.scroll
+            && let Err(e) = crate::refresh::set(id, &v.outer, sv, refreshes)
+        {
+            log!("pull to refresh of node {id}: {e}");
+        }
         let _ = v.set_hit(wants);
         let mut made = false;
         if clickable && self.clicks.insert(id) {
@@ -658,6 +665,7 @@ impl Widgets for Win {
         crate::edit::forget(id);
         crate::carets::forget(id);
         crate::underlay::forget(id);
+        crate::refresh::forget(id);
         crate::media::forget(id);
         crate::web::forget(id);
         self.typed.remove(&id);
@@ -875,6 +883,9 @@ impl Widgets for Win {
         let kind = n.kind;
         n.value = value;
         crate::defer::mark(id, crate::defer::VALUE);
+        if kind == NodeKind::Scroll {
+            crate::refresh::refreshing(id, value >= 0.5);
+        }
         if kind == NodeKind::Timer {
             n.text = prism_core::timer_text(value, &n.placeholder);
             self.measurer.forget(id);

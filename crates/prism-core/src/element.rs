@@ -2087,7 +2087,8 @@ impl Scroll {
 
     /// Pull to refresh (iOS refresh control; pull gesture and a Refresh
     /// button on the web; SwiftUI's `refreshable` on watchOS; F5 or Ctrl+R
-    /// on Linux). Not yet on macOS, Android and Windows. Show progress with
+    /// on Linux; WinUI's `RefreshContainer`, a touch pull, and F5 or Ctrl+R
+    /// on Windows). Not yet on macOS and Android. Show progress with
     /// [`Scroll::refreshing`].
     pub fn on_refresh(mut self, handler: Handler<ClickEvent>) -> Self {
         self.0.on_click = Some(handler);

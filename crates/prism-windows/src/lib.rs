@@ -43,6 +43,7 @@
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
 //! | `events` | clicks, hover and press, focus, scrolling, menus |
+//! | `refresh` | pull to refresh (`RefreshContainer`), F5 and Ctrl+R |
 //! | `pointer` | pointer, drags, swipes, wheel |
 //! | `edit` | a rich input's editing hooks: copy, cut, paste, clicks, the selection's rectangle |
 //! | `chips` | a rich input's chips as pictures in its text (Direct2D) |
@@ -171,6 +172,8 @@ mod pinch;
 mod pointer;
 #[cfg(target_os = "windows")]
 mod profile;
+#[cfg(target_os = "windows")]
+mod refresh;
 #[cfg(target_os = "windows")]
 mod rich;
 // The tree's model: no Win32, tested everywhere.
