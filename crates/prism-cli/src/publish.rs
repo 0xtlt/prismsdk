@@ -389,15 +389,27 @@ fn notarize(p: &Project, dmg: &Path, o: &PublishOptions) -> Result<(), String> {
             let e = expected(p, &build, &["Developer ID Application"], o);
             appstore::check_dmg(dmg, &app, &e)
         });
-    let detached = Command::new("hdiutil")
-        .args(["detach", "-quiet"])
-        .arg(&mount)
-        .status()
-        .is_ok_and(|s| s.success());
+    // A file still open on the image (Spotlight, an antivirus) refuses a
+    // plain detach: then a forced one.
+    let detached = [&["detach", "-quiet"][..], &["detach", "-force", "-quiet"]]
+        .iter()
+        .any(|args| {
+            Command::new("hdiutil")
+                .args(*args)
+                .arg(&mount)
+                .status()
+                .is_ok_and(|s| s.success())
+        });
     if !detached {
-        // Still mounted: the directory stays, so the image's files are
-        // never removed with it.
-        let _ = scratch.keep();
+        // Still mounted: removing the folder would delete the image's
+        // files, so it stays, and the user is told where.
+        let kept = scratch.keep();
+        eprintln!(
+            "warning: {} is still mounted; detach it with `hdiutil detach {}`, then delete {}",
+            mount.display(),
+            mount.display(),
+            kept.display()
+        );
     }
     finish(&report?)?;
     let submit = appstore::notarytool_submit(dmg, &auth);
