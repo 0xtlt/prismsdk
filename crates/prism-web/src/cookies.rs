@@ -135,7 +135,7 @@ pub(crate) fn redeem(headers: &HeaderMap) -> Response<Vec<u8>> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(ticket);
-    let sid = text("cookie").and_then(crate::app::session_id);
+    let sid = crate::app::browser_id(headers);
     let Some(p) = found.filter(|p| p.expires > Instant::now() && sid.as_ref() == Some(&p.sid))
     else {
         return answer(StatusCode::FORBIDDEN);

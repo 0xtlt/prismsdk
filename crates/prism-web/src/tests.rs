@@ -2494,7 +2494,12 @@ fn ssr_pages_are_titled_by_the_visible_screen() {
 
 #[test]
 fn cookies_and_urls_are_parsed_strictly() {
-    use crate::app::{percent_decode, session_id, time_zone, viewport_cookie};
+    use crate::app::{browser_id, percent_decode, time_zone, viewport_cookie};
+    let session_id = |cookie: &str| {
+        let mut h = HeaderMap::new();
+        h.insert("cookie", cookie.parse().unwrap());
+        browser_id(&h)
+    };
     assert_eq!(percent_decode("/a%20b%2Fc"), "/a b/c");
     assert_eq!(percent_decode("%E2%9C%93"), "✓");
     assert_eq!(percent_decode("100%"), "100%");
@@ -2504,6 +2509,16 @@ fn cookies_and_urls_are_parsed_strictly() {
         Some("ABCDEF0123456789abcdef0123456789".into())
     );
     assert_eq!(session_id("prism_sid=short"), None);
+    assert_eq!(
+        session_id("prism_sid_x=0123456789abcdef0123456789abcdef"),
+        None
+    );
+    assert_eq!(
+        session_id(
+            "prism_sid=0123456789abcdef0123456789abcdef; __Host-prism_sid=ffffffffffffffffffffffffffffffff"
+        ),
+        Some("ffffffffffffffffffffffffffffffff".into())
+    );
     assert_eq!(
         session_id("prism_sid=0123456789abcdef0123456789abcdeg"),
         None

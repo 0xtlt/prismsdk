@@ -340,7 +340,7 @@ impl WebApp {
             // A picture with headers, fetched here for its session.
             crate::pictures::serve(
                 id,
-                cookie_header(headers).and_then(session_id).as_deref(),
+                browser_id(headers).as_deref(),
                 &self.inner.media_origins,
             )
         } else if let Some(id) = path.strip_prefix("/_prism/media/") {
@@ -348,13 +348,13 @@ impl WebApp {
             let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
             crate::pictures::serve_media(
                 id,
-                cookie_header(headers).and_then(session_id).as_deref(),
+                browser_id(headers).as_deref(),
                 range,
                 &self.inner.media_origins,
             )
         } else if let Some(id) = path.strip_prefix("/_prism/download/") {
             // A file the app handed to this session (#210).
-            crate::downloads::serve(id, cookie_header(headers).and_then(session_id).as_deref())
+            crate::downloads::serve(id, browser_id(headers).as_deref())
         } else if let Some(id) = path.strip_prefix("/_prism/3d/") {
             scene_blob(id)
         } else if path == "/_prism/auth/callback" {
@@ -411,7 +411,7 @@ impl WebApp {
 
     /// A file this browser uploaded (photos…), private to it.
     fn upload(&self, headers: &HeaderMap, name: &str) -> Response<Vec<u8>> {
-        let Some(sid) = cookie_header(headers).and_then(session_id) else {
+        let Some(sid) = browser_id(headers) else {
             return status(StatusCode::NOT_FOUND);
         };
         if !crate::uploads::stored_name(name) {
@@ -463,7 +463,7 @@ impl WebApp {
         );
         let nonce = req.extensions().get::<crate::CspNonce>();
         let cookies = cookie_header(headers);
-        let (sid, new) = match cookies.and_then(session_id) {
+        let (sid, new) = match browser_id(headers) {
             Some(sid) => (sid, false),
             None => (new_session_id(), true),
         };
@@ -499,8 +499,14 @@ impl WebApp {
             } else {
                 &self.inner.base
             };
-            let cookie =
-                format!("prism_sid={sid}; Path={path}; Max-Age=31536000; SameSite=Lax; HttpOnly");
+            // HTTPS: host-only and `Secure` (`__Host-` needs `Path=/`).
+            let cookie = if https(headers) {
+                format!(
+                    "{SECURE_SID}={sid}; Path=/; Max-Age=31536000; Secure; SameSite=Lax; HttpOnly"
+                )
+            } else {
+                format!("{PLAIN_SID}={sid}; Path={path}; Max-Age=31536000; SameSite=Lax; HttpOnly")
+            };
             if let Ok(v) = HeaderValue::from_str(&cookie) {
                 r.headers_mut().insert(header::SET_COOKIE, v);
             }
@@ -693,7 +699,7 @@ impl WebApp {
         let num = |k: &str| param(k).and_then(|v| v.parse::<f32>().ok());
         let cookies = cookie_header(headers);
         let header = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
-        let sid = cookies.and_then(session_id).unwrap_or_else(new_session_id);
+        let sid = browser_id(headers).unwrap_or_else(new_session_id);
         let path = param("path")
             .map(percent_decode)
             .unwrap_or_else(|| "/".into());
@@ -1064,34 +1070,50 @@ fn cookie_header(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
 }
 
-/// `prism_sid` from a Cookie header, if well-formed.
-pub(crate) fn session_id(cookie_header: &str) -> Option<String> {
+/// The browser's id cookie over HTTPS: host-only, `Secure`, `Path=/`.
+/// Browsers refuse a `__Host-` cookie from a sibling domain or plain HTTP,
+/// so no other site can choose the id (session fixation).
+const SECURE_SID: &str = "__Host-prism_sid";
+/// Over plain HTTP (local development): `Path` is the mount point.
+const PLAIN_SID: &str = "prism_sid";
+
+/// Whether the browser reached the app over HTTPS (`X-Forwarded-Proto` or
+/// `Forwarded: proto=` from the proxy in front).
+fn https(headers: &HeaderMap) -> bool {
+    crate::host::request_scheme(headers, None) == "https"
+}
+
+/// The browser's id: its `__Host-prism_sid` cookie, or over plain HTTP its
+/// `prism_sid`. Over HTTPS a plain `prism_sid` is ignored: a sibling site
+/// may have set it.
+pub(crate) fn browser_id(headers: &HeaderMap) -> Option<String> {
+    let cookies = cookie_header(headers)?;
+    cookie_id(cookies, SECURE_SID).or_else(|| {
+        if https(headers) {
+            None
+        } else {
+            cookie_id(cookies, PLAIN_SID)
+        }
+    })
+}
+
+/// The id in cookie `name` of a Cookie header, if well-formed.
+fn cookie_id(cookie_header: &str, name: &str) -> Option<String> {
     cookie_header
         .split(';')
-        .filter_map(|kv| kv.trim().strip_prefix("prism_sid="))
+        .filter_map(|kv| kv.trim().strip_prefix(name)?.strip_prefix('='))
         .find(|v| v.len() == 32 && v.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(str::to_string)
 }
 
-/// A random 128-bit id (process-random SipHash keys + time + counter).
+/// A random 128-bit id, from the operating system's CSPRNG.
 pub(crate) fn new_session_id() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seed = std::collections::hash_map::RandomState::new();
-    let part = |salt: u64| {
-        let mut h = seed.build_hasher();
-        h.write_u64(salt);
-        h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-        h.write_u128(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-        );
-        h.finish()
-    };
-    format!("{:016x}{:016x}", part(1), part(2))
+    use ring::rand::SecureRandom;
+    let mut bytes = [0u8; 16];
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .expect("the system random number generator");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The browser's UTC offset (seconds east), from the `prism_tz` cookie.

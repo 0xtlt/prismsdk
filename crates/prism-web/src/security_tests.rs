@@ -644,3 +644,68 @@ fn s9_the_strict_page_policy_keeps_the_upload_sandbox() {
     // Pages still get the strict policy.
     assert!(csp(&heads[2]).contains("'nonce-"), "{}", heads[2]);
 }
+
+fn page_cookie(app: &crate::WebApp, path: &str, headers: &[(&str, &str)]) -> Option<String> {
+    let mut req = http::Request::get(path);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let r = app.handle(&req.body(()).unwrap());
+    assert_eq!(r.status(), http::StatusCode::OK);
+    r.headers()
+        .get("set-cookie")
+        .map(|v| v.to_str().unwrap().to_string())
+}
+
+#[test]
+fn s10_https_pages_set_a_host_only_secure_cookie() {
+    let (app, _, _) = uploads_app("s10-https", false);
+    let https = [("x-forwarded-proto", "https")];
+    let cookie = page_cookie(&app, "/", &https).unwrap();
+    assert!(cookie.starts_with("__Host-prism_sid="), "{cookie}");
+    assert!(
+        cookie.contains("; Secure") && cookie.contains("; Path=/;"),
+        "{cookie}"
+    );
+    // A mounted app too: `__Host-` needs `Path=/`.
+    let mounted = uploads_app("s10-mounted", false).0.base_path("/app");
+    let cookie = page_cookie(&mounted, "/app", &https).unwrap();
+    assert!(
+        cookie.starts_with("__Host-prism_sid=") && cookie.contains("; Path=/;"),
+        "{cookie}"
+    );
+    // Plain HTTP (local development) keeps a plain cookie.
+    let cookie = page_cookie(&app, "/", &[]).unwrap();
+    assert!(
+        cookie.starts_with("prism_sid=") && !cookie.contains("Secure"),
+        "{cookie}"
+    );
+}
+
+#[test]
+fn s10_a_planted_cookie_cannot_choose_the_browser_on_https() {
+    let (app, svg, _) = uploads_app("s10-fixation", false);
+    // A sibling site set `prism_sid` (here SID, whose files exist) before
+    // the first visit: the page ignores it and issues its own id.
+    let planted = format!("prism_sid={SID}");
+    let https = ("x-forwarded-proto", "https");
+    let cookie = page_cookie(&app, "/", &[https, ("cookie", &planted)]).expect("a new id");
+    assert!(cookie.starts_with("__Host-prism_sid="), "{cookie}");
+    assert!(!cookie.contains(SID), "{cookie}");
+    // Nor do the planted id's files open with it.
+    let get = |cookie: &str| {
+        let req = http::Request::get(&svg)
+            .header(https.0, https.1)
+            .header("cookie", cookie)
+            .body(())
+            .unwrap();
+        app.handle(&req).status()
+    };
+    assert_eq!(get(&planted), http::StatusCode::NOT_FOUND);
+    // The host-only cookie wins over a planted one.
+    let mine = format!("prism_sid=0123456789abcdef0123456789abcdef; __Host-prism_sid={SID}");
+    assert_eq!(get(&mine), http::StatusCode::OK);
+    assert_eq!(page_cookie(&app, "/", &[https, ("cookie", &mine)]), None);
+    // Plain HTTP: as before.
+    assert_eq!(page_cookie(&app, "/", &[("cookie", &planted)]), None);
+}

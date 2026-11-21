@@ -191,7 +191,7 @@ pub(crate) fn request_host(headers: &HeaderMap, uri: Option<&Uri>) -> Option<Str
 
 /// The scheme the browser used (`X-Forwarded-Proto`, `Forwarded: proto=`,
 /// the URI's; `http` otherwise).
-fn request_scheme(headers: &HeaderMap, uri: Option<&Uri>) -> String {
+pub(crate) fn request_scheme(headers: &HeaderMap, uri: Option<&Uri>) -> String {
     header(headers, "x-forwarded-proto")
         .map(|p| p.split(',').next().unwrap_or(p).trim().to_ascii_lowercase())
         .or_else(|| forwarded(headers, "proto"))
