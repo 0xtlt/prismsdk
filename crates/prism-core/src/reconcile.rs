@@ -1295,6 +1295,25 @@ impl Reconciler {
         self.web_message.get(&id).cloned()
     }
 
+    /// Whether a message from `origin` may reach web view `id`'s handler:
+    /// the view is mounted, listens to messages and allows `origin` (its
+    /// configured origins, else its URL's own; a relative URL is the
+    /// page's, `page_origin`). Backends filter too, but on the web the
+    /// browser's script reports `origin`: the dispatcher does not take it
+    /// on trust.
+    pub fn web_message_allowed(&self, id: NodeId, origin: &str, page_origin: Option<&str>) -> bool {
+        let Some(n) = self.nodes.get(&id).filter(|n| n.kind == NodeKind::WebView) else {
+            return false;
+        };
+        let config = crate::web_view::WebViewConfig::decode(&n.config);
+        let url = if crate::web_view::origin_of(&n.text).is_some() {
+            n.text.as_str()
+        } else {
+            page_origin.unwrap_or("")
+        };
+        config.messages && config.allows(url, origin.trim_end_matches('/'))
+    }
+
     /// The load handler of web view `id`, if any.
     pub fn web_load_handler(&self, id: NodeId) -> Option<Handler<crate::web_view::WebLoadEvent>> {
         self.web_load.get(&id).cloned()

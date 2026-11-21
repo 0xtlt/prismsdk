@@ -543,7 +543,10 @@ impl Runtime {
                 }
             }
             UiEvent::WebMessage(id, data, origin) => {
-                if let Some(h) = self.reconciler.web_message_handler(id) {
+                let allowed =
+                    self.reconciler
+                        .web_message_allowed(id, &origin, self.app.page_origin());
+                if allowed && let Some(h) = self.reconciler.web_message_handler(id) {
                     h(&web_view::WebMessageEvent { data, origin }, &mut self.app);
                 }
             }

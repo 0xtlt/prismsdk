@@ -70,7 +70,12 @@ use crate::style::{Style, Styled};
 pub struct WebMessageEvent {
     /// The message, as JSON.
     pub data: String,
-    /// The origin of the page that sent it (`https://example.com`).
+    /// The origin of the page that sent it (`https://example.com`), one the
+    /// view allows. Natively the platform's web view reports it; on the web
+    /// the browser's script does, so a modified page can claim any allowed
+    /// origin. It tells which page talks, not that the page's service
+    /// vouches for the message: before a privileged effect (a payment, a
+    /// grant), confirm with that service, server to server.
     pub origin: String,
 }
 

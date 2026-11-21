@@ -857,3 +857,53 @@ fn s11_a_public_origin_must_be_an_origin() {
         .0
         .public_origin("app.example.com/path");
 }
+
+/// S12: the page's script reports a web message's origin. A message from an
+/// origin the web view does not allow never reaches the app; a view with a
+/// relative URL allows the page's own origin.
+#[test]
+fn s12_web_messages_keep_their_view_allowed_origins() {
+    use crate::tests::{Page, op_with_text, web_app};
+    use prism_core::prelude::*;
+    use prism_core::web_view::{WebMessageEvent, web_view};
+
+    struct Host {
+        got: String,
+    }
+    impl Render for Host {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(web_view("/preview").on_message(cx.listener(
+                    |this, e: &WebMessageEvent, _| {
+                        this.got = format!("{} {}", e.data_value(), e.origin);
+                    },
+                )))
+                .child(text(self.got.clone()))
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Host { got: "-".into() });
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "s12");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let got = op_with_text(&reset["p"], "-");
+    let view = reset["p"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["op"] == "create" && p["kind"] == "web_view")
+        .and_then(|p| p["id"].as_u64())
+        .expect("the web view");
+    // The socket opened without an `Origin`: the page is `http://localhost`.
+    for origin in ["https://evil.example", "null", ""] {
+        page.send(json!({ "t": "webmsg", "id": view, "data": "forged", "origin": origin }));
+    }
+    page.send(json!({ "t": "webmsg", "id": view, "data": "ok", "origin": "http://localhost" }));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": got, "text": "\"ok\" http://localhost" }] })
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

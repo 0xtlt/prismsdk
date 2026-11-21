@@ -58,7 +58,8 @@ The app gets the value as JSON either way (`WebMessageEvent::data::<T>()`, `data
 - Messages from other origins are dropped, and messages to the page are delivered only while it shows an allowed origin.
 - Native web views keep their main frame on them: a link to another origin opens in the system browser. Scripts and redirects may still navigate; their messages are filtered.
 - On the web, a frame cannot be held back: it may navigate anywhere. Only its messages are filtered.
-- Messages must come from the main frame of the web view (an `<iframe>` inside the page does not speak for it). Android cannot tell frames apart: there the origin is the main frame's URL.
+- Messages must come from the main frame of the web view (an `<iframe>` inside the page does not speak for it).
+- The app checks the origin again before `on_message` runs, whatever the platform reports. On the web the browser's script reports it, so a modified page can claim any origin the view allows: `WebMessageEvent::origin` tells which page talks, not that its service vouches for the message. Before a privileged effect (a payment, a grant), confirm with that service, server to server.
 
 **Sandbox**: without `.sandbox(…)` the page has the rights of its own origin, as in a browser tab. With it, only what the `WebSandbox` allows:
 
