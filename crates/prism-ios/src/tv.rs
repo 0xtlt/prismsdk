@@ -384,6 +384,20 @@ pub fn button(_mtm: MainThreadMarker) -> Retained<UIButton> {
     b
 }
 
+/// A button made from `config` (a picker's), of [`TvButton`]'s class: in a
+/// table's cell it answers VoiceOver with the cell's row and column, and it
+/// is tinted like [`button`], whose reasons it shares.
+pub fn configured_button(config: &objc2_ui_kit::UIButtonConfiguration) -> Retained<UIButton> {
+    let none: Option<&objc2_ui_kit::UIAction> = None;
+    // `buttonWithConfiguration:primaryAction:` makes an instance of the
+    // class it is sent to.
+    let b: Retained<UIButton> = unsafe {
+        msg_send![TvButton::class(), buttonWithConfiguration: config, primaryAction: none]
+    };
+    unsafe { b.setTintColor(Some(&UIColor::labelColor())) };
+    b
+}
+
 /// A text field's placeholder, in the placeholder color of the field's own
 /// appearance: tvOS draws a plain placeholder in the system's, white on a
 /// light theme's field when the system is dark.
