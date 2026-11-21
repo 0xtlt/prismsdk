@@ -332,6 +332,14 @@ instead:
   the client data's origin, `https://<rpId>`. Conditional mediation
   (passkeys in a field's suggestions) has no API for apps, packaged or not.
 
+What the PC has (Windows Hello and each device API) is checked in the
+background from the start, each check on its own thread, and nothing
+waits for them: the first frame comes first. A capability is false until
+its check answers (tens of milliseconds, seconds for Windows Hello when
+cold); then the app gets the new capabilities and re-renders. A call made
+before then tries the API itself, so a slow check never turns an API off.
+`PRISM_TRACE` logs when each check answers.
+
 `PRISM_DEVICE_REPORT` and `scripts/windows-device-apis.sh` (see
 [Development hooks](#development-hooks)) show what a PC has, without a
 prompt.
@@ -554,7 +562,7 @@ The same as the other backends, in a desktop session:
 | `PRISM_APPEARANCE` | `light` or `dark` in place of the system's appearance |
 | `PRISM_REDUCE_MOTION` | `1` (or `0`) in place of « Animation effects » |
 | `PRISM_HIGH_CONTRAST` | in place of the contrast theme, for this app only: `0` (off), `1` (on, with the system colors as they are), or one of Windows 11's themes by name, with its colors: `aquatic`, `desert`, `dusk`, `night-sky`. `PRISM_CLICK=contrast:dusk` changes it while the app runs, through the system's own settings message |
-| `PRISM_TRACE` | logs the startup phases (with the UI thread's CPU time), where the backend's time went (create, style, measure, place…), XAML's own layout, the first frame, the XAML elements and the memory then, each update (a click, a tab switch) until the frame showing it, 3D frame times, and each notification shown |
+| `PRISM_TRACE` | logs the startup phases (with the UI thread's CPU time), where the backend's time went (create, style, measure, place…), XAML's own layout, the first frame, when each startup check (Windows Hello, the device APIs) answers and when its capabilities reach the app, the XAML elements and the memory then, each update (a click, a tab switch) until the frame showing it, 3D frame times, and each notification shown |
 | `PRISM_PROFILE` | `stacks.txt`: samples the UI thread's stacks every millisecond until the first frame (`PRISM_PROFILE_MS` more), tagged by startup phase; `scripts/perf/profile.py` names them (x64) |
 | `PRISM_SCALE` | `1.25`, `1.5`, `200%`: the app's scale in place of its monitor's (XAML's `OverrideScale` on the island, Prism's pixels per DIP) |
 | `PRISM_DEFER` | `0`: every XAML element, off-screen ones too, is made and laid out before the first frame |
@@ -563,7 +571,7 @@ The same as the other backends, in a desktop session:
 | `PRISM_TRAY_MENU` | `<id>`: that tray item's menu opens by itself, as after a click |
 | `PRISM_NOTIFICATIONS_CLEANUP` | `1`: on quit, the app removes its notification registration and its notifications |
 | `PRISM_BACKGROUND_INTERVAL` | seconds between background task runs |
-| `PRISM_DEVICE_REPORT` | `<file.json>`: at startup, writes what each device API sees, without a prompt or system UI: the capabilities and the checks behind them; location's policy, service, status and setting, and, when access is already allowed, a position's and a watch's accuracy and age (never where the PC is); the motion sensors and a first sample; the cameras, the Camera app's capture UI and a file token's round trip; the window's Share manager; `webauthn.dll`'s API version, its platform authenticator and its error names as Prism's errors; the vibration devices |
+| `PRISM_DEVICE_REPORT` | `<file.json>`: at startup, once every check has answered (15 s at most; one that has not is `null` and logged), writes what each device API sees, without a prompt or system UI: the capabilities and the checks behind them; location's policy, service, status and setting, and, when access is already allowed, a position's and a watch's accuracy and age (never where the PC is); the motion sensors and a first sample; the cameras, the Camera app's capture UI and a file token's round trip; the window's Share manager; `webauthn.dll`'s API version, its platform authenticator and its error names as Prism's errors; the vibration devices |
 
 Every run logs when WinUI is ready, the first layout and the first frame
 (from the process's creation), and the memory at the first frame and at

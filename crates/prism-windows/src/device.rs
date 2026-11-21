@@ -2,11 +2,12 @@
 //! `sensors.rs`): accuracy settings, Windows' times and missing values as
 //! Prism's positions, the privacy settings' values as permission states,
 //! haptic patterns as waveforms, sensor readings as motion samples, a
-//! share's text, the file names logs give, async answers given once. No WinRT: tested on every host.
+//! share's text, the file names logs give, async answers given once,
+//! what the startup checks found. No WinRT: tested on every host.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
-use prism_core::{Accuracy, Haptic, Location, Motion, PermissionState};
+use prism_core::{Accuracy, BiometryKind, Capabilities, Haptic, Location, Motion, PermissionState};
 
 /// How Windows' location service is asked for a position.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -242,6 +243,113 @@ impl Fusion {
     }
 }
 
+/// What the startup checks have found so far (`probe.rs`); `None`: that
+/// check has not answered yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Found {
+    /// Windows Hello: its sensor, and whether it can verify the user.
+    pub hello: Option<(BiometryKind, bool)>,
+    pub location: Option<bool>,
+    pub motion: Option<bool>,
+    pub camera: Option<bool>,
+    pub haptics: Option<bool>,
+    pub passkeys: Option<bool>,
+    pub share: Option<bool>,
+}
+
+impl Found {
+    /// No answer yet.
+    pub const NONE: Found = Found {
+        hello: None,
+        location: None,
+        motion: None,
+        camera: None,
+        haptics: None,
+        passkeys: None,
+        share: None,
+    };
+
+    /// `caps` with what the checks found. One that has not answered says
+    /// no until it does; then the app is given the new capabilities.
+    pub fn apply(&self, mut caps: Capabilities) -> Capabilities {
+        let (kind, usable) = self.hello.unwrap_or((BiometryKind::None, false));
+        caps.biometry = kind;
+        caps.device_auth = usable;
+        let yes = |a: Option<bool>| a == Some(true);
+        caps.location = yes(self.location);
+        caps.motion = yes(self.motion);
+        caps.camera = yes(self.camera);
+        caps.haptics = yes(self.haptics);
+        caps.passkeys = yes(self.passkeys);
+        caps.share = yes(self.share);
+        caps
+    }
+
+    /// The checks that have not answered.
+    pub fn pending(&self) -> Vec<&'static str> {
+        [
+            ("Windows Hello", self.hello.is_none()),
+            ("location", self.location.is_none()),
+            ("motion", self.motion.is_none()),
+            ("camera", self.camera.is_none()),
+            ("haptics", self.haptics.is_none()),
+            ("passkeys", self.passkeys.is_none()),
+            ("share", self.share.is_none()),
+        ]
+        .into_iter()
+        .filter_map(|(name, pending)| pending.then_some(name))
+        .collect()
+    }
+}
+
+/// Whether a device call may go ahead, from its check's answer: unless
+/// the check found nothing. Before it answers, the call tries the API
+/// itself, which fails on its own where there is nothing: a slow check
+/// never stops a call.
+pub fn may(answer: Option<bool>) -> bool {
+    answer != Some(false)
+}
+
+/// Answers recorded on other threads, before or after the UI thread takes
+/// them. [`open`](Self::open) gives what came so far, and from then on
+/// [`record`](Self::record) says the UI is to be told: none is lost.
+#[derive(Debug)]
+pub struct Mailbox<T> {
+    inner: std::sync::Mutex<(T, bool)>,
+}
+
+impl<T: Copy> Mailbox<T> {
+    pub const fn new(t: T) -> Self {
+        Mailbox {
+            inner: std::sync::Mutex::new((t, false)),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, (T, bool)> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Records an answer; true when the UI took the earlier ones and is to
+    /// be told of this one.
+    pub fn record(&self, f: impl FnOnce(&mut T)) -> bool {
+        let mut inner = self.lock();
+        f(&mut inner.0);
+        inner.1
+    }
+
+    /// What came so far; the answers after it are told.
+    pub fn open(&self) -> T {
+        let mut inner = self.lock();
+        inner.1 = true;
+        inner.0
+    }
+
+    /// What came so far.
+    pub fn get(&self) -> T {
+        self.lock().0
+    }
+}
+
 /// Gives `then` the result of an async call started by `start`, exactly
 /// once. `start` gets the callback to hand the call (windows-rs `when`);
 /// when it fails, it has dropped that callback without calling it, so
@@ -289,6 +397,68 @@ pub fn file_name(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_check_says_no_only_once_it_has_answered() {
+        let base = Capabilities {
+            tray: true,
+            camera: true,
+            ..Default::default()
+        };
+        // Nothing yet: no device API, and no Hello.
+        let caps = Found::NONE.apply(base);
+        assert!(caps.tray && !caps.camera && !caps.location && !caps.device_auth);
+        assert_eq!(caps.biometry, BiometryKind::None);
+        assert_eq!(Found::NONE.pending().len(), 7);
+        let found = Found {
+            hello: Some((BiometryKind::Face, true)),
+            camera: Some(true),
+            location: Some(false),
+            ..Found::NONE
+        };
+        let caps = found.apply(base);
+        assert!(caps.camera && !caps.location && caps.device_auth);
+        assert_eq!(caps.biometry, BiometryKind::Face);
+        assert_eq!(found.pending(), ["motion", "haptics", "passkeys", "share"]);
+        // A call waits for no check: only a « no » stops it.
+        assert!(may(None));
+        assert!(may(Some(true)));
+        assert!(!may(Some(false)));
+    }
+
+    #[test]
+    fn answers_before_and_after_the_ui_opens_are_all_had() {
+        let mailbox = Mailbox::new(Found::NONE);
+        // Before the UI takes them: in what it takes, nothing to tell.
+        assert!(!mailbox.record(|f| f.camera = Some(true)));
+        let opened = mailbox.open();
+        assert_eq!(opened.camera, Some(true));
+        // After: to tell, and there when the UI looks.
+        assert!(mailbox.record(|f| f.share = Some(false)));
+        assert_eq!(mailbox.get().share, Some(false));
+        assert_eq!(mailbox.get().camera, Some(true));
+        // From threads, racing the UI: each answer is in what it opened,
+        // or it is told.
+        let mailbox = std::sync::Arc::new(Mailbox::new(0u32));
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let m = mailbox.clone();
+                std::thread::spawn(move || m.record(|n| *n |= 1 << i).then_some(i))
+            })
+            .collect();
+        let opened = mailbox.open();
+        let told: Vec<u32> = threads
+            .into_iter()
+            .filter_map(|t| t.join().unwrap())
+            .collect();
+        for i in 0..8 {
+            assert!(
+                opened & (1 << i) != 0 || told.contains(&i),
+                "answer {i} lost"
+            );
+        }
+        assert_eq!(mailbox.get(), 0xff);
+    }
 
     #[test]
     fn an_async_call_always_answers_once() {

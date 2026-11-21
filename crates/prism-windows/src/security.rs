@@ -239,8 +239,9 @@ fn sensor() -> BiometryKind {
     BiometryKind::None
 }
 
-/// Checks Hello (`CheckAvailabilityAsync`) and the sensors; blocks, so
-/// called off the UI thread, or at startup with a time limit.
+/// Checks Hello (`CheckAvailabilityAsync`) and the sensors: 100 ms or
+/// more (seconds when cold). Blocks: called off the UI thread (at
+/// startup, `probe::start`).
 pub fn hello() -> Hello {
     let availability = UserConsentVerifier::CheckAvailabilityAsync()
         .and_then(|op| op.join())
@@ -250,37 +251,6 @@ pub fn hello() -> Hello {
         kind: sensor(),
         availability,
     }
-}
-
-static PREFETCH: std::sync::Mutex<Option<std::sync::mpsc::Receiver<Hello>>> =
-    std::sync::Mutex::new(None);
-
-/// Starts checking Hello on a thread, at the very start of `run`: it takes
-/// 100 ms or more (seconds when cold), done meanwhile WinUI starts.
-pub fn prefetch_hello() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(hello());
-    });
-    *PREFETCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(rx);
-}
-
-/// Startup's view of Hello, waiting at most 1.5 s more for the check.
-pub fn hello_at_start() -> Hello {
-    let rx = PREFETCH.lock().unwrap_or_else(|e| e.into_inner()).take();
-    let rx = rx.unwrap_or_else(|| {
-        prefetch_hello();
-        PREFETCH
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-            .expect("prefetch")
-    });
-    rx.recv_timeout(std::time::Duration::from_millis(1500))
-        .unwrap_or(Hello {
-            kind: BiometryKind::None,
-            availability: None,
-        })
 }
 
 /// Why Hello cannot verify, as Prism's error.

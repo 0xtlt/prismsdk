@@ -56,7 +56,7 @@ redact() {
 
 check() {
   python3 scripts/windows/device-report-check.py "$1/device-report.json"
-  if grep -E "panicked|cannot start|no answer at startup" "$1/device.log" >&2; then
+  if grep -E "panicked|cannot start|has not answered in" "$1/device.log" >&2; then
     echo "windows-device-apis: FAIL: see the log above" >&2
     exit 1
   fi

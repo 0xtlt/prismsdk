@@ -69,7 +69,7 @@
 //! | `share` | the Share dialog (`DataTransferManager` for a window) |
 //! | `haptics` | a vibration device's waveforms |
 //! | `sensors` | motion: accelerometer, gyrometer, inclinometer |
-//! | `probe`, `device` | which device APIs the PC has, asked at startup; their pure parts |
+//! | `probe`, `device` | which device APIs the PC has, asked in the background from startup; their pure parts |
 //! | `seal` | biometric secrets: sealed with a key only Windows Hello gives back |
 //! | `tray`, `icons` | notification area icons and their menus |
 //! | `menubar`, `accel` | the window's menu bar, keyboard accelerators |

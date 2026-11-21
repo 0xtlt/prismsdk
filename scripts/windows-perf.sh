@@ -8,6 +8,8 @@
 # - WinUI's start, the app's tree, the XAML elements (create, style,
 #   children), the layout (measure, place), XAML's own layout, the first
 #   frame, and the memory then;
+# - when each startup check (Windows Hello, the device APIs) answers, and
+#   when its capabilities reach the app: nothing waits for them;
 # - each tab switch, from the click to the frame showing it.
 #
 #   PRISM_WINDOWS_HOST=… scripts/windows-perf.sh [out-dir]   (default target/windows-perf)

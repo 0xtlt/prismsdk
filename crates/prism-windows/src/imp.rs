@@ -102,7 +102,9 @@ pub fn drain() {
         if work.is_empty() && events.is_empty() {
             return;
         }
+        let mut queued = Some((work, events));
         let ran = with_state(|s| {
+            let (work, events) = queued.take().unwrap_or_default();
             for f in work {
                 f(s);
             }
@@ -111,6 +113,21 @@ pub fn drain() {
             }
         });
         if ran.is_none() {
+            // No state yet (startup), or it is in use: kept, in order, for
+            // the next drain (the state's creation posts one).
+            if let Some((work, events)) = queued {
+                DEFERRED.with(|d| {
+                    let mut d = d.borrow_mut();
+                    let later = std::mem::replace(&mut *d, work);
+                    d.extend(later);
+                });
+                QUEUE.with(|q| {
+                    let mut q = q.borrow_mut();
+                    let later: Vec<UiEvent> = q.drain(..).collect();
+                    q.extend(events);
+                    q.extend(later);
+                });
+            }
             return;
         }
     }
@@ -749,10 +766,10 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 pub fn run(config: AppConfig, init: AppInit) {
     START.set(Some(std::time::Instant::now()));
     crate::profile::start();
-    // Windows Hello answers slowly: asked while WinUI starts.
-    crate::security::prefetch_hello();
-    // So do the device APIs' checks (cameras, location, passkeys…).
-    crate::probe::prefetch();
+    // What the PC has (Windows Hello, cameras, location, passkeys…),
+    // asked in the background: published as each check answers, never
+    // waited for (`probe.rs`).
+    crate::probe::start();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         if let Err(e) = OleInitialize(None) {
@@ -903,6 +920,9 @@ pub fn run(config: AppConfig, init: AppInit) {
                 services,
             })
         });
+        // Work deferred before the state existed (a check that answered
+        // meanwhile) runs from the message loop.
+        post(WM_PRISM_DISPATCH);
         let mut client = RECT::default();
         let _ = GetClientRect(main, &mut client);
         with_state(|s| {
