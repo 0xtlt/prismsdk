@@ -19,7 +19,7 @@
 - **`prism-core`**: styles, element builders, entities/`Context`, reconciler, `Backend` trait, `Runtime`, the router, and the `PlatformServices` that backends implement (device APIs, storage, widgets, notifications). No platform code.
 - **`prism-native`**: turns patches into calls on the `Widgets` trait (create, style, measure and place native views) and runs flexbox layout with taffy. Shared by every native backend.
 - **`prism-web`**: an Axum router (or any HTTP and WebSocket stack, without the `server` feature). One `Runtime` per browser session (LiveView model).
-- **`prism-macos`** / **`prism-ios`**: `Widgets` implementations over objc2. **`prism-watchos`** and **`prism-android`** keep the tree in Rust and send it to a host (SwiftUI, Java) that draws it at the computed frames. **`prism-linux`**: GTK 4 widgets placed by a small layout manager.
+- **`prism-macos`** / **`prism-ios`**: `Widgets` implementations over objc2. **`prism-watchos`** and **`prism-android`** keep the tree in Rust and send it to a host (SwiftUI, Java) that draws it at the computed frames. **`prism-linux`**: GTK 4 widgets placed by a small layout manager. **`prism-windows`**: WinUI 3 controls placed in XAML `Canvas`es.
 - **`prism-ui`**: component library on top of the core (themes, overrides, native escape hatch).
 - **`prism`**: facade; picks the backend from features (`web`, `native`) and the target OS.
 - **`prism-push`**: for your server: sends pushes to APNs, FCM and Web Push / UnifiedPush (see [Remote push](guide/push.md)).

@@ -9,6 +9,8 @@ symbols).
 | `macos` | a `.app` with widgets and icon | signed ad hoc by default (`PRISM_IDENTITY` for your identity) |
 | `ios`, `tvos`, `watchos`, `visionos` | an `.app` | real devices: `--device`, your team and a provisioning profile |
 | `android` | a signed APK, aligned for 16 KB pages | release key: `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS`, `PRISM_ANDROID_KEY_ALIAS` (default: the SDK's debug key) |
+| `linux` | a `.deb` | see [Linux](#linux) |
+| `windows` | a `.zip` of the app's folder | see [Windows](#windows) |
 
 ## Web servers
 
@@ -58,7 +60,7 @@ The crates are published to crates.io in dependency order; see
 | Windows | `.zip` (the app's folder) | `prism build windows` | your download page |
 | Web | Docker image | `prism build web --docker` | your registry or server |
 
-Versions come from `Prism.toml`. `[app] version` is the version people see. `[app] build` is the build number: `CFBundleVersion` on Apple platforms, `versionCode` on Android (or `[android] version_code`), and the Debian revision on Linux. Each upload needs a higher build number.
+Versions come from `Prism.toml`. `[app] version` is the version people see. `[app] build` is the build number: `CFBundleVersion` on Apple platforms, `versionCode` on Android (or `[android] version_code`), the Debian revision on Linux, and the fourth part of the executable's version on Windows. Each upload needs a higher build number.
 
 ```toml
 [app]

@@ -639,6 +639,19 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 
 ## Not yet
 
+- **Views and input:** a view with `on_key_down` takes no keyboard focus
+  (controls and clickable views do); clicks carry no position, keys or
+  count; `consume_key_at` gets no caret edges; held keys are not released
+  when the window turns inactive; no lifecycle phases; `.cursor(..)`,
+  `object_position`, `Scrollbar::Hidden`, `tabular_nums` and underline
+  colors are ignored; custom window chrome; the runtime's layers (toasts)
+  draw under sheets and dialogs.
+- **Forms and navigation:** keyboard types, capitalization, autocorrect and
+  suggestions; clearing an optional date; a date and time picker shows the
+  date only; `Router::tint`; the unsaved-changes question is in English.
+- **Fonts and device:** bundled and embedded fonts are not registered at
+  startup (`cx.load_font` works); `device_info().screen` is the window's
+  starting size, not the monitor.
 - **Embedded content and input:** a precision touchpad's
   pinch is only handled as the Ctrl + wheel Windows sends apps (touchpads
   cannot be injected).

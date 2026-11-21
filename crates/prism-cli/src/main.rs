@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! prism new my-app                 create a project
-//! prism run <target>               build and run (web, macos, ios, tvos, watchos, android,
-//!                                  linux, windows)
+//! prism run <target>               build and run (web, macos, ios, tvos, watchos, visionos,
+//!                                  android, linux, windows)
 //! prism dev <target>               run, then rebuild and restart on every save
 //! prism build <target>             release artifacts (.app bundles, APK, .deb, Windows zip,
 //!                                  server binary)

@@ -11,7 +11,7 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 
 Also [tvOS](platforms/tvos.md), [watchOS](platforms/watchos.md),
 [visionOS](platforms/visionos.md), [Linux (GTK 4)](platforms/linux.md),
-Wear OS, Android TV and car screens ([CarPlay, Android Auto](guide/car.md)).
+[Windows (WinUI 3)](platforms/windows.md), Wear OS, Android TV and car screens ([CarPlay, Android Auto](guide/car.md)).
 
 ```rust
 use prism::prelude::*;

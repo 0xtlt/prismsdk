@@ -1,6 +1,6 @@
 [book]
 title = "Prism"
-description = "Write a UI once in Rust, ship it on the web, Apple platforms, Linux and Android."
+description = "Write a UI once in Rust, ship it on the web, Apple platforms, Linux, Android and Windows."
 authors = ["Prism contributors"]
 language = "en"
 src = "src"

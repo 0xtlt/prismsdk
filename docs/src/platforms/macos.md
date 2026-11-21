@@ -99,6 +99,6 @@ impl Render for Notes {
   the title bar strip.
 
 Other platforms accept both and ignore them: the web (the browser owns the
-window), iOS, iPadOS, visionOS, Android, and Linux, where GTK keeps its own
-header bar for now. `window_controls()` is `None` and `is_fullscreen()` is
+window), iOS, iPadOS, visionOS, Android, Linux, where GTK keeps its own
+header bar for now, and Windows, where the system title bar stays for now. `window_controls()` is `None` and `is_fullscreen()` is
 `false` there.
