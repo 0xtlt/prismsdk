@@ -16,7 +16,8 @@ and checks that:
 
 A pattern is an object of an element's keys (name, type, localizedType,
 toggle, selected, expanded, value, range, disabled, focusable, invoke,
-heading, live, dialog, landmark, help, position, className) and the values
+heading, live, dialog, landmark, help, position, grid, cell, columnHeader,
+className) and the values
 they must have. A text starting with "~" is a regular expression searched
 in the element's. A key the dump leaves out has no value (null): a state the
 element does not have, or false for disabled, focusable, invoke and dialog.
