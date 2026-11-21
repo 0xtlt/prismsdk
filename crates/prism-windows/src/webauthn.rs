@@ -16,7 +16,8 @@
 //! public API for desktop apps: `webauthn_autofill` answers "unavailable",
 //! as on macOS and Android.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use prism_core::{DeviceError, DeviceValue};
 use windows::Win32::Foundation::{ERROR_CANCELLED, HWND, NTE_USER_CANCELLED};
@@ -179,19 +180,25 @@ pub fn report() -> serde_json::Value {
     })
 }
 
-/// The ceremony still open (its cancellation id).
-static PENDING: Mutex<Option<GUID>> = Mutex::new(None);
+/// The ceremonies, one at a time (`passkey::Turns`).
+static TURNS: passkey::Turns<GUID> = passkey::Turns::new();
 
-fn pending() -> std::sync::MutexGuard<'static, Option<GUID>> {
-    PENDING.lock().unwrap_or_else(|e| e.into_inner())
-}
+/// How long a new ceremony waits for the one it cancelled to return.
+const CANCELLED_ENDS_WITHIN: Duration = Duration::from_secs(5);
 
-/// Closes Windows' dialog of the ceremony still open: it answers "cancelled".
-pub fn cancel() {
-    if let (Some(api), Some(id)) = (api(), pending().take()) {
+fn cancel_ceremony(api: &'static Api, id: Option<GUID>) {
+    if let Some(id) = id {
         unsafe {
             let _ = (api.cancel)(&id);
         }
+    }
+}
+
+/// Closes Windows' dialog of the ceremony still open, which answers
+/// "cancelled", and drops the ones waiting for their turn.
+pub fn cancel() {
+    if let Some(api) = api() {
+        cancel_ceremony(api, TURNS.cancel_all());
     }
 }
 
@@ -208,31 +215,38 @@ pub fn ceremony(
     if request.conditional {
         return done(Err(DeviceError::Unavailable));
     }
-    // One dialog at a time: the open one answers "cancelled". This one's
-    // id is pending before its thread starts, so a call right after
-    // cancels it too.
-    cancel();
+    // One dialog at a time: the open one answers "cancelled", and this
+    // one starts once it has returned (Windows runs one call at a time).
     let mut id = GUID::zeroed();
-    let cancellable = unsafe { (api.cancellation_id)(&mut id) }.is_ok();
-    if cancellable {
-        *pending() = Some(id);
-    }
+    let id = unsafe { (api.cancellation_id)(&mut id) }
+        .is_ok()
+        .then_some(id);
+    let (ticket, open) = TURNS.begin(id);
+    cancel_ceremony(api, open);
     let owner = crate::win::hwnd_value(owner);
     std::thread::spawn(move || {
         let owner = crate::win::hwnd(owner);
-        let r = if request.create {
-            passkey::registration(&request.options)
-                .and_then(|o| create(api, owner, &o, cancellable.then_some(&mut id)))
-        } else {
-            passkey::assertion(&request.options)
-                .and_then(|o| get(api, owner, &o, cancellable.then_some(&mut id)))
-        };
-        {
-            let mut p = pending();
-            if *p == Some(id) {
-                *p = None;
+        let r = match TURNS.wait_turn(&ticket, CANCELLED_ENDS_WITHIN) {
+            passkey::Turn::Superseded => Err(DeviceError::Cancelled),
+            turn => {
+                if turn == passkey::Turn::Late {
+                    log!(
+                        "passkeys: the cancelled ceremony has not returned in {} s; this one starts anyway",
+                        CANCELLED_ENDS_WITHIN.as_secs()
+                    );
+                }
+                let mut id = ticket.id;
+                let r = if request.create {
+                    passkey::registration(&request.options)
+                        .and_then(|o| create(api, owner, &o, id.as_mut()))
+                } else {
+                    passkey::assertion(&request.options)
+                        .and_then(|o| get(api, owner, &o, id.as_mut()))
+                };
+                TURNS.end(&ticket);
+                r
             }
-        }
+        };
         if let Err(e) = &r {
             log!("passkeys: {e:?}");
         }

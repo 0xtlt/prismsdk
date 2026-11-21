@@ -459,6 +459,122 @@ pub fn assertion_json(s: &Signature) -> String {
     out.to_string()
 }
 
+// --- One ceremony at a time ------------------------------------------------------------
+
+/// A ceremony's place in [`Turns`].
+#[derive(Clone, Copy, Debug)]
+pub struct Ticket<I> {
+    n: u64,
+    /// Its cancellation id (`WebAuthNGetCancellationId`), if it has one.
+    pub id: Option<I>,
+}
+
+/// How a ceremony's wait for its turn ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Turn {
+    /// The one before it ended: it runs.
+    Ready,
+    /// The one before it did not end in time: it runs anyway.
+    Late,
+    /// A newer ceremony, or `cancel_all`, came first: it answers
+    /// `Cancelled` without running.
+    Superseded,
+}
+
+#[derive(Debug)]
+struct Line<I> {
+    /// The newest ticket handed out.
+    latest: u64,
+    /// The ceremony Windows runs, with its cancellation id.
+    running: Option<(u64, Option<I>)>,
+}
+
+/// Windows runs one WebAuthn call at a time, and a new ceremony cancels
+/// the open one (`WebAuthNCancelCurrentOperation`). Cancelling only asks:
+/// the cancelled call returns a moment later. So a new ceremony waits for
+/// it (`wait_turn`, bounded) before it starts, and only the newest waits.
+#[derive(Debug)]
+pub struct Turns<I> {
+    line: std::sync::Mutex<Line<I>>,
+    changed: std::sync::Condvar,
+}
+
+impl<I: Copy> Turns<I> {
+    pub const fn new() -> Self {
+        Turns {
+            line: std::sync::Mutex::new(Line {
+                latest: 0,
+                running: None,
+            }),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn line(&self) -> std::sync::MutexGuard<'_, Line<I>> {
+        self.line.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A new ceremony (`id`: its cancellation id), and the cancellation id
+    /// of the one running, to cancel. Quick: the UI thread calls it.
+    pub fn begin(&self, id: Option<I>) -> (Ticket<I>, Option<I>) {
+        let mut line = self.line();
+        line.latest += 1;
+        let ticket = Ticket { n: line.latest, id };
+        let running = line.running.and_then(|(_, id)| id);
+        drop(line);
+        self.changed.notify_all();
+        (ticket, running)
+    }
+
+    /// Waits until no ceremony runs, at most `bound`; then `t` runs
+    /// (until [`end`](Self::end)), unless a newer one came meanwhile.
+    pub fn wait_turn(&self, t: &Ticket<I>, bound: std::time::Duration) -> Turn {
+        let deadline = std::time::Instant::now() + bound;
+        let mut line = self.line();
+        loop {
+            if line.latest != t.n {
+                return Turn::Superseded;
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if line.running.is_none() || left.is_zero() {
+                let turn = if line.running.is_none() {
+                    Turn::Ready
+                } else {
+                    Turn::Late
+                };
+                line.running = Some((t.n, t.id));
+                return turn;
+            }
+            line = self
+                .changed
+                .wait_timeout(line, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    /// `t` ended: the next one may run.
+    pub fn end(&self, t: &Ticket<I>) {
+        let mut line = self.line();
+        if line.running.is_some_and(|(n, _)| n == t.n) {
+            line.running = None;
+        }
+        drop(line);
+        self.changed.notify_all();
+    }
+
+    /// Every ceremony is to stop: the waiting ones give up, and the
+    /// running one's cancellation id comes back, to cancel.
+    pub fn cancel_all(&self) -> Option<I> {
+        let mut line = self.line();
+        line.latest += 1;
+        let running = line.running.and_then(|(_, id)| id);
+        drop(line);
+        self.changed.notify_all();
+        running
+    }
+}
+
 // --- Errors ----------------------------------------------------------------------------
 
 /// `NTE_USER_CANCELLED`: the user closed Windows' dialog.
@@ -518,6 +634,9 @@ pub fn error(hr: i32, name: &str, message: &str) -> DeviceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     fn value(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
@@ -795,6 +914,100 @@ mod tests {
             error(0x8007_0057_u32 as i32, "UnknownError", ""),
             DeviceError::Failed("passkeys: WebAuthn error 0x80070057 (0x80070057)".into())
         );
+    }
+
+    #[test]
+    fn a_lone_ceremony_runs_at_once() {
+        let turns = Turns::<u8>::new();
+        let (t, open) = turns.begin(Some(1));
+        assert_eq!(open, None);
+        assert_eq!(turns.wait_turn(&t, Duration::from_secs(5)), Turn::Ready);
+        turns.end(&t);
+        let (t, open) = turns.begin(Some(2));
+        assert_eq!(open, None, "the first one ended");
+        assert_eq!(turns.wait_turn(&t, Duration::ZERO), Turn::Ready);
+    }
+
+    #[test]
+    fn a_new_ceremony_waits_for_the_cancelled_one() {
+        let turns = Arc::new(Turns::<u8>::new());
+        let (first, _) = turns.begin(Some(1));
+        assert_eq!(turns.wait_turn(&first, Duration::ZERO), Turn::Ready);
+        let (second, open) = turns.begin(Some(2));
+        assert_eq!(open, Some(1), "the running one is to cancel");
+        let ended = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let (turns, ended) = (turns.clone(), ended.clone());
+            std::thread::spawn(move || {
+                let turn = turns.wait_turn(&second, Duration::from_secs(10));
+                (turn, ended.load(Ordering::SeqCst))
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        ended.store(true, Ordering::SeqCst);
+        turns.end(&first);
+        assert_eq!(
+            waiter.join().unwrap(),
+            (Turn::Ready, true),
+            "it ran only after the first ended"
+        );
+    }
+
+    #[test]
+    fn only_the_newest_ceremony_waits() {
+        let turns = Arc::new(Turns::<u8>::new());
+        let (first, _) = turns.begin(Some(1));
+        turns.wait_turn(&first, Duration::ZERO);
+        let (second, _) = turns.begin(Some(2));
+        let waiter = {
+            let turns = turns.clone();
+            std::thread::spawn(move || turns.wait_turn(&second, Duration::from_secs(10)))
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        let (third, open) = turns.begin(Some(3));
+        assert_eq!(
+            open,
+            Some(1),
+            "the second never ran: the first is still the one to cancel"
+        );
+        assert_eq!(waiter.join().unwrap(), Turn::Superseded);
+        turns.end(&first);
+        assert_eq!(turns.wait_turn(&third, Duration::ZERO), Turn::Ready);
+    }
+
+    #[test]
+    fn a_ceremony_that_does_not_end_holds_the_next_for_the_bound_only() {
+        let turns = Turns::<u8>::new();
+        let (stuck, _) = turns.begin(Some(1));
+        turns.wait_turn(&stuck, Duration::ZERO);
+        let (next, _) = turns.begin(Some(2));
+        let started = std::time::Instant::now();
+        assert_eq!(
+            turns.wait_turn(&next, Duration::from_millis(60)),
+            Turn::Late
+        );
+        assert!(started.elapsed() >= Duration::from_millis(60));
+        // The stuck one ending late frees nothing: the next one runs.
+        turns.end(&stuck);
+        let (after, open) = turns.begin(None);
+        assert_eq!(open, Some(2));
+        assert_eq!(turns.wait_turn(&after, Duration::ZERO), Turn::Late);
+    }
+
+    #[test]
+    fn cancel_all_stops_the_running_and_the_waiting() {
+        let turns = Arc::new(Turns::<u8>::new());
+        assert_eq!(turns.cancel_all(), None);
+        let (first, _) = turns.begin(Some(1));
+        turns.wait_turn(&first, Duration::ZERO);
+        let (second, _) = turns.begin(None);
+        let waiter = {
+            let turns = turns.clone();
+            std::thread::spawn(move || turns.wait_turn(&second, Duration::from_secs(10)))
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(turns.cancel_all(), Some(1));
+        assert_eq!(waiter.join().unwrap(), Turn::Superseded);
     }
 
     /// The report checker's table (`KNOWN`) is `ERROR_NAMES` and what
