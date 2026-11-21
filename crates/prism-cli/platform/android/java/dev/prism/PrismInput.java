@@ -863,6 +863,7 @@ final class PrismInput {
             android.content.ClipboardManager cb = (android.content.ClipboardManager) e.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
             android.content.ClipData clip = cb == null ? null : cb.getPrimaryClip();
             JSONArray types = new JSONArray();
+            JSONArray data = new JSONArray();
             String text = "", html = null;
             if (clip != null) {
                 for (int i = 0; i < clip.getDescription().getMimeTypeCount(); i++) types.put(clip.getDescription().getMimeType(i));
@@ -872,31 +873,84 @@ final class PrismInput {
                     text = c == null ? "" : c.toString();
                     html = it.getHtmlText();
                 }
+                data = clipData(clip);
             }
             put(ev, "text", text);
             if (html != null) put(ev, "html", html);
             put(ev, "types", types);
+            put(ev, "data", data);
             PrismHost.send(ev);
             return true;
         }
         return false;
     }
 
-    /** Op `clip`: what a copy writes (plain text, and HTML when there is some). */
+    /**
+     * Where a clip keeps the text of a type other than plain text and HTML
+     * (Markdown, the app's own `ClipboardContent::custom` types): its
+     * description lists the type, its extras hold the text under this
+     * prefix and the type. The clipboard service keeps both.
+     */
+    static final String CLIP_TYPE = "dev.prism.clip:";
+
+    /** Op `clip`: what a copy writes: plain text, HTML, and every other type as text. */
     static void writeClipboard(JSONArray items) {
         if (items == null) return;
         String text = "", html = null;
+        java.util.List<String> others = new java.util.ArrayList<>();
+        android.os.PersistableBundle extras = new android.os.PersistableBundle();
         for (int i = 0; i < items.length(); i++) {
             JSONArray pair = items.optJSONArray(i);
             if (pair == null) continue;
-            if ("text/plain".equals(pair.optString(0))) text = pair.optString(1);
-            else if ("text/html".equals(pair.optString(0))) html = pair.optString(1);
+            String type = pair.optString(0);
+            if ("text/plain".equals(type)) text = pair.optString(1);
+            else if ("text/html".equals(type)) html = pair.optString(1);
+            else if (!type.isEmpty() && !others.contains(type)) {
+                others.add(type);
+                extras.putString(CLIP_TYPE + type, pair.optString(1));
+            }
         }
         android.content.ClipboardManager cb = (android.content.ClipboardManager) PrismHost.themed().getSystemService(Context.CLIPBOARD_SERVICE);
         if (cb == null) return;
-        cb.setPrimaryClip(html != null
+        android.content.ClipData clip = html != null
                 ? android.content.ClipData.newHtmlText("text", text, html)
-                : android.content.ClipData.newPlainText("text", text));
+                : android.content.ClipData.newPlainText("text", text);
+        if (!others.isEmpty()) {
+            android.content.ClipDescription d = clip.getDescription();
+            String[] all = new String[d.getMimeTypeCount() + others.size()];
+            for (int i = 0; i < d.getMimeTypeCount(); i++) all[i] = d.getMimeType(i);
+            for (int i = 0; i < others.size(); i++) all[d.getMimeTypeCount() + i] = others.get(i);
+            android.content.ClipDescription withTypes = new android.content.ClipDescription("text", all);
+            withTypes.setExtras(extras);
+            clip = new android.content.ClipData(withTypes, clip.getItemAt(0));
+        }
+        cb.setPrimaryClip(clip);
+    }
+
+    /**
+     * The text of a clip's types other than plain text and HTML, as
+     * `[[type, text]…]`: what a Prism copy put in its extras, else for a
+     * `text/…` type (Markdown from another app), the item's text.
+     */
+    static JSONArray clipData(android.content.ClipData clip) {
+        JSONArray out = new JSONArray();
+        android.content.ClipDescription d = clip.getDescription();
+        android.os.PersistableBundle extras = d.getExtras();
+        CharSequence itemText = clip.getItemCount() > 0 ? clip.getItemAt(0).getText() : null;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (int i = 0; i < d.getMimeTypeCount(); i++) {
+            String type = d.getMimeType(i);
+            if (type == null || !seen.add(type) || type.startsWith("text/plain") || type.equals("text/html")
+                    || type.equals("text/uri-list") || type.equals(android.content.ClipDescription.MIMETYPE_TEXT_INTENT)) continue;
+            String value = extras == null ? null : extras.getString(CLIP_TYPE + type);
+            if (value == null && type.startsWith("text/") && itemText != null) value = itemText.toString();
+            if (value == null) continue;
+            JSONArray pair = new JSONArray();
+            pair.put(type);
+            pair.put(value);
+            out.put(pair);
+        }
+        return out;
     }
 
     /** Op `instext`: a paste the app left to the field, over its selection. */
