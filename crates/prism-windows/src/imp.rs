@@ -67,10 +67,21 @@ pub fn main_hwnd() -> HWND {
 /// Runs `f` with the state, unless it is already in use (XAML called
 /// back while Prism changes the window).
 pub fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
-    STATE.with(|cell| {
+    let r = STATE.with(|cell| {
         let mut guard = cell.try_borrow_mut().ok()?;
         guard.as_mut().map(f)
-    })
+    });
+    // A drain that ran meanwhile (a modal loop inside `f`) kept its work:
+    // it runs now that the state is free, not at the next event.
+    if r.is_some() && queued() {
+        post(WM_PRISM_DISPATCH);
+    }
+    r
+}
+
+/// Whether work or events wait for a drain.
+fn queued() -> bool {
+    DEFERRED.with(|d| !d.borrow().is_empty()) || QUEUE.with(|q| !q.borrow().is_empty())
 }
 
 fn post(msg: u32) {
@@ -114,7 +125,8 @@ pub fn drain() {
         });
         if ran.is_none() {
             // No state yet (startup), or it is in use: kept, in order, for
-            // the next drain (the state's creation posts one).
+            // the next drain (posted by the state's creation, or by
+            // `with_state` once the state is free).
             if let Some((work, events)) = queued {
                 DEFERRED.with(|d| {
                     let mut d = d.borrow_mut();
