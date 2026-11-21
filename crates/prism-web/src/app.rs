@@ -124,6 +124,9 @@ pub(crate) struct Inner {
     pub handoffs: crate::handoff::Handoffs,
     /// Origins web views may show under the strict CSP (`frame_origin`).
     pub frame_origins: Vec<String>,
+    /// Sites that may show the app's pages in a frame, besides the app's
+    /// own origin (`frame_ancestor`).
+    pub frame_ancestors: Vec<String>,
 }
 
 /// Prism's client, its base stylesheet, the app's assets and its islands.
@@ -192,6 +195,7 @@ impl WebApp {
                 strict_csp: env("PRISM_STRICT_CSP").is_some_and(|v| v != "0"),
                 handoffs: Default::default(),
                 frame_origins: Vec::new(),
+                frame_ancestors: Vec::new(),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {
@@ -468,12 +472,45 @@ impl WebApp {
             };
             self.page_response(&page, req, context)
         };
+        self.protect(&mut response);
         // Pages and other answers made now: gzipped when the browser accepts it.
         crate::compress::encode_response(headers, &mut response);
         if req.method() == Method::HEAD {
             response.body_mut().clear();
         }
         response
+    }
+
+    /// What every answer says to the browser: never sniff it as another
+    /// type and, for an HTML document (a page, the sign-in callback), who
+    /// may show it in a frame: the app's own origin and its
+    /// [`frame_ancestor`](Self::frame_ancestor)s, so another site cannot
+    /// overlay a signed-in page to steer the visitor's clicks.
+    fn protect(&self, r: &mut Response<Vec<u8>>) {
+        let html = r
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|t| t.trim_start().to_ascii_lowercase().starts_with("text/html"));
+        let h = r.headers_mut();
+        h.entry(header::X_CONTENT_TYPE_OPTIONS)
+            .or_insert(HeaderValue::from_static("nosniff"));
+        if !html {
+            return;
+        }
+        // A policy of its own: browsers enforce it with any other (the
+        // strict CSP, a sandbox).
+        let policy = format!("frame-ancestors {}", self.frame_ancestors());
+        if let Ok(v) = HeaderValue::from_str(&policy) {
+            h.append(header::CONTENT_SECURITY_POLICY, v);
+        }
+        // For browsers without `frame-ancestors`; it cannot name other sites.
+        if self.inner.frame_ancestors.is_empty() {
+            h.insert(
+                header::X_FRAME_OPTIONS,
+                HeaderValue::from_static("SAMEORIGIN"),
+            );
+        }
     }
 
     /// A file this browser uploaded (photos…), private to it.

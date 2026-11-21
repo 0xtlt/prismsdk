@@ -759,16 +759,25 @@ fn served_head(app: crate::WebApp, paths: &[&str]) -> Vec<String> {
 fn s9_the_strict_page_policy_keeps_the_upload_sandbox() {
     let (app, svg, png) = uploads_app("s9-strict", true);
     let heads = served_head(app, &[&svg, &png, "/"]);
-    let csp = |head: &str| {
-        head.lines()
-            .find_map(|l| l.strip_prefix("content-security-policy: "))
-            .unwrap_or("")
-            .to_string()
-    };
-    assert!(sandboxed(&csp(&heads[0])), "{}", heads[0]);
-    assert!(sandboxed(&csp(&heads[1])), "{}", heads[1]);
+    // Browsers enforce every policy sent.
+    let csp = |head: &str| policies(head).iter().any(|p| sandboxed(p));
+    assert!(csp(&heads[0]), "{}", heads[0]);
+    assert!(csp(&heads[1]), "{}", heads[1]);
     // Pages still get the strict policy.
-    assert!(csp(&heads[2]).contains("'nonce-"), "{}", heads[2]);
+    assert!(
+        policies(&heads[2]).iter().any(|p| p.contains("'nonce-")),
+        "{}",
+        heads[2]
+    );
+}
+
+/// The `Content-Security-Policy` headers of a (lower-case) response head.
+#[cfg(feature = "server")]
+fn policies(head: &str) -> Vec<String> {
+    head.lines()
+        .filter_map(|l| l.strip_prefix("content-security-policy: "))
+        .map(str::to_string)
+        .collect()
 }
 
 fn page_cookie(app: &crate::WebApp, path: &str, headers: &[(&str, &str)]) -> Option<String> {
@@ -1531,4 +1540,143 @@ fn s16_a_refused_pick_stops_the_page_and_says_why() {
     );
     assert_eq!(stored_files(&app, sid), 0);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Every value of header `name`.
+fn all(r: &http::Response<Vec<u8>>, name: &str) -> Vec<String> {
+    r.headers()
+        .get_all(name)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect()
+}
+
+/// The `frame-ancestors` of each policy in `policies` that has one.
+fn ancestors(policies: &[String]) -> Vec<String> {
+    policies
+        .iter()
+        .flat_map(|p| p.split(';'))
+        .filter_map(|d| d.trim().strip_prefix("frame-ancestors "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// S35: another site cannot show the app's pages in a frame (to make a
+/// signed-in visitor click in them): pages, the not-found page and the
+/// sign-in callback name who may frame them, by default the app's own
+/// origin only. No answer is sniffed as another type, and private files
+/// keep their sandbox.
+#[test]
+fn s35_only_the_app_frames_its_pages() {
+    let (app, svg, png) = uploads_app("s35-headers", false);
+    let download = crate::downloads::offer(
+        "",
+        Some(SID),
+        "page.html".into(),
+        "text/html".into(),
+        b"<script>alert(1)</script>".to_vec(),
+    );
+    let get = |app: &crate::WebApp, path: &str| {
+        let req = http::Request::get(path)
+            .header("cookie", format!("prism_sid={SID}"))
+            .body(())
+            .unwrap();
+        app.handle(&req)
+    };
+    for path in ["/", "/nowhere", "/_prism/auth/callback?code=c&state=s"] {
+        let r = get(&app, path);
+        assert!(
+            all(&r, "content-type")[0].starts_with("text/html"),
+            "{path}"
+        );
+        assert_eq!(
+            ancestors(&all(&r, "content-security-policy")),
+            ["'self'"],
+            "{path}: {:?}",
+            r.headers()
+        );
+        assert_eq!(all(&r, "x-frame-options"), ["SAMEORIGIN"], "{path}");
+        assert_eq!(all(&r, "x-content-type-options"), ["nosniff"], "{path}");
+    }
+    let client = format!("/{}", app.inner.assets.client());
+    for path in [client.as_str(), &svg, &png, &download] {
+        let r = get(&app, path);
+        assert_eq!(r.status(), http::StatusCode::OK, "{path}");
+        assert_eq!(all(&r, "x-content-type-options"), ["nosniff"], "{path}");
+        if path != client {
+            let csp = all(&r, "content-security-policy");
+            assert!(
+                csp.iter().any(|p| sandboxed(p)),
+                "{path}: {:?}",
+                r.headers()
+            );
+        }
+    }
+    // A portal the app's owner trusts may frame its pages: the policy names
+    // it, and `X-Frame-Options`, which cannot, is left out.
+    let portal = uploads_app("s35-portal", false)
+        .0
+        .frame_ancestor("https://portal.example/")
+        .frame_ancestor("https://portal.example")
+        .frame_ancestor("https://x.example; script-src *")
+        .frame_ancestor("'none'");
+    for path in ["/", "/_prism/auth/callback?code=c&state=s"] {
+        let r = get(&portal, path);
+        assert_eq!(
+            ancestors(&all(&r, "content-security-policy")),
+            ["'self' https://portal.example"],
+            "{path}"
+        );
+        assert!(all(&r, "x-frame-options").is_empty(), "{path}");
+    }
+}
+
+/// S35, with the strict CSP: every policy a page or the sign-in callback
+/// gets (browsers enforce each) lets exactly the configured sites frame it,
+/// and private files keep their sandbox.
+#[cfg(feature = "server")]
+#[test]
+fn s35_the_strict_policy_frames_as_configured_and_keeps_sandboxes() {
+    for portal in [false, true] {
+        let (mut app, svg, png) = uploads_app(&format!("s35-strict-{portal}"), true);
+        let want = if portal {
+            app = app.frame_ancestor("https://portal.example");
+            "'self' https://portal.example"
+        } else {
+            "'self'"
+        };
+        let download = crate::downloads::offer(
+            "",
+            Some(SID),
+            "page.html".into(),
+            "text/html".into(),
+            b"<script>alert(1)</script>".to_vec(),
+        );
+        let paths = ["/", "/_prism/auth/callback?state=s", &svg, &png, &download];
+        let heads = served_head(app, &paths);
+        for (path, head) in paths.iter().zip(&heads).take(2) {
+            let csp = policies(head);
+            assert!(csp.iter().any(|p| p.contains("'nonce-")), "{path}: {head}");
+            let found = ancestors(&csp);
+            assert!(
+                found.len() >= 2 && found.iter().all(|a| a == want),
+                "{path}: {head}"
+            );
+            assert_eq!(
+                head.contains("x-frame-options: sameorigin"),
+                !portal,
+                "{head}"
+            );
+        }
+        for (path, head) in paths.iter().zip(&heads).skip(2) {
+            assert!(
+                policies(head).iter().any(|p| sandboxed(p)),
+                "{path}: {head}"
+            );
+            assert!(
+                head.contains("x-content-type-options: nosniff"),
+                "{path}: {head}"
+            );
+        }
+    }
 }
