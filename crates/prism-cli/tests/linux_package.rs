@@ -7,7 +7,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
 
 const STUBS: [(&str, &str); 4] = [
     (
@@ -38,7 +41,7 @@ exit 0
 ];
 
 struct Run {
-    dir: PathBuf,
+    dir: TempDir,
     ok: bool,
     stderr: String,
 }
@@ -70,13 +73,7 @@ impl Run {
 
 /// Runs `linux-package.sh <package>` in a fresh directory with `env`.
 fn package(pkg: &str, env: &[(&str, &str)]) -> Run {
-    static N: AtomicUsize = AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "prism-s23-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("s23");
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     for (name, body) in STUBS {
@@ -91,8 +88,8 @@ fn package(pkg: &str, env: &[(&str, &str)]) -> Run {
         .arg(pkg)
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-        .env("HOME", &dir)
-        .env("PRISM_PROJECT", &dir)
+        .env("HOME", &*dir)
+        .env("PRISM_PROJECT", &*dir)
         .env("PRISM_LINUX_OUT", dir.join("out"))
         .env("STUB_TARGET", dir.join("target"))
         .env("STUB_LOG", dir.join("cargo.log"))
@@ -162,7 +159,6 @@ fn s23_hostile_metadata_stops_before_staging() {
         assert!(!run.ok, "{pkg} {env:?}: packaged\n{}", run.stderr);
         assert!(!run.built(), "{pkg} {env:?}: built before checking");
         assert!(!run.stage().exists(), "{pkg} {env:?}: staged");
-        std::fs::remove_dir_all(&run.dir).unwrap();
     }
 }
 
@@ -243,5 +239,4 @@ exec '/usr/lib/my-app/my_app' "$@"
     assert!(control.contains("\nVersion: 1.2.0-3~beta+1\n"), "{control}");
     assert!(control.contains(&format!("\nMaintainer: {maintainer}\n")));
     assert!(control.contains(&format!("\nDescription: {description}\n")));
-    std::fs::remove_dir_all(&run.dir).unwrap();
 }

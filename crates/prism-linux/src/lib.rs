@@ -39,6 +39,8 @@ mod security;
 mod services;
 #[cfg(target_os = "linux")]
 mod table;
+#[cfg(all(test, target_os = "linux"))]
+mod temp_dir;
 // The nodes' shared CSS rules: no GTK, tested everywhere.
 mod sheet;
 #[cfg(target_os = "linux")]

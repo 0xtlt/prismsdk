@@ -356,6 +356,8 @@ final class PrismCamera: NSObject, UIImagePickerControllerDelegate, UINavigation
         var lines: [String] = []
         if let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: 0.9) {
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+            // prismKeep copies it to the app's caches: the temp file goes.
+            defer { try? FileManager.default.removeItem(at: tmp) }
             if (try? data.write(to: tmp)) != nil, let path = prismKeep(tmp) { lines.append(prismDescribe(path, name: "Photo.jpg")) }
         }
         replyFiles(id, lines)

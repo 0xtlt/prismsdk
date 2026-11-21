@@ -70,9 +70,11 @@ Every backend registers them at startup:
   (`Inter-SemiBoldItalic.woff2`) and preferred when both exist.
 - **macOS, iOS, iPadOS, tvOS, visionOS, watchOS**: `CTFontManagerRegisterFontsForURL`
   (process scope) from the bundle's `assets/fonts` (and the dev assets folder);
-  embedded fonts the same way, through a file written once in the temporary
-  directory, so a variable font keeps its weights (macOS, iOS, iPadOS, tvOS,
-  visionOS; the first face of a `.ttc`).
+  embedded fonts the same way, through a file written once in the process's
+  `prism-fonts-<pid>` folder of the temporary directory, so a variable font
+  keeps its weights (macOS, iOS, iPadOS, tvOS, visionOS; the first face of a
+  `.ttc`). The folder is removed when the app exits, or by the next app to
+  register a font after one was killed.
 - **Android**: `Typeface.createFromAsset`, found by the family name read from
   the font file (also by its file name). Only the APK's assets: keep the fonts
   in the assets folder too.

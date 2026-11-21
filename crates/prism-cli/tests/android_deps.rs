@@ -6,9 +6,12 @@
 //! (`android-deps.py`) with Python against a local repository.
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
 
 /// Writes a small repository (`lib` 1.0, an AAR needing `dep` 2.0, a JAR)
 /// into `argv[1]`; `argv[2] == "changed"` writes other (harmless) bytes for
@@ -43,17 +46,11 @@ for path, data in files.items():
     print(f"{hashlib.sha256(data).hexdigest()}  {path}")
 "#;
 
-struct Dir(PathBuf);
+struct Dir(TempDir);
 
 impl Dir {
     fn new() -> Self {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "prism-s24-maven-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = TempDir::new("s24-maven");
         std::fs::create_dir_all(&dir).unwrap();
         Dir(dir)
     }
@@ -72,12 +69,6 @@ impl Dir {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8(out.stdout).unwrap()
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

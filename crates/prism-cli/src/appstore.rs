@@ -559,17 +559,26 @@ mod tests {
         if !apps.iter().all(|a| a.exists()) {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("prism-cli-s37-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::temp_dir::TempDir::new("cli-s37");
         std::fs::create_dir_all(&dir).unwrap();
         let victim = dir.join("victim");
         std::fs::write(&victim, "MARKER").unwrap();
+        /// Links at the names the checks once wrote to, in the shared
+        /// temporary directory: removed when dropped, the test failing too.
+        struct Planted([PathBuf; 2]);
+        impl Drop for Planted {
+            fn drop(&mut self) {
+                for link in &self.0 {
+                    let _ = std::fs::remove_file(link);
+                }
+            }
+        }
         let pid = std::process::id();
-        let planted = [
+        let planted = Planted([
             std::env::temp_dir().join(format!("prism-ent-{pid}.plist")),
             std::env::temp_dir().join(format!("prism-profile-{pid}.plist")),
-        ];
-        for link in &planted {
+        ]);
+        for link in &planted.0 {
             let _ = std::fs::remove_file(link);
             std::os::unix::fs::symlink(&victim, link).unwrap();
         }
@@ -589,10 +598,6 @@ mod tests {
                 });
             }
         });
-        for link in &planted {
-            let _ = std::fs::remove_file(link);
-        }
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn expected() -> Expected<'static> {
@@ -619,7 +624,9 @@ mod tests {
     #[test]
     fn checks_api_keys() {
         let pem = crate::jwt::tests::ec_key();
-        let path = std::env::temp_dir().join(format!("prism-asc-{}.p8", std::process::id()));
+        let dir = crate::temp_dir::TempDir::new("asc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("AuthKey.p8");
         std::fs::write(&path, pem).unwrap();
         let mut key = AscKey {
             id: "ABCDE12345".into(),
@@ -634,7 +641,6 @@ mod tests {
             std::fs::write(&path, rsa).unwrap();
             assert!(key.check().unwrap_err().contains("P-256"));
         }
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::create;
-use crate::config::more_tests::TempDir;
+use crate::temp_dir::TempDir;
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -21,7 +21,7 @@ fn read(dir: &Path, file: &str) -> String {
 #[test]
 fn creates_a_project_named_after_the_directory() {
     let tmp = TempDir::new("new");
-    let dir = tmp.0.join("my-cool-app");
+    let dir = tmp.join("my-cool-app");
     create(dir.to_str().unwrap(), Some(repo())).unwrap();
     let cargo = read(&dir, "Cargo.toml");
     assert!(cargo.contains("name = \"my_cool_app\""), "{cargo}");
@@ -98,15 +98,15 @@ fn toml_paths_have_no_escapes() {
 fn rejects_names_that_are_not_crate_names() {
     let tmp = TempDir::new("names");
     for bad in ["1app", "my app", "café", "-x"] {
-        let dir = tmp.0.join(bad);
+        let dir = tmp.join(bad);
         assert!(
             create(dir.to_str().unwrap(), Some(repo())).is_err(),
             "{bad}"
         );
         assert!(!dir.exists(), "{bad}: nothing written");
     }
-    let missing = tmp.0.join("nowhere");
-    let err = create(tmp.0.join("ok").to_str().unwrap(), Some(missing)).unwrap_err();
+    let missing = tmp.join("nowhere");
+    let err = create(tmp.join("ok").to_str().unwrap(), Some(missing)).unwrap_err();
     assert!(err.contains("nowhere"), "{err}");
 }
 
@@ -117,7 +117,7 @@ fn rejects_names_that_are_not_crate_names() {
 #[ignore = "slow: compiles the generated app"]
 fn generated_project_builds() {
     let tmp = TempDir::new("build");
-    let dir = tmp.0.join("hello_prism");
+    let dir = tmp.join("hello_prism");
     create(dir.to_str().unwrap(), Some(repo())).unwrap();
     // Same dependency versions as the workspace, so artifacts are reused.
     std::fs::copy(repo().join("Cargo.lock"), dir.join("Cargo.lock")).unwrap();

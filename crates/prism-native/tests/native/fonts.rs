@@ -72,12 +72,11 @@ fn the_app_s_name_becomes_an_alias_of_the_file_s_family() {
         "Tiny Sans Seven"
     );
     // Saved once, by content, for the platforms that take a file.
-    let dir = std::env::temp_dir().join(format!("prism-native-fonts-{}", std::process::id()));
+    let dir = crate::temp_dir::TempDir::new("native-fonts");
     let path = save(&ready, &dir).unwrap();
     assert_eq!(path.extension().unwrap(), "ttf");
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     assert_eq!(save(&ready, &dir).unwrap(), path);
-    let _ = std::fs::remove_dir_all(dir);
     // WOFF2 is a web format.
     assert!(
         prepare(

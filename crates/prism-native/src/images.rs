@@ -221,27 +221,26 @@ mod tests {
 
     #[test]
     fn embedded_assets_come_before_the_asset_dirs() {
-        let dir = std::env::temp_dir().join(format!("prism-images-dirs-{}", std::process::id()));
+        let dir = crate::temp_dir::TempDir::new("images-dirs");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("logo.png"), b"disk").unwrap();
         std::fs::write(dir.join("other.png"), b"other").unwrap();
         let sources = ImageSources {
             embedded: EmbeddedAssets::new().file("logo.png", &b"binary"[..]),
-            asset_dirs: vec![dir.clone()],
+            asset_dirs: vec![dir.to_path_buf()],
             ..Default::default()
         };
         assert_eq!(load("logo.png", &sources).as_deref(), Some(&b"binary"[..]));
         assert_eq!(load("other.png", &sources).as_deref(), Some(&b"other"[..]));
         assert_eq!(load("../logo.png", &sources), None);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn remote_pictures_send_their_headers_and_skip_the_disk_cache() {
         let url = server(2);
-        let cache = std::env::temp_dir().join(format!("prism-images-{}", std::process::id()));
+        let cache = crate::temp_dir::TempDir::new("images");
         let sources = ImageSources {
-            cache_dir: Some(cache.clone()),
+            cache_dir: Some(cache.to_path_buf()),
             ..Default::default()
         };
         let src = format!("{url}\nAuthorization: Bearer t0ken");
@@ -250,12 +249,11 @@ mod tests {
         assert!(!cache_path(&cache, &url).exists());
         // Without the header: refused.
         assert_eq!(load(&url, &sources), None);
-        let _ = std::fs::remove_dir_all(cache);
     }
 
     #[test]
     fn media_urls_point_at_files_the_player_opens() {
-        let dir = std::env::temp_dir().join(format!("prism-media-{}", std::process::id()));
+        let dir = crate::temp_dir::TempDir::new("media");
         let assets = dir.join("assets");
         std::fs::create_dir_all(&assets).unwrap();
         std::fs::write(assets.join("intro.mp4"), b"mp4").unwrap();
@@ -276,6 +274,5 @@ mod tests {
         assert!(copy.ends_with("media/clips_outro.mp4"));
         assert!(Path::new(file_url_path(&copy).unwrap()).exists());
         assert_eq!(media_url("../secret.mp4", &sources), None);
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

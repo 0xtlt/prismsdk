@@ -571,8 +571,9 @@ mod tests {
             eprintln!("no JDK: bundles are not signed");
             return;
         }
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
+        let dir = crate::temp_dir::TempDir::new("play-s40");
+        std::fs::create_dir_all(&dir).unwrap();
+        let d: &std::path::Path = &dir;
         let run = |tool: &str, args: &[&str]| {
             let out = std::process::Command::new(tool)
                 .args(args)
@@ -776,7 +777,9 @@ mod tests {
     fn publishes_through_an_edit() {
         let Some(json) = account_json() else { return };
         let account = ServiceAccount::parse(&json).unwrap();
-        let aab = std::env::temp_dir().join(format!("prism-play-{}.aab", std::process::id()));
+        let dir = crate::temp_dir::TempDir::new("play");
+        std::fs::create_dir_all(&dir).unwrap();
+        let aab = dir.join("app.aab");
         std::fs::write(&aab, b"AAB!").unwrap();
 
         let (base, log) = mock(false);
@@ -805,6 +808,5 @@ mod tests {
             log.lock().unwrap().last().unwrap(),
             &format!("DELETE {app}/edits/e1")
         );
-        let _ = std::fs::remove_file(&aab);
     }
 }

@@ -631,6 +631,7 @@ pub fn link_app() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::temp_dir::TempDir;
 
     #[test]
     fn manifests_name_the_app() {
@@ -684,9 +685,9 @@ mod tests {
         }
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prism-s24-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+    /// A fresh folder for one test, removed when it ends (failed too).
+    fn scratch(name: &str) -> TempDir {
+        let dir = TempDir::new(&format!("s24-{name}"));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -708,7 +709,6 @@ mod tests {
                 eprintln!("{}: {:?}", p.id, started.elapsed());
             }
         }
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// S24: a different archive under the pinned version (a compromised
@@ -724,7 +724,6 @@ mod tests {
         assert!(!sdk.join("pkg").exists(), "unpacked");
         let left: Vec<_> = fs::read_dir(&sdk).unwrap().flatten().collect();
         assert!(left.is_empty(), "{left:?}");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -758,7 +757,6 @@ mod tests {
         fs::write(vendor.join("pkg/lib/x.txt"), "mine").unwrap();
         fetch(&vendor, &p, true, serve).unwrap();
         assert_eq!(downloads.get(), 2);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Two build scripts fetching at once (the backend's and the app's, on
@@ -794,7 +792,6 @@ mod tests {
             .filter(|n| n != "pkg")
             .collect();
         assert!(left.is_empty(), "{left:?}");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -806,7 +803,7 @@ mod tests {
 
     #[test]
     fn the_runtime_has_its_pri() {
-        let dir = std::env::temp_dir().join(format!("prism-runtime-{}", std::process::id()));
+        let dir = TempDir::new("runtime");
         let native = dir.join("winui/runtimes-framework/win-x64/native");
         fs::create_dir_all(native.join("en-us")).unwrap();
         fs::write(native.join("Microsoft.UI.Xaml.Controls.pri"), "pri").unwrap();
@@ -815,7 +812,6 @@ mod tests {
             .into_iter()
             .map(|(rel, _)| rel)
             .collect();
-        let _ = fs::remove_dir_all(&dir);
         assert_eq!(
             files,
             [

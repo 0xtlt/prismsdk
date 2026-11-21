@@ -27,6 +27,8 @@ mod play;
 mod publish;
 #[cfg(test)]
 mod signing_tests;
+#[cfg(test)]
+mod temp_dir;
 mod watch;
 mod windows;
 mod zip;

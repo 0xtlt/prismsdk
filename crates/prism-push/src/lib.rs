@@ -42,6 +42,8 @@ mod endpoint;
 pub mod fcm;
 mod jwt;
 pub mod secret_file;
+#[cfg(test)]
+mod temp_dir;
 pub mod webpush;
 
 #[cfg(feature = "send")]

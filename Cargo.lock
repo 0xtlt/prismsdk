@@ -2226,7 +2226,6 @@ dependencies = [
 name = "prismsdk-db"
 version = "0.1.0"
 dependencies = [
- "libc",
  "libsqlite3-sys",
  "prismsdk-core",
  "sqlx",

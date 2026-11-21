@@ -6,9 +6,10 @@
 //! the event's deferral): only a drag holding a file the target accepts
 //! (its MIME types or extensions, `PickFiles::accepts`) gets the copy
 //! cursor and the `drop_hover` state, like `draggingEntered:` on macOS; a
-//! folder never counts. On the drop, the accepted files are copied to
-//! `%TEMP%\prism-dropped` off the UI thread (the originals stay where the
-//! user keeps them), then reported (`UiEvent::DropFiles`).
+//! folder never counts. On the drop, the accepted files are copied off the
+//! UI thread to the app's `<data>\picked`, with the files it picks (the
+//! originals stay where the user keeps them), then reported
+//! (`UiEvent::DropFiles`).
 //!
 //! XAML's drag events are routed: a child's `DragEnter` and `DragLeave`
 //! bubble up to the target while the drag stays over it. A leave counts
@@ -21,6 +22,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use prism_core::{Interaction, NodeId, PickFiles, PickedFile, UiEvent};
 use windows::ApplicationModel::DataTransfer::{DataPackageOperation, StandardDataFormats};
@@ -36,6 +39,17 @@ use crate::winui::xaml::Controls::Canvas;
 use crate::winui::xaml::{
     DragEventArgs, DragEventHandler, DragOperationDeferral, FrameworkElement,
 };
+
+/// Where dropped files are copied: the app's `<data>\picked`, where
+/// picked files go too (`pickers::copy_picked`). The app owns the copies,
+/// as on the other backends. Not `%TEMP%`: nothing would remove them
+/// there.
+static FOLDER: OnceLock<PathBuf> = OnceLock::new();
+
+/// Sets [`FOLDER`], once, before the window takes drops.
+pub fn set_folder(dir: PathBuf) {
+    let _ = FOLDER.set(dir);
+}
 
 /// A node taking files.
 #[derive(Default)]
@@ -290,10 +304,13 @@ fn dropped(id: NodeId, a: &DragEventArgs, accept: PickFiles) -> Result<()> {
             .map(|(_, path, _)| path)
             .collect();
         let queue = queue.clone();
+        let Some(dir) = FOLDER.get() else {
+            return Ok(());
+        };
         std::thread::spawn(move || {
             let files: Vec<PickedFile> = paths
                 .into_iter()
-                .filter_map(|p| copy_dropped(std::path::Path::new(&p)))
+                .filter_map(|p| copy_dropped(Path::new(&p), dir))
                 .collect();
             if files.is_empty() {
                 return;
@@ -319,14 +336,13 @@ fn hover(id: NodeId, on: bool) {
     }));
 }
 
-/// A copy of a dropped file the app may keep (`%LOCALAPPDATA%\Temp`):
-/// the original stays where the user has it.
-fn copy_dropped(src: &std::path::Path) -> Option<PickedFile> {
+/// A copy of a dropped file in `dir`, which the app may keep: the original
+/// stays where the user has it.
+fn copy_dropped(src: &Path, dir: &Path) -> Option<PickedFile> {
     if !src.is_file() {
         return None;
     }
-    let dir = std::env::temp_dir().join("prism-dropped");
-    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::create_dir_all(dir).ok()?;
     let name = src.file_name()?.to_string_lossy().to_string();
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -339,4 +355,29 @@ fn copy_dropped(src: &std::path::Path) -> Option<PickedFile> {
         name,
         size,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dropped file is copied to the folder given (the app's
+    /// `<data>\picked`), never to the temp directory, under a name of its
+    /// own; the original stays.
+    #[test]
+    fn dropped_files_are_copied_where_picked_ones_go() {
+        let dir = crate::temp_dir::TempDir::new("dropped");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("Report Q3.pdf");
+        std::fs::write(&src, b"%PDF").unwrap();
+        let picked = dir.join("data").join("picked");
+        let a = copy_dropped(&src, &picked).unwrap();
+        assert_eq!(a.name, "Report Q3.pdf");
+        assert_eq!(a.size, 4);
+        assert_eq!(Path::new(&a.path).parent(), Some(picked.as_path()));
+        assert_eq!(std::fs::read(&a.path).unwrap(), b"%PDF");
+        assert!(src.exists(), "the original stays");
+        // A folder is not copied.
+        assert!(copy_dropped(&picked, &picked).is_none());
+    }
 }

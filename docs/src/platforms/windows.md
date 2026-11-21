@@ -195,10 +195,11 @@ kinds and services come next (see [Not yet](#not-yet)).
   have none of. Drags between views (`draggable`,
   `on_drop_payload`) find their target with prism-native's `locate_drag`,
   with a see-through preview and autoscroll. Files dragged from Explorer
-  land on `on_drop_files` targets (copies in `%TEMP%\prism-dropped`): as
-  on macOS, the drag's files are read when it enters, and only a target
-  that accepts one of them (MIME type or extension) shows the copy cursor
-  and its `drop_hover` style; folders are left out.
+  land on `on_drop_files` targets (copies in the app's `<data>\picked`,
+  with the picked files): as on macOS, the drag's files are read when it
+  enters, and only a target that accepts one of them (MIME type or
+  extension) shows the copy cursor and its `drop_hover` style; folders are
+  left out.
 - **Accessibility:** WinUI's own UI Automation peers for its controls
   (Button, Edit, CheckBox, Slider, ComboBox, the tab bar's list items…);
   the views Prism draws itself have custom automation peers (`peers.rs`:

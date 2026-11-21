@@ -511,7 +511,7 @@ fn cargo_dirs(root: &Path) -> Result<(PathBuf, PathBuf), String> {
 
 #[cfg(test)]
 #[path = "config_tests.rs"]
-pub(crate) mod more_tests;
+mod more_tests;
 
 #[cfg(test)]
 mod tests {

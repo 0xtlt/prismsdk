@@ -1,31 +1,15 @@
 //! `Prism.toml` parsing and project loading.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use super::{Project, parse};
+use crate::temp_dir::TempDir;
 
-/// A fresh directory, removed when dropped.
-pub(crate) struct TempDir(pub PathBuf);
-
-impl TempDir {
-    pub(crate) fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("prism-cli-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
-    }
-
-    pub(crate) fn write(&self, path: &str, contents: &str) {
-        let p = self.0.join(path);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, contents).unwrap();
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+/// Writes `contents` at `path` under `dir`, making the folders it needs.
+fn write(dir: &Path, path: &str, contents: &str) {
+    let p = dir.join(path);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, contents).unwrap();
 }
 
 #[test]
@@ -55,12 +39,12 @@ fn sections_are_trimmed_and_keys_without_a_section_are_top_level() {
 }
 
 fn project(dir: &TempDir, prism_toml: Option<&str>, cargo_toml: &str) -> Result<Project, String> {
-    dir.write("Cargo.toml", cargo_toml);
-    dir.write("src/lib.rs", "");
+    write(dir, "Cargo.toml", cargo_toml);
+    write(dir, "src/lib.rs", "");
     if let Some(p) = prism_toml {
-        dir.write("Prism.toml", p);
+        write(dir, "Prism.toml", p);
     }
-    Project::load(&dir.0)
+    Project::load(dir)
 }
 
 const CARGO: &str =
@@ -167,9 +151,9 @@ fn network_allow_http_lists_hosts() {
 #[test]
 fn every_section_of_prism_toml() {
     let dir = TempDir::new("all");
-    dir.write("locales/en.json", "{}");
-    dir.write("locales/fr.json", "{}");
-    dir.write("locales/notes.txt", "");
+    write(&dir, "locales/en.json", "{}");
+    write(&dir, "locales/fr.json", "{}");
+    write(&dir, "locales/notes.txt", "");
     let p = project(
         &dir,
         Some(
@@ -198,7 +182,7 @@ icloud = true
     assert_eq!(p.package, "my_app");
     assert_eq!(p.bundle_id, "com.example.app");
     assert_eq!(p.version, "1.0.0");
-    assert_eq!(p.icon, Some(dir.0.join("art/icon.png")));
+    assert_eq!(p.icon, Some(dir.join("art/icon.png")));
     assert_eq!(
         p.permissions,
         [
@@ -211,7 +195,7 @@ icloud = true
     assert_eq!(p.simulator.as_deref(), Some("iPhone 17"));
     assert_eq!(p.device.as_deref(), Some("My iPhone"));
     assert!(p.icloud);
-    assert_eq!(p.root, dir.0);
+    assert_eq!(p.root, dir.to_path_buf());
     assert!(p.target_dir.ends_with("target"));
 }
 
@@ -231,7 +215,7 @@ fn defaults_come_from_cargo_toml() {
 #[test]
 fn workspace_versions_and_custom_locale_dirs() {
     let dir = TempDir::new("ws");
-    dir.write("strings/de.json", "{}");
+    write(&dir, "strings/de.json", "{}");
     let p = project(
         &dir,
         Some("[app]\nlocales = \"strings\"\nicon = \"\"\n[ios]\nicloud = false\n"),
@@ -248,8 +232,8 @@ fn workspace_versions_and_custom_locale_dirs() {
 #[test]
 fn a_project_needs_a_package_name() {
     let dir = TempDir::new("nopkg");
-    dir.write("Prism.toml", "[app]\nname = \"X\"\n");
-    let err = Project::load(&dir.0).err().unwrap();
+    write(&dir, "Prism.toml", "[app]\nname = \"X\"\n");
+    let err = Project::load(&dir).err().unwrap();
     assert!(err.contains("package"), "{err}");
 }
 
@@ -328,8 +312,23 @@ fn web_islands_and_their_budget() {
     let dir = TempDir::new("islands");
     let toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n";
     let p = project(&dir, Some("[web]\nislands = [\"islands/chart\"]\n"), toml).unwrap();
-    assert_eq!(p.islands, [dir.0.join("islands/chart")]);
+    assert_eq!(p.islands, [dir.join("islands/chart")]);
     assert_eq!(p.island_budget_kb, 40.);
     let bad = project(&dir, Some("[web]\nisland_budget_kb = \"lots\"\n"), toml);
     assert!(bad.err().unwrap().contains("island_budget_kb"));
+}
+
+#[test]
+fn a_failing_test_leaves_no_temp_folder() {
+    let made = std::sync::Mutex::new(None);
+    let failed = std::panic::catch_unwind(|| {
+        let dir = crate::temp_dir::TempDir::new("guard");
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        std::fs::write(dir.join("data/file"), "x").unwrap();
+        *made.lock().unwrap() = Some(dir.to_path_buf());
+        panic!("a test that fails (on purpose)");
+    });
+    assert!(failed.is_err());
+    let dir = made.lock().unwrap().take().expect("the folder was made");
+    assert!(!dir.exists(), "{} is left behind", dir.display());
 }

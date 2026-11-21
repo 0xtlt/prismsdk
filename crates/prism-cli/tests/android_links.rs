@@ -10,6 +10,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
+
 fn java_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("platform/android/java/dev/prism")
 }
@@ -50,7 +54,7 @@ const POPUPS: &[(bool, Option<&str>, bool)] = &[
 /// `PrismLinks.java` and a `main` answering cases (tab-separated) on stdin,
 /// compiled; `None` without a JDK (macOS has a `javac` that fails without
 /// one).
-fn compiled() -> Option<PathBuf> {
+fn compiled() -> Option<TempDir> {
     if !Command::new("javac")
         .arg("-version")
         .output()
@@ -59,8 +63,7 @@ fn compiled() -> Option<PathBuf> {
         eprintln!("no JDK: PrismLinks is not run");
         return None;
     }
-    let dir = std::env::temp_dir().join(format!("prism-cli-s41-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("cli-s41");
     std::fs::create_dir_all(&dir).unwrap();
     let check = dir.join("LinksCheck.java");
     std::fs::write(
@@ -97,7 +100,7 @@ public class LinksCheck {
         .arg("--release")
         .arg("17")
         .arg("-d")
-        .arg(&dir)
+        .arg(&*dir)
         .arg(java_dir().join("PrismLinks.java"))
         .arg(&check)
         .output()
@@ -117,7 +120,7 @@ fn s41_only_a_tap_opens_and_only_web_mail_and_phone_links() {
     };
     let mut java = Command::new("java")
         .arg("-cp")
-        .arg(&dir)
+        .arg(&*dir)
         .arg("dev.prism.LinksCheck")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -149,7 +152,6 @@ fn s41_only_a_tap_opens_and_only_web_mail_and_phone_links() {
             "gesture {gesture}, sandbox {sandbox:?}"
         );
     }
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Every way out of the app goes through the policy: a new window asks

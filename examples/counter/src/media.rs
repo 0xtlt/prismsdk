@@ -1,9 +1,10 @@
 //! `/components/media`: a web page and a video inside the app.
 //!
-//! - `web_view`: natively a local page (written next to the app's
-//!   temporary files) that talks to the app both ways: it posts "ready"
-//!   once loaded and a message per tap on its button; "Send a message"
-//!   posts to it, and it answers `got "hello 1"`. On the web, a public
+//! - `web_view`: natively a local page (written to a folder of its own
+//!   in the app's data directory) that talks to the app both ways: it
+//!   posts "ready" once loaded and a message per tap on its button;
+//!   "Send a message" posts to it, and it answers `got "hello 1"`. Without
+//!   a data directory (headless tests), and on the web, a public
 //!   page in a frame. Tests load their own page under a sandbox:
 //!   `PRISM_WEB_URL`, `PRISM_WEB_SANDBOX` (`scripts,forms,popups,same-origin`,
 //!   empty for none). Android apps get no environment: there, the values
@@ -66,8 +67,10 @@ pub(crate) struct MediaDemo {
 impl MediaDemo {
     pub fn new(cx: &mut Context<Self>) -> Self {
         MediaDemo {
-            url: test_env("PRISM_WEB_URL", option_env!("PRISM_WEB_URL"))
-                .unwrap_or_else(|| page_url(cx.platform() == Platform::Web)),
+            url: test_env("PRISM_WEB_URL", option_env!("PRISM_WEB_URL")).unwrap_or_else(|| {
+                let dir = cx.data_dir().filter(|_| cx.platform() != Platform::Web);
+                page_url(dir.map(|d| d.join("web-page")).as_deref())
+            }),
             from_page: None,
             loaded: None,
             sent: 0,
@@ -78,14 +81,17 @@ impl MediaDemo {
     }
 }
 
-/// The page to show: natively the local page as a `file://` URL.
-fn page_url(web: bool) -> String {
-    if web {
-        return "https://example.com".into();
-    }
-    let path = std::env::temp_dir().join("prism-counter-page.html");
-    if std::fs::write(&path, PAGE).is_err() {
-        return "https://example.com".into();
+/// The page to show: natively the local page as a `file://` URL, written
+/// to `dir`. A folder of its own: web views may read the page's folder.
+/// Without one (on the web, or without a data directory), a public page.
+fn page_url(dir: Option<&std::path::Path>) -> String {
+    let fallback = || "https://example.com".to_string();
+    let Some(dir) = dir else {
+        return fallback();
+    };
+    let path = dir.join("page.html");
+    if std::fs::create_dir_all(dir).is_err() || std::fs::write(&path, PAGE).is_err() {
+        return fallback();
     }
     let path = path.display().to_string().replace('\\', "/");
     if path.starts_with('/') {

@@ -108,12 +108,36 @@ fn register_apple_font_file(file: &Path) -> bool {
     }
 }
 
-/// Where font bytes are kept as a file to register them (#150): the cache
-/// directory, named after their content, written once.
+/// Where font bytes are kept as a file to register them (#150): this
+/// process's folder, named after their content, written once.
 #[cfg(target_vendor = "apple")]
 fn font_cache_file(bytes: &[u8]) -> Option<PathBuf> {
+    font_file_in(font_folder(), bytes)
+}
+
+/// `<temp>/prism-fonts-<pid>`. Core Text reads a font registered by URL
+/// from its file for as long as the process draws with it, so the files
+/// stay while it runs: the folder is removed when it exits, or, when the
+/// process is killed (iOS ends apps that way), by the next one to register
+/// a font.
+#[cfg(target_vendor = "apple")]
+fn font_folder() -> &'static Path {
+    static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FOLDER.get_or_init(|| {
+        let temp = std::env::temp_dir();
+        crate::leftovers::sweep(&temp, "prism-fonts-");
+        let folder = temp.join(format!("prism-fonts-{}", std::process::id()));
+        crate::leftovers::remove_at_exit(folder.clone());
+        folder
+    })
+}
+
+/// The file in `dir` holding `bytes`, named after them: written aside,
+/// then moved, unless it is there already.
+#[cfg(target_vendor = "apple")]
+fn font_file_in(dir: &Path, bytes: &[u8]) -> Option<PathBuf> {
     use std::hash::{Hash, Hasher};
-    // A fixed-key hash: the same bytes give the same name in every run.
+    // A fixed-key hash: the same bytes give the same name each time.
     let mut h = std::hash::DefaultHasher::new();
     bytes.hash(&mut h);
     let ext = match bytes.get(..4) {
@@ -121,12 +145,11 @@ fn font_cache_file(bytes: &[u8]) -> Option<PathBuf> {
         Some(b"ttcf") => "ttc",
         _ => "ttf",
     };
-    let dir = std::env::temp_dir().join("prism-fonts");
     let path = dir.join(format!("{:016x}-{}.{ext}", h.finish(), bytes.len()));
     let fresh = std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64);
     if !fresh {
-        std::fs::create_dir_all(&dir).ok()?;
-        // Written aside, then moved: another process never reads half a file.
+        std::fs::create_dir_all(dir).ok()?;
+        // Written aside, then moved: another thread never reads half a file.
         let part = path.with_extension(format!("{}.{}", ext, std::process::id()));
         std::fs::write(&part, bytes).ok()?;
         std::fs::rename(&part, &path).ok()?;
@@ -300,23 +323,23 @@ mod tests {
     #[cfg(target_vendor = "apple")]
     #[test]
     fn font_bytes_get_one_cache_file_per_content() {
-        let a = font_cache_file(b"\0\x01\0\0 fake font a").unwrap();
-        assert_eq!(font_cache_file(b"\0\x01\0\0 fake font a").unwrap(), a);
+        let dir = crate::temp_dir::TempDir::new("font-cache");
+        let a = font_file_in(&dir, b"\0\x01\0\0 fake font a").unwrap();
+        assert_eq!(font_file_in(&dir, b"\0\x01\0\0 fake font a").unwrap(), a);
         assert_eq!(std::fs::read(&a).unwrap(), b"\0\x01\0\0 fake font a");
         assert_eq!(a.extension().unwrap(), "ttf");
-        let b = font_cache_file(b"OTTO fake font b").unwrap();
+        let b = font_file_in(&dir, b"OTTO fake font b").unwrap();
         assert_ne!(a, b);
         assert_eq!(b.extension().unwrap(), "otf");
         // Not a font: Core Text refuses it, nothing breaks.
-        assert!(!register_apple_font_data(b"not a font at all"));
-        for f in [a, b] {
-            let _ = std::fs::remove_file(f);
-        }
+        let not_a_font = font_file_in(&dir, b"not a font at all").unwrap();
+        assert!(!register_apple_font_file(&not_a_font));
+        assert!(!register_apple_graphics_font(b"not a font at all"));
     }
 
     #[test]
     fn fonts_are_found_under_assets_fonts() {
-        let dir = std::env::temp_dir().join(format!("prism-fonts-{}", std::process::id()));
+        let dir = crate::temp_dir::TempDir::new("font-files");
         std::fs::create_dir_all(dir.join("fonts/extra")).unwrap();
         for f in [
             "fonts/B.otf",
@@ -327,7 +350,7 @@ mod tests {
         ] {
             std::fs::write(dir.join(f), b"").unwrap();
         }
-        let files: Vec<String> = font_files(std::slice::from_ref(&dir))
+        let files: Vec<String> = font_files(&[dir.to_path_buf()])
             .iter()
             .map(|p| {
                 p.strip_prefix(&dir)
@@ -337,7 +360,6 @@ mod tests {
             })
             .collect();
         assert_eq!(files, ["fonts/A.TTF", "fonts/B.otf", "fonts/extra/C.ttc"]);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
