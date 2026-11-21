@@ -66,13 +66,9 @@ pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: 
     let scene = &w.scene;
     let any_global = scene.nodes.values().any(|n| n.keys_global);
     let target = focus.and_then(|f| scene.find_up(f, |n| n.keys_local));
-    let field = focus
-        .and_then(|f| w.views.get(&f))
-        .and_then(|v| match &v.content {
-            Content::Field(t) => Some(t.clone()),
-            _ => None,
-        });
-    let editing = field.is_some()
+    let content = focus.and_then(|f| w.views.get(&f)).map(|v| &v.content);
+    let field = matches!(content, Some(Content::Field(_) | Content::Rich(_)));
+    let editing = field
         || focus
             .and_then(|f| scene.get(f))
             .is_some_and(|n| n.is_text_field());
@@ -81,21 +77,16 @@ pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: 
     if target.is_none() && (typing || !any_global) {
         return false;
     }
-    let selection = field.and_then(|t| {
-        let text = t.Text().ok()?.to_string();
-        let a = t.SelectionStart().ok()?.max(0) as usize;
-        let b = a + t.SelectionLength().ok()?.max(0) as usize;
-        Some(prism_core::SelectionEvent::new(
-            prism_native::fields::utf16_to_chars(&text, a),
-            prism_native::fields::utf16_to_chars(&text, b),
-        ))
-    });
+    // The field's selection and caret edges (#211), for `consume_key_at`.
+    let (selection, edges) = content
+        .and_then(crate::carets::caret_state)
+        .map_or((None, None), |(s, e)| (Some(s), Some(e)));
     let key = KeyEvent {
         key: name.clone(),
         modifiers,
         repeat,
         selection,
-        edges: None,
+        edges,
     };
     if up {
         dispatch(UiEvent::KeyUp(target, key));

@@ -105,7 +105,7 @@ div()
 | iOS, iPadOS, visionOS | `caretRect(for:)` of the caret against `beginningOfDocument` and `endOfDocument` |
 | Android | `Layout.getLineForOffset` against `getLineCount` |
 | Linux (GTK) | `GtkTextView` iterator locations of the caret, the start and the end |
-| Windows | not yet: no edges are reported, so a declared key is always taken |
+| Windows | `TextBox::GetRectFromCharacterIndex` of the caret against the start and end of the text; rich inputs: RichEdit's `ITextRange::GetRect` |
 
 ## Middle, back and forward clicks
 

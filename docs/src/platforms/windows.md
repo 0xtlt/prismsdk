@@ -650,7 +650,7 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 
 ## Not yet
 
-- **Views and input:** `consume_key_at` gets no caret edges; held keys are not released
+- **Views and input:** held keys are not released
   when the window turns inactive; no lifecycle phases; `.cursor(..)`,
   `object_position`, `Scrollbar::Hidden`, `tabular_nums` and underline
   colors are ignored; custom window chrome; the runtime's layers (toasts)

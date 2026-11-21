@@ -1,6 +1,7 @@
 //! Pure helpers of the Windows backend (no Win32 types, so they are
 //! tested on every host): virtual-key codes as the web's
-//! `KeyboardEvent.key` names, and SF Symbol names as Segoe Fluent Icons.
+//! `KeyboardEvent.key` names, a text field caret's edges, and SF Symbol
+//! names as Segoe Fluent Icons.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
@@ -151,9 +152,65 @@ pub fn fluent_icon(symbol: &str) -> Option<char> {
     char::from_u32(code)
 }
 
+/// Where a multi-line field's lines are, measured in the field: the
+/// middles of the caret's line, of the first and of the last line, and
+/// the caret's height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lines {
+    pub caret: f32,
+    pub first: f32,
+    pub last: f32,
+    pub height: f32,
+}
+
+/// Where a text field's caret is (#211), with nothing selected: before
+/// character `caret` of `len`; on the first or last visual line from
+/// `lines` (a multi-line field's, wrapping included), always for one line
+/// (`None`).
+pub fn caret_edges(caret: usize, len: usize, lines: Option<Lines>) -> prism_core::CaretEdges {
+    let same = |y: f32| {
+        lines
+            .as_ref()
+            .is_none_or(|l| (y - l.caret).abs() < l.height.max(1.) / 2.)
+    };
+    prism_core::CaretEdges {
+        start: caret == 0,
+        end: caret >= len,
+        first_line: caret == 0 || same(lines.map_or(0., |l| l.first)),
+        last_line: caret >= len || same(lines.map_or(0., |l| l.last)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caret_edges_from_the_lines() {
+        // One line: always on the first and last line.
+        let one = caret_edges(3, 8, None);
+        assert!(!one.start && !one.end && one.first_line && one.last_line);
+        assert!(caret_edges(0, 8, None).start && caret_edges(8, 8, None).end);
+        // Three lines 20 high, the caret on the middle one.
+        let lines = |caret| Lines {
+            caret,
+            first: 10.,
+            last: 50.,
+            height: 20.,
+        };
+        let mid = caret_edges(12, 30, Some(lines(30.)));
+        assert!(!mid.first_line && !mid.last_line && !mid.start && !mid.end);
+        let top = caret_edges(4, 30, Some(lines(10.5)));
+        assert!(top.first_line && !top.last_line);
+        let bottom = caret_edges(25, 30, Some(lines(49.)));
+        assert!(!bottom.first_line && bottom.last_line);
+        // The very start and end are on their lines, whatever was measured.
+        assert!(caret_edges(0, 30, Some(lines(30.))).first_line);
+        assert!(caret_edges(30, 30, Some(lines(30.))).last_line);
+        // An empty field: every edge.
+        let empty = caret_edges(0, 0, Some(lines(10.)));
+        assert!(empty.start && empty.end && empty.first_line && empty.last_line);
+    }
 
     #[test]
     fn virtual_keys_map_to_web_names() {

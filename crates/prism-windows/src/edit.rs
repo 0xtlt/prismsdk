@@ -95,7 +95,7 @@ fn text_of(doc: &RichEditTextDocument) -> Result<String> {
 }
 
 /// The selection in characters, and the text.
-fn selection(r: &RichEditBox) -> Result<(SelectionEvent, String)> {
+pub(crate) fn selection(r: &RichEditBox) -> Result<(SelectionEvent, String)> {
     let doc = r.Document()?;
     let text = text_of(&doc)?;
     let sel = doc.Selection()?;
