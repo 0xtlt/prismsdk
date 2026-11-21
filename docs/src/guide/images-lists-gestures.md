@@ -86,7 +86,7 @@ list.update(cx, |l, cx| l.set_keys(new_keys, cx)); // rows added or removed
 - While a row is dragged, `dragging()` gives `(from, to)`, where it would go if dropped now, and `handle_id(i)` names row `i`'s handle for `cx.focus`.
 - The dragged row is drawn as a lifted copy with a shadow, so give rows a background.
 - Screen readers hear each handle as a "Reorder" button with the row's position ("2 of 5") and a hint about the arrow keys, in the app's language (`prism.reorder`, `prism.reorder_hint` and `prism.reorder_position` in the app's translations override them).
-- It is built on Prism's drag and key events, so it works wherever they do: the web, macOS, iOS, iPadOS, visionOS, Android, Linux and Windows (by drag only: a view with keys takes no focus there yet). tvOS has no drag, but the keys still move rows there.
+- It is built on Prism's drag and key events, so it works wherever they do: the web, macOS, iOS, iPadOS, visionOS, Android, Linux and Windows. tvOS has no drag, but the keys still move rows there.
 
 `ReorderList::with_options` lays it out differently (#201): rows as tall as their content, and the app's own handle at either edge.
 

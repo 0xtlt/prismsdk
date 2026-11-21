@@ -53,6 +53,7 @@
 //! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
 //! | `scene3d`, `dxgl` | 3D scenes: prism-native's OpenGL renderer, in WGL, to a swap chain |
 //! | `keyboard` | key presses for Prism's key listeners |
+//! | `keyview` | views listening to keys take the keyboard focus |
 //! | `smoke`, `inject`, `touch` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
 //! | `perf`, `profile` | `PRISM_TRACE`: where startup and update time goes; `PRISM_PROFILE`: the UI thread's stacks |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
@@ -130,6 +131,8 @@ mod imp;
 mod inject;
 #[cfg(target_os = "windows")]
 mod keyboard;
+#[cfg(target_os = "windows")]
+mod keyview;
 // Key names and icon glyphs: no Win32, tested everywhere.
 mod keys;
 #[cfg(target_os = "windows")]

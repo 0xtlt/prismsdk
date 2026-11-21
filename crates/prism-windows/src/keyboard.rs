@@ -56,6 +56,10 @@ pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: 
     let Some(name) = crate::keys::key_name(vk, typed) else {
         return false;
     };
+    if !up {
+        // Keyboard input: focus moved now shows the focus visual.
+        s.renderer.widgets.focus_visible = true;
+    }
     let modifiers = modifiers();
     let w = &s.renderer.widgets;
     let focus = w.focus;

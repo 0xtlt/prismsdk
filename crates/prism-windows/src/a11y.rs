@@ -84,7 +84,11 @@ pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> 
     // its bar are WinUI's), as on macOS.
     let bare = matches!(v.kind, NodeKind::Stack | NodeKind::Tabs) && v.button.is_none();
     if !bare && (v.button.is_some() || v.content.element().is_none()) {
-        let s = access::semantics(a, v.button.is_some());
+        let mut s = access::semantics(a, v.button.is_some());
+        // A view listening to keys whose canvas takes the focus.
+        if v.button.is_none() && crate::keyview::is(id) {
+            s = access::key_view(s);
+        }
         AutomationProperties::SetLandmarkType(
             &target,
             match s.landmark {

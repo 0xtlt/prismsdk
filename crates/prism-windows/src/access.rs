@@ -89,6 +89,8 @@ pub struct Semantics {
     pub element: bool,
     /// Out of the tree with everything inside (decorations, duplicates).
     pub hidden: bool,
+    /// Takes the keyboard focus (a view listening to keys: `on_key_down`).
+    pub focusable: bool,
 }
 
 /// The semantics of a clickable view (`clickable`) or a container.
@@ -168,7 +170,21 @@ pub fn semantics(a: &Accessibility, clickable: bool) -> Semantics {
         disabled: a.disabled,
         element: control.is_some() && !a.hidden,
         hidden: a.hidden,
+        focusable: false,
     }
+}
+
+/// The semantics `s` of a view listening to keys (`on_key_down`), whose
+/// canvas is a focus stop: keyboard focusable, and an element of its own
+/// (a group when its role gives no other type) so the reader announces
+/// it as the focus lands on it.
+pub fn key_view(mut s: Semantics) -> Semantics {
+    s.focusable = true;
+    if !s.hidden {
+        s.control.get_or_insert(Control::Group);
+        s.element = true;
+    }
+    s
 }
 
 /// What a sheet or dialog shown as a panel tells UI Automation: a dialog
@@ -333,5 +349,26 @@ mod tests {
         assert_eq!(dialog_name(Some(""), &texts[..2]), Some("New task"));
         assert_eq!(dialog_name(None, &[(" ", 0), ("Body", 0)]), Some("Body"));
         assert_eq!(dialog_name(None, &[]), None);
+    }
+
+    #[test]
+    fn a_key_view_is_a_focusable_element() {
+        let plain = key_view(semantics(&Accessibility::default(), false));
+        assert!(plain.focusable && plain.element);
+        assert_eq!(plain.control, Some(Control::Group));
+        // Its own role stays.
+        let slider = key_view(semantics(&a11y(Role::Slider), false));
+        assert_eq!(slider.control, Some(Control::Slider));
+        assert!(slider.focusable && slider.element);
+        // Hidden: out of the tree, still focusable.
+        let hidden = key_view(semantics(
+            &Accessibility {
+                hidden: true,
+                ..Default::default()
+            },
+            false,
+        ));
+        assert!(hidden.focusable && !hidden.element);
+        assert!(!semantics(&Accessibility::default(), true).focusable);
     }
 }

@@ -968,6 +968,12 @@ pub fn run(config: AppConfig, init: AppInit) {
                 if consumed {
                     continue;
                 }
+            } else if matches!(
+                msg.message,
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN | WM_POINTERDOWN
+            ) {
+                // A press: focus moved now shows no focus visual.
+                with_state(|s| s.renderer.widgets.focus_visible = false);
             }
             if let Some(pre) = pre
                 && pre(&msg).as_bool()

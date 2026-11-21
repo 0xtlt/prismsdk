@@ -174,7 +174,12 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Input:** XAML's: pointer, touch, pen, wheel and touchpads (with
   `ScrollViewer`'s inertia), keyboard focus with Tab, access keys. Key
   presses also go to Prism's key listeners first (`on_key_down`,
-  `consume_keys`). Context menus (`set_menu`) and pop-up menus
+  `consume_keys`). A view with `on_key_down` takes the focus like a
+  control: a clickable one through its button, any other as its canvas
+  made a Tab stop (`UIElement.IsTabStop`), focused by a press (no focus
+  visual) and by `cx.focus` (the system's focus visual after keyboard
+  input), and read by UI Automation as a keyboard-focusable group (or its
+  role). Context menus (`set_menu`) and pop-up menus
   (`show_menu`) are `MenuFlyout`s. Pointer events reach Prism's
   listeners: hover and moves (`on_pointer_*`), drags with any button past
   the system's drag distance (a touch on a node that drags after a long
@@ -639,8 +644,7 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 
 ## Not yet
 
-- **Views and input:** a view with `on_key_down` takes no keyboard focus
-  (controls and clickable views do); clicks carry no position, keys or
+- **Views and input:** clicks carry no position, keys or
   count; `consume_key_at` gets no caret edges; held keys are not released
   when the window turns inactive; no lifecycle phases; `.cursor(..)`,
   `object_position`, `Scrollbar::Hidden`, `tabular_nums` and underline
