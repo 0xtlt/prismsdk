@@ -15,8 +15,8 @@ div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
 
 `picture("logo.png")` names an app asset: a file of the assets folder
 (`Application::assets`, copied into native bundles), or one compiled into the
-binary with `Application::embedded_assets`, found first (web, macOS, iOS and
-Linux; Android and watchOS read the bundle's folder only). See
+binary with `Application::embedded_assets`, found first (web, macOS, iOS, Linux
+and Windows; Android and watchOS read the bundle's folder only). See
 [Assets compiled into the binary](../platforms/web.md#assets-compiled-into-the-binary).
 
 **Size.** A picture with no size is as wide as the image (narrower if it must) and as tall as its ratio says. Give it only a width (`w(px(480.))`, `w_full()`, a percentage) and its height follows the image's own ratio once it has loaded (#208), wider than the image included: portrait photos, screenshots and panoramas keep their proportions without the app reading their dimensions. Until it loads it is 0 high: give it a `min_h` (or an `aspect_ratio` you know) to hold the place. A height, or an `aspect_ratio`, wins over the image's ratio (then `fill()` crops and `fit()` letterboxes).
@@ -27,7 +27,7 @@ Linux; Android and watchOS read the bundle's folder only). See
 picture(cover).w_full().h(px(220.)).object_position(0.5, self.cover_y)   // drag to set cover_y
 ```
 
-The web sets `object-position`; macOS and iOS show the part of the image that covers the frame (`contentsRect`), Android a matrix, Linux a paintable that covers the picture around the point. It follows the frame as it resizes, and has no effect with `fit()`.
+The web sets `object-position`; macOS and iOS show the part of the image that covers the frame (`contentsRect`), Android a matrix, Linux a paintable that covers the picture around the point. Not yet on Windows: it crops around the center. It follows the frame as it resizes, and has no effect with `fit()`.
 
 ## Videos
 
@@ -86,7 +86,7 @@ list.update(cx, |l, cx| l.set_keys(new_keys, cx)); // rows added or removed
 - While a row is dragged, `dragging()` gives `(from, to)`, where it would go if dropped now, and `handle_id(i)` names row `i`'s handle for `cx.focus`.
 - The dragged row is drawn as a lifted copy with a shadow, so give rows a background.
 - Screen readers hear each handle as a "Reorder" button with the row's position ("2 of 5") and a hint about the arrow keys, in the app's language (`prism.reorder`, `prism.reorder_hint` and `prism.reorder_position` in the app's translations override them).
-- It is built on Prism's drag and key events, so it works wherever they do: the web, macOS, iOS, iPadOS, visionOS, Android and Linux. tvOS has no drag, but the keys still move rows there.
+- It is built on Prism's drag and key events, so it works wherever they do: the web, macOS, iOS, iPadOS, visionOS, Android, Linux and Windows (by drag only: a view with keys takes no focus there yet). tvOS has no drag, but the keys still move rows there.
 
 `ReorderList::with_options` lays it out differently (#201): rows as tall as their content, and the app's own handle at either edge.
 
@@ -115,6 +115,7 @@ ReorderList::with_options(
 | watchOS | `URLRequest` with the headers on an ephemeral `URLSession` | memory only |
 | Android | `HttpURLConnection.setRequestProperty`, off the main thread | `setUseCaches(false)` |
 | Linux | Prism's HTTP client on a GIO worker thread, decoded by `GdkTexture` | none |
+| Windows | Prism's HTTP client, off the UI thread, decoded by WIC | none |
 | Web | **the server**: the page gets `<base>/_prism/picture/<id>` | `private, max-age=300` |
 
 On the web the app runs on the server, so the server fetches the image with the headers and streams it to the page; the token never reaches the browser (not in the HTML, the socket or JavaScript). The `<id>` is a keyed hash (random key per server process) of the session and the source: it reveals nothing about the token, and it is bound to the session that rendered it, so another browser gets a 404 even with the URL. Only `image/*` answers are passed on, with `X-Content-Type-Options: nosniff` and a sandboxing `Content-Security-Policy`. The server remembers the last 4096 such sources (an older one loads again once its page re-renders). Headers never appear in logs. They are ignored for assets, files, `data:` URLs and `svg()`; a name must be an HTTP token, and control characters leave values. A URL never carries headers by itself: `picture(url)` and `video(url)` drop the control characters of `url` (browsers drop line breaks and tabs from URLs too), so showing a URL from users' content cannot add any.
@@ -124,7 +125,7 @@ On the web the app runs on the server, so the server fetches the image with the 
 ## Pictures from memory, SVG and QR codes
 
 - **Loading background**: on the web a picture shows a light gray box while it loads, and drops it once loaded, so a transparent PNG or logo is drawn over its parent, as natively.
-- **`picture_data(bytes, mime)`** shows image bytes the app already has (from a database, an HTTP response, a camera). They travel as a `data:` URL and are decoded by the platform: `<img>` on the web, `UIImage(data:)` (iOS, tvOS, visionOS, watchOS), `NSImage(data:)` (macOS), `BitmapFactory.decodeByteArray` (Android), `GdkTexture` (Linux). Formats are what each platform decodes: PNG, JPEG and GIF everywhere; WebP and HEIC where the OS reads them. Keep them small (they are resent when they change, and kept in memory).
+- **`picture_data(bytes, mime)`** shows image bytes the app already has (from a database, an HTTP response, a camera). They travel as a `data:` URL and are decoded by the platform: `<img>` on the web, `UIImage(data:)` (iOS, tvOS, visionOS, watchOS), `NSImage(data:)` (macOS), `BitmapFactory.decodeByteArray` (Android), `GdkTexture` (Linux), WIC (Windows). Formats are what each platform decodes: PNG, JPEG and GIF everywhere; WebP and HEIC where the OS reads them. Keep them small (they are resent when they change, and kept in memory).
 - **`svg(markup)`** draws an SVG document with Prism's vector shapes (the same machinery as `shape()` and the charts), so it is native on every backend and in widgets, and needs no SVG renderer on the device. Neither `UIImage(data:)` nor `NSImage(data:)` documents SVG support (the SDK headers never mention it; Android and GTK need extra libraries), so this is what works on iOS 17, macOS 13 and everywhere else. `picture_data(bytes, "image/svg+xml")` takes this path too. The picture is as wide as the SVG's `width` (or `viewBox`) and keeps its proportions (`aspect_ratio`): set `.w(…)` and the height follows.
   - Supported: `path` (every command, arcs included), `rect` (rounded), `circle`, `ellipse`, `line`, `polyline`, `polygon`, `g`, `transform`, fills and strokes with opacity, round caps and joins, one dash pattern, `fill-rule="evenodd"`, `display`/`visibility`, presentation attributes and `style="…"`, hex / `rgb()` / named colors, `currentColor`.
   - **Tinting.** `currentColor` (with no `color` attribute on the SVG) is [`Color::current()`](decorations.md): the text color of the node the SVG is drawn in, so `svg(icon).text_color(t.muted)` tints a monochrome icon and an adaptive text color (`adaptive(light, dark)`) follows dark mode, on every backend and in widgets. Without a `text_color` it is the platform's label color natively (black, white in dark mode) and the inherited text color on the web. `svg(icon).tint(color)` recolors every painted path of an SVG that hard-codes its color, each path keeping its own opacity (`Color::current()` works there too).

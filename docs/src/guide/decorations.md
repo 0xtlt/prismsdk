@@ -67,7 +67,7 @@ Shadow offsets are physical (positive `x` goes right in every language), like CS
 | `.disabled(\|s\| …)` | the node is disabled (`accessibility_disabled(true)`); a disabled node ignores its hover, press and focus refinements |
 | `.group_hover(…)`, `.group_active(…)`, `.group_focus_within(…)` | the nearest ancestor marked `.group()` is in that state (a row's actions under the pointer, a field's Clear button); a nested `.group()` stops an outer one's states (#273) |
 | `.group_hover_named("row", …)`, `.group_active_named(…)`, `.group_focus_within_named(…)` | the ancestor marked `.group_named("row")` is in that state, whatever groups sit in between (#212) |
-| `.cursor(Cursor::Text)` | the pointer's shape over the node; clickable nodes show a pointing hand by default. Resize handles have `ResizeN`, `ResizeS`, `ResizeE`, `ResizeW`, the corners `ResizeNe`, `ResizeNw`, `ResizeSe`, `ResizeSw`, the diagonals `ResizeNeSw`, `ResizeNwSe`, and `ZoomIn` / `ZoomOut` (#223): CSS names on the web and GTK, macOS 15's frame-resize and zoom cursors (two-way arrows, a crosshair at corners before), Android's double arrows |
+| `.cursor(Cursor::Text)` | the pointer's shape over the node; clickable nodes show a pointing hand by default. Resize handles have `ResizeN`, `ResizeS`, `ResizeE`, `ResizeW`, the corners `ResizeNe`, `ResizeNw`, `ResizeSe`, `ResizeSw`, the diagonals `ResizeNeSw`, `ResizeNwSe`, and `ZoomIn` / `ZoomOut` (#223): CSS names on the web and GTK, macOS 15's frame-resize and zoom cursors (two-way arrows, a crosshair at corners before), Android's double arrows. Not yet on Windows: the arrow everywhere |
 
 Refinements are written like the [responsive](responsive.md) ones and apply on top of them; when several states hold at once, they apply in this order (later wins): group hover, group focus-within, group press, hover, focus-within, focus, press, disabled. With `.animate(ms)` (see [Motion](motion.md)) the change animates. A refinement may change anything, layout included (`display_none`, sizes); native backends lay out again when it does.
 
@@ -93,6 +93,7 @@ Each state is resolved natively: the platform says when the pointer enters, a pr
 | watchOS | – (no pointer) | the button's pressed state | text fields, when SwiftUI reports it | – |
 | Linux (GTK) | `:hover` | `:active` | `:focus-visible`, `:focus-within` (GTK CSS) | `set_cursor_from_name` |
 | Android | hover listener (mouse, stylus) | touch down/up/cancel | focus listener | `PointerIcon` |
+| Windows | `PointerEntered` / `PointerExited` | `PointerPressed` / `PointerReleased`, a button's `IsPressed` | `GotFocus` / `LostFocus` | not yet (the arrow) |
 
 ## Platform notes
 
@@ -103,6 +104,7 @@ Each state is resolved natively: the platform says when the pointer enters, a pr
 | watchOS | SwiftUI shadows of the box's shape (spread and inset drawn by hand) | stroked paths | `clipShape` | `LinearGradient`, `EllipticalGradient`, `AngularGradient` | system materials |
 | Linux | GTK CSS `box-shadow` | GTK CSS | `Overflow::Hidden` | GTK CSS gradients | none in GTK 4: the translucent background is drawn without blur |
 | Android | drawn with `BlurMaskFilter` on the box's path | `DashPathEffect` | outline, or a path clip | `LinearGradient`, `RadialGradient`, `SweepGradient` | no per-view backdrop API: Prism draws what is behind into a bitmap and blurs it (`RenderEffect` on Android 12+, a downscale before) |
+| Windows | Composition `DropShadow` | XAML `Border`; a `Rectangle` with a dash array for dashed and dotted; one `Path` per side when the colors differ | a Composition geometric clip (rounded corners) | `LinearGradientBrush`, `RadialGradientBrush`; conic drawn as pixels | `AcrylicBrush` |
 
 Drop shadows don't follow animated frame changes yet on Apple platforms (they jump to the end). Widgets and Live Activities don't draw the new decorations.
 

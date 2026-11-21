@@ -48,6 +48,7 @@ content size.
 | watchOS | SwiftUI's safe area around the root (corners, the clock) |
 | Web | `env(safe-area-inset-*)`, reported by the page on connect and resize (zero unless the page is laid out under the notch with `viewport-fit=cover`) |
 | Linux | none: GTK windows have no system insets |
+| Windows | none: desktop windows have no system insets |
 
 ## Your own breakpoints, any width
 

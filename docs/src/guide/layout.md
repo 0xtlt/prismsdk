@@ -220,6 +220,7 @@ how long the content is.
 | macOS | `NSScrollerStyle.overlay`, kept when the setting changes; a row gets a horizontal overlay bar | no scroller |
 | iOS, iPadOS, visionOS, watchOS, Android | the usual indicators (already overlay) | indicators off |
 | Linux | GTK overlay scrolling | `PolicyType::External` |
+| Windows | WinUI's bars (thin until the pointer comes near) | not yet: the bars stay |
 
 ## Where an element ended up
 
@@ -244,26 +245,28 @@ A frame (`Rect { x, y, width, height }`, with `contains`, `intersects`, `center`
 
 ## Backends
 
-| | Web | macOS | iOS · tvOS · visionOS | watchOS | Linux | Android |
-|---|---|---|---|---|---|---|
-| Grid, weights, gaps, aspect ratio | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Baselines | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Sticky | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Fixed | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Horizontal scroll | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Reversed directions, `order` | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Padding on leaves | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `.border(0.)` on fields | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+| | Web | macOS | iOS · tvOS · visionOS | watchOS | Linux | Android | Windows |
+|---|---|---|---|---|---|---|---|
+| Grid, weights, gaps, aspect ratio | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Baselines | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Sticky | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Fixed | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Horizontal scroll | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Reversed directions, `order` | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Padding on leaves | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `.border(0.)` on fields | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Notes per platform:
 
 - Baselines come from the platform's text metrics: `firstBaselineOffsetFromTop`
   (AppKit), the font's ascender where UIKit and SwiftUI place the text,
-  `getBaseline()` (Android), GTK's measured baseline. Views without text
+  `getBaseline()` (Android), GTK's measured baseline, a measured
+  `TextBlock`'s first line (Windows). Views without text
   align their bottom edge.
 - Sticky views move with the scroll view natively (UIKit's
   `scrollViewDidScroll`, AppKit's clip-view bounds, GTK's vertical
-  adjustment, Android's scroll listener, the watch's scroll offset) and are
+  adjustment, Android's scroll listener, the watch's scroll offset, a
+  translation as the `ScrollViewer` moves on Windows) and are
   drawn above their siblings. On macOS that means they are last among their
   siblings, so VoiceOver reaches them last.
 - macOS horizontal scroll views have no visible scroller (legacy scrollers

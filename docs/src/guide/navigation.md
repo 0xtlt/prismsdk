@@ -27,8 +27,12 @@ div().on_click(navigate_to("/todos/2"))   // handler helpers: navigate_to, go_ba
 | **iOS** | `UINavigationController` (large titles, push animation) | system button + edge swipe | `PRISM_PATH=/todos/1` |
 | **macOS** | header bar (title, Back button) | Back button, Go ▸ Back ⌘[ | `PRISM_PATH=/todos/1` |
 | **Web** | header bar | header button + browser Back/Forward (History API) | any URL, server-rendered |
+| **Linux** | header (title, Back button) | Back button | `PRISM_PATH=/todos/1` |
+| **Android** | header (title, Back) | Back + the system back gesture | `prism-<package>:/todos/1` |
+| **Windows** | header (Back, title, bar buttons) | Back button | `PRISM_PATH=/todos/1` |
+| **watchOS** | `NavigationStack` | system button + swipe | `PRISM_PATH=/todos/1` |
 
-**Tabs**: `.tab("Todos", "checklist", "/")` per tab (SF Symbol name; a glyph on the web). Each tab keeps its own stack. `navigate()` to a tab's root path switches tab; a path under another tab's root (`/settings/5` from Home) opens in that tab and selects it, and so does `replace()`. A path under no tab's root but `/` (`/items/7`, a screen several tabs show) is pushed on the selected tab, as on iOS. A deep link, at launch or while the app runs, has no tab to stay in: it opens in the tab whose root is the longest one it starts with, `/` included, and selects it. iOS: `UITabBarController`. macOS: segmented control. Web: ARIA tablist, URL follows the tab.
+**Tabs**: `.tab("Todos", "checklist", "/")` per tab (SF Symbol name; a glyph on the web). Each tab keeps its own stack. `navigate()` to a tab's root path switches tab; a path under another tab's root (`/settings/5` from Home) opens in that tab and selects it, and so does `replace()`. A path under no tab's root but `/` (`/items/7`, a screen several tabs show) is pushed on the selected tab, as on iOS. A deep link, at launch or while the app runs, has no tab to stay in: it opens in the tab whose root is the longest one it starts with, `/` included, and selects it. iOS: `UITabBarController`. macOS: segmented control. Linux: a tab bar. Android: a bottom bar. Windows: a `SelectorBar`. watchOS: vertical pages. Web: ARIA tablist, URL follows the tab.
 
 **Lazy tabs**: a tab renders when it is first selected (a tap, `navigate()` to its root, a deep link), then stays rendered: switching away keeps its screens, their state and their views (a half-typed field is still there when you come back). Until then it shows only its tab-bar entry (title and icon) over an empty panel, and its screens are built but not rendered. A page then ships only the visible tab: on the example app, `/` went from 715 nodes, 150 KB of HTML and a 384 KB first WebSocket update to 44 nodes, 16 KB and 24 KB. A deep link (`/components`, `/components/list`) renders its tab on the server, in the first paint. `cx.reset(..)` makes every tab lazy again. Opt a tab out with `.eager()` right after it, to render it up front:
 
@@ -60,7 +64,7 @@ wins over the top screen's title.
 | | Where it shows |
 |---|---|
 | Web | the tab: `<title>` « Orders · App », in the first paint too, and again after a reconnect |
-| macOS, Linux | the window's title (the app's name when cleared) |
+| macOS, Linux, Windows | the window's title (the app's name when cleared) |
 | iPadOS, iOS, visionOS, tvOS | the scene's title (iPadOS multitasking switcher, window menus) |
 | Android | the activity's title (TalkBack, recents) |
 | watchOS | — |
@@ -79,6 +83,7 @@ window asks first; `cx.has_unsaved_changes()` reads it back.
 | Web | the browser's own « Leave site? » question when the tab is closed, reloaded or left (`beforeunload`; browsers show their own text) |
 | macOS | the close button's dot (`documentEdited`); closing the window or ⌘Q asks « Leave without saving? » with Discard Changes / Cancel |
 | Linux | closing the window asks the same question |
+| Windows | closing the window asks with a message box, in English for now |
 | iOS, iPadOS, Android, watchOS | nothing: the system closes apps itself, so save as you go |
 
 The question's texts are built in (`prism.unsaved_title`,
@@ -156,6 +161,7 @@ The screen then gets the whole area and draws its own Back where it wants one (`
 | **macOS** | the header view is removed; the screen fills the stack |
 | **Web** | `.prism-header` gets `hidden` (server-rendered too) |
 | **Linux** | the header box is hidden |
+| **Windows** | the header is hidden; the screen fills the stack |
 | **Android, Wear OS** | the header is `GONE`; the larger area is reported to the layout |
 | **watchOS** | `.toolbar(.hidden, for: .navigationBar)` (watchOS 9+) |
 
@@ -183,6 +189,7 @@ Leading buttons come after Back (which stays), trailing ones at the trailing edg
 | **macOS** | borderless `NSButton`s in the header bar (SF Symbol image or title) | one title size: ignored |
 | **Web** | `<button class="prism-bar-button">` in `.prism-header` (server-rendered too): the icon's glyph, else the title | ignored |
 | **Linux** | flat `GtkButton`s in the header: the icon's glyph, else the title | ignored |
+| **Windows** | chrome-less `Button`s in the header: the icon's Segoe Fluent glyph, else the title | ignored |
 | **Android, Wear OS** | borderless buttons in the header: the icon's glyph, else the title | ignored |
 | **watchOS** | `ToolbarItemGroup`s (`.topBarLeading`, `.topBarTrailing`) with SF Symbols | ignored |
 
@@ -202,6 +209,7 @@ Router::new().tint(rgb(0xFF9500)) // wins over the accent color
 | **macOS** | the selected segment's symbol (and its bezel where the appearance draws one) | Back's and the bar buttons' `contentTintColor` |
 | **Web** | `--prism-tint` on `.prism-tabs`: the selected tab's color | `--prism-tint` on `.prism-stack`: Back and the bar buttons |
 | **Linux** | CSS: the checked tab button | CSS: the header's buttons |
+| **Windows** | not yet: the system's accent color | not yet |
 | **Android, Wear OS** | the selected tab's color | Back and the bar buttons |
 | **watchOS** | `.tint` on the `TabView` | `.tint` on the `NavigationStack` |
 
