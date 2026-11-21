@@ -148,27 +148,29 @@ fn done(id: NodeId) {
     }
 }
 
-/// F5 or Ctrl+R (without Alt) refreshes the refreshable scroll views:
+/// F5 or Ctrl+R (without Alt) refreshes the refreshable scroll views
+/// shown (`scene`: not those of a hidden tab or screen, as on macOS):
 /// whether the key was theirs.
-pub fn key(vk: u16) -> bool {
+pub fn key(scene: &crate::scene::Scene, vk: u16) -> bool {
     let down = |k: u16| unsafe { GetKeyState(k as i32) } < 0;
     let refresh = vk == VK_F5.0 || (vk == u16::from(b'R') && down(VK_CONTROL.0));
-    if !refresh || down(VK_MENU.0) {
+    if !refresh || down(VK_MENU.0) || VIEWS.with(|v| v.borrow().is_empty()) {
         return false;
     }
-    let shown: Vec<(NodeId, RefreshContainer)> = VIEWS.with(|v| {
-        v.borrow()
+    let shown = scene.shown_in_order();
+    let views: Vec<(NodeId, RefreshContainer)> = VIEWS.with(|v| {
+        let v = v.borrow();
+        shown
             .iter()
-            .map(|(id, r)| (*id, r.container.clone()))
+            .filter_map(|id| Some((*id, v.get(id)?.container.clone())))
             .collect()
     });
-    if shown.is_empty() {
+    if views.is_empty() {
         return false;
     }
-    for (id, c) in shown {
-        // On screen: through the container (its spinner); else the click.
-        let loaded = c.IsLoaded().unwrap_or(false);
-        if !loaded || c.RequestRefresh().is_err() {
+    for (id, c) in views {
+        // Through the container (its spinner); else the click alone.
+        if !c.IsLoaded().unwrap_or(false) || c.RequestRefresh().is_err() {
             crate::imp::dispatch(UiEvent::Click(id));
         }
     }
