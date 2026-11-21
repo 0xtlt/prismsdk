@@ -211,7 +211,6 @@ fn parse_id(id: &str) -> Option<u128> {
 /// kind and bytes give the same id (and the same storage).
 pub fn put(kind: BlobKind, mime: &str, bytes: Vec<u8>) -> BlobRef {
     let key = fnv128(kind, &bytes);
-    let id: Arc<str> = format!("{key:032x}").into();
     insert(key, || Blob::new(mime, bytes))
 }
 
