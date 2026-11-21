@@ -12,10 +12,16 @@
 //! | clipboard | text, HTML, RTF, pictures, files, custom types (`clipboard.rs`) |
 //! | links, reveal in Explorer | `ShellExecuteW`, `SHOpenFolderAndSelectItems` |
 //! | background tasks | timers while the app runs (like on Linux) |
+//! | location | `Geolocator` (`location.rs`) |
+//! | taking a photo | the Camera app's capture UI (`camera.rs`) |
+//! | share sheet | the Share dialog for the window (`share.rs`) |
+//! | passkeys | `webauthn.dll` (`webauthn.rs`, `passkey.rs`) |
+//! | haptics | a vibration device, where the PC has one (`haptics.rs`) |
+//! | motion | accelerometer, gyrometer, inclinometer, where the PC has them (`sensors.rs`) |
 //!
-//! Push answers "unavailable": WNS needs package identity (`push`). There
-//! is no location, motion, camera, haptics or share sheet yet: capabilities
-//! say so and calls fail with "unavailable".
+//! What the PC has is asked at startup (`probe.rs`): the capabilities say
+//! so, and a call to what it lacks fails with "unavailable". Push answers
+//! "unavailable": WNS needs package identity (`push`).
 //!
 //! Modal UI (dialogs, the tray's menu) starts from the services window
 //! (`shell.rs`), never while the app's state is in use; answers come back
@@ -39,7 +45,9 @@ use windows::core::{PCWSTR, w};
 use crate::pickers::{self, Pick};
 use crate::security::{self, Answer, Loopback};
 use crate::win::{log, wide};
-use crate::{clipboard, notify, shell, taskbar, tray};
+use crate::{
+    camera, clipboard, haptics, location, notify, sensors, shell, taskbar, tray, webauthn,
+};
 
 /// Prefix of secrets that need Windows Hello first.
 const GATED: &str = "\u{1}prism-gated\u{1}";
@@ -93,6 +101,9 @@ impl WinServices {
         crate::imp::trace("Windows Hello");
         let notifications = notify::supported();
         notify::start(data);
+        let device = crate::probe::at_start();
+        crate::imp::trace("device APIs");
+        crate::probe::report(hwnd, data, device);
         WinServices {
             hwnd,
             caps: Capabilities {
@@ -110,6 +121,12 @@ impl WinServices {
                 web_view: true,
                 drop_files: true,
                 drag_and_drop: true,
+                location: device.location,
+                motion: device.motion,
+                camera: device.camera,
+                haptics: device.haptics,
+                share: device.share,
+                passkeys: device.passkeys,
                 ..Default::default()
             },
             app: data
@@ -131,21 +148,37 @@ impl WinServices {
 
     fn device(&mut self, id: u64, call: DeviceCall) {
         match call {
+            DeviceCall::RequestPermission(Permission::Location | Permission::LocationAlways)
+                if self.caps.location =>
+            {
+                location::request(move |state| reply(id, Ok(DeviceValue::Permission(state))));
+            }
             DeviceCall::PermissionStatus(p) | DeviceCall::RequestPermission(p) => {
+                let request = matches!(call, DeviceCall::RequestPermission(_));
                 let state = match p {
                     Permission::Notifications if self.caps.notifications => notify::permission(),
                     // The file dialog needs no permission.
                     Permission::Photos => PermissionState::Granted,
+                    // Desktop apps have no background limit: one setting.
+                    Permission::Location | Permission::LocationAlways if self.caps.location => {
+                        location::permission()
+                    }
+                    Permission::Camera if self.caps.camera => camera::permission(request),
+                    // Windows' motion sensors ask no one.
+                    Permission::Motion if self.caps.motion => PermissionState::Granted,
                     _ => PermissionState::Unavailable,
                 };
                 reply(id, Ok(DeviceValue::Permission(state)));
             }
             DeviceCall::PickImages(o) => {
-                if o.camera {
-                    self.unavailable("the camera", "not supported yet");
+                if !o.camera {
+                    return self.pick(id, Pick::Images { limit: o.limit });
+                }
+                if !self.caps.camera {
+                    self.unavailable("the camera", "no camera, or no Windows Camera app");
                     return reply(id, Err(DeviceError::Unavailable));
                 }
-                self.pick(id, Pick::Images { limit: o.limit });
+                camera::take_photo(self.hwnd, self.picked.clone(), move |r| reply(id, r));
             }
             DeviceCall::PickFiles(o) => self.pick(
                 id,
@@ -233,27 +266,68 @@ impl WinServices {
             DeviceCall::WebAuth(r) => self
                 .loopback
                 .start(&r.url, &r.redirect, move |r| reply(id, r)),
-            DeviceCall::WatchLocation(_) => {
-                self.unavailable("location", "not supported yet");
-                event(id, DeviceEvent::Error(DeviceError::Unavailable));
+            DeviceCall::WatchLocation(accuracy) => {
+                if !self.caps.location {
+                    self.unavailable("location", "no location provider, or it is turned off");
+                    return event(id, DeviceEvent::Error(DeviceError::Unavailable));
+                }
+                location::watch(id, accuracy, event);
             }
-            DeviceCall::WatchMotion(_) => {
-                event(id, DeviceEvent::Error(DeviceError::Unavailable));
+            DeviceCall::WatchMotion(interval) => {
+                if !self.caps.motion {
+                    self.unavailable("motion", "no accelerometer or gyrometer");
+                    return event(id, DeviceEvent::Error(DeviceError::Unavailable));
+                }
+                sensors::watch(id, interval, event);
             }
-            DeviceCall::CurrentLocation(_) => {
-                self.unavailable("location", "not supported yet");
-                reply(id, Err(DeviceError::Unavailable));
+            DeviceCall::CurrentLocation(accuracy) => {
+                if !self.caps.location {
+                    self.unavailable("location", "no location provider, or it is turned off");
+                    return reply(id, Err(DeviceError::Unavailable));
+                }
+                // Asks first where Windows asks, as other platforms do;
+                // only a refusal stops here.
+                location::request(move |state| {
+                    if state == PermissionState::Denied {
+                        return reply(id, Err(DeviceError::Denied));
+                    }
+                    std::thread::spawn(move || {
+                        let r = location::current(accuracy).map(DeviceValue::Location);
+                        shell::on_ui(move || reply(id, r));
+                    });
+                });
             }
-            DeviceCall::StopWatch | DeviceCall::Reconnect => {}
+            DeviceCall::StopWatch => {
+                location::stop(id);
+                sensors::stop(id);
+            }
+            DeviceCall::Reconnect => {}
             // No browser id natively: nothing to renew.
             DeviceCall::RenewBrowserId => reply(id, Ok(DeviceValue::Done)),
-            // No haptics or share sheet yet; Apple's sign-in and passkeys
-            // are other platforms'; cookies are the web's.
-            DeviceCall::Haptic(_)
-            | DeviceCall::Share(_)
-            | DeviceCall::SignInWithApple(_)
-            | DeviceCall::WebAuthn(_)
-            | DeviceCall::SetCookie(_) => reply(id, Err(DeviceError::Unavailable)),
+            // Haptics and sharing answer nothing, as on Apple platforms.
+            DeviceCall::Haptic(h) => {
+                if self.caps.haptics {
+                    haptics::play(h);
+                }
+            }
+            DeviceCall::Share(content) => {
+                if self.caps.share {
+                    crate::share::share(self.hwnd, &self.app, content);
+                } else {
+                    self.unavailable("sharing", "this Windows has no Share dialog");
+                }
+            }
+            DeviceCall::WebAuthn(r) => {
+                if !self.caps.passkeys {
+                    self.unavailable("passkeys", "no webauthn.dll (Windows 10 1903 or later)");
+                    return reply(id, Err(DeviceError::Unavailable));
+                }
+                webauthn::ceremony(self.hwnd, r, move |r| reply(id, r));
+            }
+            // Apple's sign-in is Apple's; cookies are the web's.
+            DeviceCall::SignInWithApple(_) | DeviceCall::SetCookie(_) => {
+                reply(id, Err(DeviceError::Unavailable))
+            }
         }
     }
 
@@ -363,6 +437,9 @@ impl Drop for WinServices {
     fn drop(&mut self) {
         tray::remove_all();
         notify::quit();
+        location::stop_all();
+        sensors::stop_all();
+        webauthn::cancel();
         for (_, t) in self.background.drain() {
             shell::cancel(t);
         }

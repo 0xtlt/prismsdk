@@ -751,6 +751,8 @@ pub fn run(config: AppConfig, init: AppInit) {
     crate::profile::start();
     // Windows Hello answers slowly: asked while WinUI starts.
     crate::security::prefetch_hello();
+    // So do the device APIs' checks (cameras, location, passkeys…).
+    crate::probe::prefetch();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         if let Err(e) = OleInitialize(None) {

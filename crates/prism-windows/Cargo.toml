@@ -25,13 +25,14 @@ prism-native = { workspace = true, features = ["gl3d"] }
 # Biometric secrets (`seal`): HKDF, AES-256-GCM, checking Hello's RSA
 # signature. Pure Rust and assembly, so `seal` is tested on every host.
 ring = "0.17"
+# Web view messages are checked to be JSON; passkeys' WebAuthn JSON
+# (`passkey`, tested on every host).
+serde_json.workspace = true
 
 # WinUI 3 from the Windows App SDK (self-contained: its runtime goes next to
 # the app, see build.rs), hosted in a Win32 window; WIC for pictures and
 # snapshots. Builds with the GNU and the MSVC toolchains.
 [target.'cfg(target_os = "windows")'.dependencies]
-# Web view messages are checked to be JSON.
-serde_json.workspace = true
 # Videos with request headers: HTTP range requests (`stream.rs`).
 prism-http.workspace = true
 # 3D scenes: the GL context of prism-native's renderer.
@@ -46,6 +47,10 @@ windows = { version = "0.62", features = [
   "ApplicationModel_Core",
   "ApplicationModel_DataTransfer",
   "ApplicationModel_DataTransfer_DragDrop",
+  "Devices_Enumeration",
+  "Devices_Geolocation",
+  "Devices_Haptics",
+  "Devices_Sensors",
   "Foundation",
   "Foundation_Collections",
   "Graphics",
@@ -55,6 +60,7 @@ windows = { version = "0.62", features = [
   "Media_Core",
   "Media_Playback",
   "Media_Streaming_Adaptive",
+  "Security_Authorization_AppCapabilityAccess",
   "Security_Credentials",
   "Security_Credentials_UI",
   "Security_Cryptography",
@@ -81,6 +87,7 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Gdi",
   "Win32_Graphics_Imaging",
   "Win32_Graphics_OpenGL",
+  "Win32_Networking_WindowsWebServices",
   "Win32_Security_Credentials",
   "Win32_Storage_Xps",
   "Win32_System_Com",
@@ -94,6 +101,7 @@ windows = { version = "0.62", features = [
   "Win32_System_ProcessStatus",
   "Win32_System_Registry",
   "Win32_System_RemoteDesktop",
+  "Win32_System_Services",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_System_Time",
