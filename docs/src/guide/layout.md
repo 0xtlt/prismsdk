@@ -113,7 +113,7 @@ div().flex_row()
     .child(cell())
 ```
 
-The web writes `z-index` (flex and grid items take it as they are). Native backends order each parent's views by the value each child shows: its own, or the highest one inside it up to a node that sets its own, so the cell holding the handle is drawn after the next cell. Stacks and tab bars keep their order.
+The web writes `z-index` (flex and grid items take it as they are). Native backends order each parent's views by the value each child shows: its own, or the highest one inside it up to a node that sets its own, so the cell holding the handle is drawn after the next cell. Stacks and tab bars keep their order, and a `.fixed()` node stays above its screen's content, whatever `z_index` that content holds.
 
 ## Padding on every node
 

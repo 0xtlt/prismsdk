@@ -776,6 +776,25 @@ fn fixed_nodes_are_placed_against_the_root_not_their_parent() {
     assert_eq!(f.frame(fab), (400. - 16. - 56., 800. - 50. - 56., 56., 56.));
 }
 
+/// A `z_index` inside the scroll view paints it above its siblings, not
+/// above the fixed node its screen shows over it.
+#[test]
+fn fixed_nodes_stay_above_a_z_index_in_the_content() {
+    let mut h = tree(|| {
+        div().child(
+            scroll()
+                .child(div().child(div().w(10.).h(10.).z_index(3)))
+                .child(button("+").fixed().bottom(16.).right(16.).w(56.).h(56.)),
+        )
+    });
+    h.layout(400., 800.);
+    let f = h.w();
+    let root = f.root.unwrap();
+    let fab = f.of_kind(NodeKind::Button)[0];
+    let scroll = f.of_kind(NodeKind::Scroll)[0];
+    assert_eq!(f.children[&root], [scroll, fab], "the button on top");
+}
+
 thread_local!(static FIXED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) });
 
 struct FixedScreen;

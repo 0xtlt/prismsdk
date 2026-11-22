@@ -487,7 +487,8 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
     /// `children` in paint order (#232): by the `z_index` each one shows,
     /// its own or the highest one inside it (up to a node that sets its
     /// own), the tree order among equals. The tree order when no node has
-    /// a `z_index`.
+    /// a `z_index`. Fixed nodes come after the rest: their screen shows
+    /// them above its content, whatever `z_index` that content holds.
     pub(crate) fn paint_order(&self, children: &[NodeId]) -> Vec<NodeId> {
         if self.extras.z_nodes.is_empty() {
             return children.to_vec();
@@ -515,7 +516,7 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         };
         let mut order = children.to_vec();
         // Stable: the tree order among equals.
-        order.sort_by_cached_key(|c| shown(*c));
+        order.sort_by_cached_key(|c| (self.extras.fixed.contains(c), shown(*c)));
         order
     }
 
