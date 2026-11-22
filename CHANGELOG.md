@@ -9,7 +9,43 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## 0.1.0 (2026-11-22)
 
-The first version.
+The first version of Prism: write a UI once in Rust and ship it as a web app
+rendered on the server (HTML and CSS, a small JavaScript client, no
+WebAssembly) and as native apps made of each platform's own controls.
+
+**Platforms.** Supported: web, macOS 13+, iOS and iPadOS 17+, Android 10+
+(API 29). Previews, to try: Linux (GTK 4), Windows 10 1809+ (WinUI 3, tested
+on Windows 11), tvOS 17+, watchOS 10+, visionOS 26+, Wear OS, Android TV and
+car screens (CarPlay, Android Auto, Automotive). Rust 1.94 or newer.
+
+**Highlights.**
+
+- One element tree (`div`, `text`, `button`, fields, toggles, sliders,
+  pickers, `scroll`, `table`, `VirtualList`, `picture`, `shape`, `scene3d`,
+  web views, videos, rich inputs) laid out with flexbox and grid, with
+  styles, animations, light and dark appearance, right-to-left languages
+  and Dynamic Type.
+- Navigation with `Router`: stacks, tabs, sheets, dialogs and popovers, deep
+  links and URLs on the web.
+- Accessibility on every backend: VoiceOver, TalkBack, Orca, UI Automation
+  and screen readers on the web, with labels, roles, headings, live regions
+  and tables.
+- System services: notifications with actions, remote push (APNs, FCM, Web
+  Push, UnifiedPush, WNS) with a server-side sender (`prismsdk-push`),
+  widgets and Live Activities, background tasks, secure storage,
+  biometrics and passkeys, Sign in with Apple and OAuth/OIDC, device APIs
+  (location, motion, camera, photos, share, haptics, clipboard), tray icons
+  and app menus.
+- `prism-ui`, a component library, plus HTTP (`prismsdk-http`), local
+  storage (`prismsdk-db`), typed translations with plurals and
+  `prismsdk-island` for interactive islands on web pages.
+- The `prism` command (`cargo install prismsdk-cli`): `prism new`, `prism dev`
+  with a restart on every save, `prism run` on simulators, emulators and
+  devices, `prism build` for each platform (an `.app`, a notarized DMG, an
+  APK or App Bundle, a `.deb`, a Windows zip or MSIX, a Docker image) and
+  `prism publish` to the App Store and Google Play.
+
+The guide is at <https://prismsdk.dev/>.
 
 ### Added
 

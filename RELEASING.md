@@ -15,8 +15,11 @@ token for the crates can publish.
    2. the `version = "…"` of every `prism*` entry in `[workspace.dependencies]`
       (same file; they are what crates.io resolves);
    3. `cargo update --workspace` to refresh `Cargo.lock`;
-   4. `CHANGELOG.md`: rename `Unreleased` to the version and date, start a new
-      empty `Unreleased` section.
+   4. `CHANGELOG.md`: rename `Unreleased` to the version and date
+      (`## 0.2.0 (2026-12-01)`), start a new empty `Unreleased` section, and
+      open the version's section with a short summary (what the release is
+      about, its highlights, any breaking change): it is the top of the
+      GitHub release.
 4. **Check locally** (macOS with Xcode, so the Apple crates build):
 
    ```sh
@@ -33,8 +36,13 @@ token for the crates can publish.
    the others' packages, so a file outside a crate's directory (or a missing
    version on a path dependency) fails here.
 5. **Tag** the bump commit: `git tag v0.2.0 && git push origin main v0.2.0`.
-6. **Publish** (below), then check the docs.rs builds and create the GitHub
-   release from the changelog section.
+6. **Publish** (below), then check the docs.rs builds. The tag's push
+   creates the GitHub release (`.github/workflows/release.yml`), its notes
+   being the version's section of `CHANGELOG.md`
+   (`scripts/release-notes.py 0.2.0` prints them). A section longer than
+   GitHub takes gives its summary and each entry's first sentence, with a
+   link to the full list. After a fix to the notes on `main`,
+   `gh workflow run release.yml -f tag=v0.2.0` updates the release.
 
 ## Publish order
 
