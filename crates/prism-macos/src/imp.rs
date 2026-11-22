@@ -555,6 +555,9 @@ impl State {
         };
         self.renderer
             .layout(size.width as f32, size.height as f32, insets);
+        // The bars' frames are known: they make room for the traffic
+        // lights over them.
+        self.renderer.widgets.place_bars();
         let w = &self.renderer.widgets;
         if let Some(main) = w.root.window() {
             w.ix.follow(&main);
@@ -3339,6 +3342,63 @@ impl AppKit {
                 .is_some_and(|top| self.bare.contains(&top.id()))
     }
 
+    /// Places a tab bar's segments: centered, clear of the traffic lights
+    /// over it (#67, `chrome::bar_room`).
+    fn place_tabs(&self, t: &MacTabs) {
+        let w = t.bar.frame().size.width;
+        let (left, right) = crate::chrome::bar_room(&t.bar);
+        let sz = t.segments.fittingSize();
+        // Narrower than the segments: they shrink (their titles truncate).
+        let width = sz.width.min((w - left - right - 16.).max(0.));
+        let x = ((w - width) / 2.)
+            .min(w - right - 8. - width)
+            .max(left + 8.)
+            .round();
+        t.segments.setFrame(NSRect::new(
+            NSPoint::new(x, ((HEADER_HEIGHT - 1. - sz.height) / 2.).round()),
+            NSSize::new(width, sz.height),
+        ));
+    }
+
+    /// Places a header's Back, title and bar buttons, clear of the traffic
+    /// lights over it (#67, `chrome::bar_room`): Back at the leading end,
+    /// after them; the title centered in the window.
+    fn place_header(&self, st: &MacStack) {
+        let size = st.header.frame().size;
+        let (w, h) = (size.width, size.height);
+        let room = crate::chrome::bar_room(&st.header);
+        let b = st.back.fittingSize();
+        st.back.setFrame(NSRect::new(
+            NSPoint::new(
+                if self.rtl {
+                    w - 8. - room.1 - b.width
+                } else {
+                    8. + room.0
+                },
+                ((h - b.height) / 2.).round(),
+            ),
+            b,
+        ));
+        let t = st.title.fittingSize();
+        let side = room.0.max(room.1);
+        st.title.setFrame(NSRect::new(
+            NSPoint::new(side, ((h - t.height) / 2.).round()),
+            NSSize::new((w - 2. * side).max(0.), t.height),
+        ));
+        crate::navbar::layout(&st.bar, &st.back, w, h, self.rtl, room);
+    }
+
+    /// Every bar's contents again, after a layout: the traffic lights over
+    /// one came or went (full screen, a bar moved to the top edge or away).
+    fn place_bars(&self) {
+        for t in &self.tab_bars {
+            self.place_tabs(t);
+        }
+        for st in &self.stacks {
+            self.place_header(st);
+        }
+    }
+
     /// Shows the top screen, its title, and Back when there is somewhere to go.
     fn refresh_stack(&self, stack: &MacStack) {
         let hidden = self.header_hidden(stack);
@@ -3370,8 +3430,7 @@ impl AppKit {
         // The top screen's bar buttons (#30).
         let top = screens.last().map(View::id);
         crate::navbar::refresh(self.mtm, stack.id, &stack.header, &stack.bar, top);
-        let size = stack.header.frame().size;
-        crate::navbar::layout(&stack.bar, &stack.back, size.width, size.height, self.rtl);
+        self.place_header(stack);
         if let Some(window) = stack.container.window()
             && title.length() > 0
             && self.app_title.is_none()
@@ -4431,33 +4490,13 @@ impl Widgets for AppKit {
             let w = w as f64;
             t.bar.setFrame(rect(0., 0., w, HEADER_HEIGHT - 1.));
             t.separator.setFrame(rect(0., HEADER_HEIGHT - 1., w, 1.));
-            let sz = t.segments.fittingSize();
-            t.segments.setFrame(rect(
-                ((w - sz.width) / 2.).round(),
-                ((HEADER_HEIGHT - 1. - sz.height) / 2.).round(),
-                sz.width,
-                sz.height,
-            ));
+            self.place_tabs(t);
         }
         if let View::Stack(st) = view {
             let w = w as f64;
             st.header.setFrame(rect(0., 0., w, HEADER_HEIGHT - 1.));
             st.separator.setFrame(rect(0., HEADER_HEIGHT - 1., w, 1.));
-            let b = st.back.fittingSize();
-            st.back.setFrame(rect(
-                if self.rtl { w - 8. - b.width } else { 8. },
-                ((HEADER_HEIGHT - 1. - b.height) / 2.).round(),
-                b.width,
-                b.height,
-            ));
-            let t = st.title.fittingSize();
-            st.title.setFrame(rect(
-                0.,
-                ((HEADER_HEIGHT - 1. - t.height) / 2.).round(),
-                w,
-                t.height,
-            ));
-            crate::navbar::layout(&st.bar, &st.back, w, HEADER_HEIGHT - 1., self.rtl);
+            self.place_header(st);
         }
     }
 
@@ -6186,6 +6225,11 @@ fn snapshot_with_overlays(window: &NSWindow, path: &str) {
         }
         image.drawInRect(at);
     }
+    // A custom chrome's traffic lights, over the content (#67): what they
+    // cover shows in the snapshot.
+    if let Some((rect, image)) = crate::chrome::lights_image(window) {
+        image.drawInRect(rect);
+    }
     ctx.flushGraphics();
     NSGraphicsContext::restoreGraphicsState_class();
     let props = objc2_foundation::NSDictionary::new();
@@ -6486,9 +6530,11 @@ fn run_automation(mtm: MainThreadMarker) {
             write_png(&content, &format!("{path}.alert.png"));
             println!("prism-macos: alert snapshot written to {path}.alert.png");
         }
-        // Layers (toasts) and popovers drawn over the window.
-        if std::env::var_os("PRISM_SNAPSHOT_OVERLAYS").is_some()
-            && let Some(window) = root.window()
+        // Layers (toasts) and popovers drawn over the window, and a custom
+        // chrome's traffic lights (#67).
+        if let Some(window) = root.window()
+            && (std::env::var_os("PRISM_SNAPSHOT_OVERLAYS").is_some()
+                || crate::chrome::controls(&window).is_some())
         {
             snapshot_with_overlays(&window, &path);
             std::process::exit(0);

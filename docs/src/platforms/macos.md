@@ -110,6 +110,16 @@ impl Render for Notes {
   `PRISM_CLICK=dblclick:#window@x,y` (dev builds) double-clicks at that
   point of the window, and the log gives the window's frame before and
   after, zoomed or minimized.
+- Such a bar keeps room for the traffic lights over it, as Windows' bars do
+  for the caption buttons: Back, the bar buttons and the tabs start after
+  them, at whichever end they are (the left, unless the system runs right to
+  left), and the title stays centered in the window. A right-to-left app
+  keeps its Back at the right and its trailing buttons clear of the lights.
+  A bar lower down (a header under a tab bar) and every bar in full screen,
+  where the lights hide, keep no room. Tabs too wide for what is left
+  shrink, their titles truncated.
+- `PRISM_SNAPSHOT` (dev builds) draws the traffic lights over the content
+  with a custom chrome, so a snapshot shows what they cover.
 
 Windows has it too, with its caption buttons at the top right
 ([Windows › Custom window chrome](windows.md#custom-window-chrome)). Other

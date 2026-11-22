@@ -9,7 +9,10 @@
 
 use std::cell::Cell;
 
-use objc2_app_kit::{NSView, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility};
+use objc2::rc::Retained;
+use objc2_app_kit::{
+    NSImage, NSView, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
+};
 use objc2_foundation::{NSPoint, NSRect, NSString, NSUserDefaults};
 use prism_core::{WindowChrome, WindowControls};
 
@@ -106,13 +109,12 @@ pub(crate) fn place_traffic_lights(window: &NSWindow) {
     }
 }
 
-/// Where the traffic lights are, from the window's top-left corner: `None`
-/// for a standard chrome or in full screen.
-pub(crate) fn controls(window: &NSWindow) -> Option<WindowControls> {
+/// The traffic lights' frame in window coordinates (they grow upwards):
+/// `None` for a standard chrome or in full screen, where they are hidden.
+fn lights(window: &NSWindow) -> Option<NSRect> {
     if !chrome().is_custom() || is_fullscreen() {
         return None;
     }
-    let content = window.contentView()?;
     let mut union: Option<NSRect> = None;
     for button in BUTTONS
         .iter()
@@ -136,7 +138,14 @@ pub(crate) fn controls(window: &NSWindow) -> Option<WindowControls> {
             }
         });
     }
-    let r = union?;
+    union
+}
+
+/// Where the traffic lights are, from the window's top-left corner: `None`
+/// for a standard chrome or in full screen.
+pub(crate) fn controls(window: &NSWindow) -> Option<WindowControls> {
+    let r = lights(window)?;
+    let content = window.contentView()?;
     // Window coordinates grow upwards; the content view covers the window.
     let top = content.frame().size.height - (r.origin.y + r.size.height);
     Some(WindowControls {
@@ -145,6 +154,58 @@ pub(crate) fn controls(window: &NSWindow) -> Option<WindowControls> {
         width: r.size.width as f32,
         height: r.size.height as f32,
     })
+}
+
+/// A custom chrome's traffic lights as the window draws them (its frame
+/// view, around them), and where they are in window coordinates: dev
+/// snapshots (`PRISM_SNAPSHOT`) draw them over the content.
+pub(crate) fn lights_image(window: &NSWindow) -> Option<(NSRect, Retained<NSImage>)> {
+    let r = lights(window)?;
+    let frame = unsafe { window.contentView()?.superview() }?;
+    let local = frame.convertRect_fromView(r, None::<&NSView>);
+    let rep = frame.bitmapImageRepForCachingDisplayInRect(local)?;
+    frame.cacheDisplayInRect_toBitmapImageRep(local, &rep);
+    let image = NSImage::initWithSize(objc2::AllocAnyThread::alloc(), local.size);
+    image.addRepresentation(&rep);
+    Some((r, image))
+}
+
+/// Room between the lights and what follows them in a bar.
+const GAP: f64 = 4.;
+
+/// The room `view` (a tab bar's or a navigation header's bar, along the
+/// top edge) keeps at its left and right ends for the traffic lights over
+/// it, as Windows' bars keep room for the caption buttons: Back, bar
+/// buttons and tabs start after it. `(0, 0)` lower down, in a sheet, in
+/// full screen (no traffic lights) or with a standard chrome.
+pub(crate) fn bar_room(view: &NSView) -> (f64, f64) {
+    if view.isHiddenOrHasHiddenAncestor() || !along_top(view) {
+        return (0., 0.);
+    }
+    let Some(lights) = view.window().and_then(|w| lights(&w)) else {
+        return (0., 0.);
+    };
+    let r = view.convertRect_fromView(lights, None::<&NSView>);
+    let b = view.bounds();
+    // Flipped or not, the lights must cross the bar's height.
+    if r.origin.y >= b.origin.y + b.size.height || r.origin.y + r.size.height <= b.origin.y {
+        return (0., 0.);
+    }
+    room(b.size.width, r.origin.x, r.origin.x + r.size.width)
+}
+
+/// The room a bar `width` wide keeps at its left and right ends for
+/// buttons spanning `x0`..`x1` of it: up to their far edge (and a gap) at
+/// the end they are at; none if they are beside it.
+fn room(width: f64, x0: f64, x1: f64) -> (f64, f64) {
+    if x1 <= 0. || x0 >= width || width <= 0. {
+        return (0., 0.);
+    }
+    if (x0 + x1) / 2. <= width / 2. {
+        ((x1 + GAP).min(width), 0.)
+    } else {
+        (0., (width - x0 + GAP).min(width))
+    }
 }
 
 /// Whether `view` (a tab bar's or a navigation header's bar) runs along
@@ -193,5 +254,24 @@ pub(crate) fn double_click(window: &NSWindow) {
                 window.zoom(None)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::room;
+
+    #[test]
+    fn bars_keep_room_for_the_traffic_lights_at_their_end() {
+        // The lights at 7..59 of an 800-wide bar: Back starts after them.
+        assert_eq!(room(800., 7., 59.), (63., 0.));
+        // A right-to-left system puts them at the right.
+        assert_eq!(room(800., 741., 793.), (0., 63.));
+        // A split view's right pane, which they do not reach.
+        assert_eq!(room(500., -293., -241.), (0., 0.));
+        assert_eq!(room(300., 320., 372.), (0., 0.));
+        // A narrow bar: at most all of it.
+        assert_eq!(room(100., 7., 59.), (63., 0.));
+        assert_eq!(room(60., 0., 59.), (60., 0.));
     }
 }
