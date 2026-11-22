@@ -108,10 +108,13 @@ impl Render for Notes {
   On a clickable element itself the click wins: put it on the container.
 - Containers outside a `.window_drag()` region don't move the window, even in
   the title bar strip: the app's views there get their presses, where AppKit
-  would give them to the invisible title bar (Prism's views tell it they
-  are opaque there, through `_opaqueRectForWindowMoveWhenInTitlebar`, which
-  is not public API). So a `.window_drag()` bar in that strip drags and
-  takes the double click from its text as from its empty part. A tab bar or a navigation header along the window's
+  would give them to the invisible title bar. Prism's window sends them to
+  the view under them itself (`sendEvent:`, public API only: Prism apps go
+  to the Mac App Store), as AppKit does lower down; AppKit's own controls
+  there (Back, bar buttons, tabs) and the traffic lights keep AppKit's
+  handling. So a `.window_drag()` bar in that strip drags and takes the
+  double click from its text as from its empty part, and the clickable views
+  in it get their clicks. A tab bar or a navigation header along the window's
   top edge is the exception, as Safari's and Finder's tab bars are: its
   empty part moves the window and takes the double click, while its tabs,
   Back and bar buttons keep their clicks. The same bars do so on Windows.

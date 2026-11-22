@@ -6,14 +6,20 @@
 //! AppKit lays the title bar out again on resizes, full screen and
 //! appearance changes, putting the buttons back in their place: the window
 //! delegate calls [`place_traffic_lights`] after each of them.
+//!
+//! The title bar strip stays the app's: AppKit gives the presses there to
+//! the (invisible) title bar, so the main window, a [`PrismWindow`], sends
+//! them to the app's view under them itself ([`route_strip_press`]).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
+use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSImage, NSView, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSBackingStoreType, NSControl, NSEvent, NSEventType, NSImage, NSResponder, NSView, NSWindow,
+    NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
 };
-use objc2_foundation::{NSPoint, NSRect, NSString, NSUserDefaults};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSString, NSUserDefaults};
 use prism_core::{WindowChrome, WindowControls};
 
 thread_local! {
@@ -21,6 +27,144 @@ thread_local! {
     static CHROME: Cell<WindowChrome> = const { Cell::new(WindowChrome::Standard) };
     /// The window is in (or entering) full screen.
     static FULLSCREEN: Cell<bool> = const { Cell::new(false) };
+    /// The view a press in the title bar strip went to: the rest of that
+    /// press (drags, the release) goes to it too.
+    static PRESSED: RefCell<Option<Retained<NSView>>> = const { RefCell::new(None) };
+}
+
+define_class!(
+    /// The main window: an `NSWindow` whose custom chrome's title bar strip
+    /// sends its presses to the app's views ([`route_strip_press`]).
+    #[unsafe(super(NSWindow, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismWindow"]
+    pub(crate) struct PrismWindow;
+
+    impl PrismWindow {
+        #[unsafe(method(sendEvent:))]
+        fn send_event(&self, event: &NSEvent) {
+            if !route_strip_press(self, event) {
+                unsafe { msg_send![super(self), sendEvent: event] }
+            }
+        }
+    }
+);
+
+impl PrismWindow {
+    /// A main window (`initWithContentRect:styleMask:backing:defer:`).
+    pub(crate) fn create(
+        mtm: MainThreadMarker,
+        frame: NSRect,
+        style: NSWindowStyleMask,
+    ) -> Retained<NSWindow> {
+        let window: Retained<PrismWindow> = unsafe {
+            msg_send![
+                PrismWindow::alloc(mtm),
+                initWithContentRect: frame,
+                styleMask: style,
+                backing: NSBackingStoreType::Buffered,
+                defer: false
+            ]
+        };
+        Retained::into_super(window)
+    }
+}
+
+/// With a custom chrome, AppKit gives a press in the title bar strip (the
+/// top 28 points, over the content) to the invisible title bar, which
+/// moves or zooms the window, unless one of its controls is under it: the
+/// app's views there (a `.window_drag()` bar's text and empty part,
+/// clickable views) never got their presses, and a double click did what
+/// the title bar does rather than what the app's bar does. So `sendEvent:`
+/// sends them to the view under them, as AppKit does below the strip: it
+/// makes the window key (the press goes on only if the view takes the
+/// first mouse), gives the view the focus if it takes it, and sends it
+/// `mouseDown:`, then that press's drags and release (`rightMouseDown:`
+/// for a right press). AppKit's controls (Back, bar buttons, tabs), the
+/// traffic lights, and the title bar where no view of the app is keep
+/// AppKit's own handling; full screen has no strip. Returns whether the
+/// event was handled.
+fn route_strip_press(window: &NSWindow, event: &NSEvent) -> bool {
+    let kind = event.r#type();
+    if kind == NSEventType::LeftMouseDragged || kind == NSEventType::LeftMouseUp {
+        let up = kind == NSEventType::LeftMouseUp;
+        let Some(view) = PRESSED.with(|p| {
+            if up {
+                p.borrow_mut().take()
+            } else {
+                p.borrow().clone()
+            }
+        }) else {
+            return false;
+        };
+        if up {
+            view.mouseUp(event);
+        } else {
+            view.mouseDragged(event);
+        }
+        return true;
+    }
+    let right = kind == NSEventType::RightMouseDown;
+    if kind != NSEventType::LeftMouseDown && !right {
+        return false;
+    }
+    PRESSED.with(|p| p.borrow_mut().take());
+    let Some(view) = strip_view(window, event.locationInWindow()) else {
+        return false;
+    };
+    if !window.isKeyWindow() {
+        window.makeKeyAndOrderFront(None);
+        if !view.acceptsFirstMouse(Some(event)) {
+            return true;
+        }
+    }
+    if right {
+        view.rightMouseDown(event);
+        return true;
+    }
+    if view.acceptsFirstResponder() {
+        window.makeFirstResponder(Some(&view));
+    }
+    PRESSED.with(|p| *p.borrow_mut() = Some(view.clone()));
+    view.mouseDown(event);
+    true
+}
+
+/// The app's view under `at` (window coordinates) when it is in a custom
+/// chrome's title bar strip, outside the traffic lights.
+fn strip_view(window: &NSWindow, at: NSPoint) -> Option<Retained<NSView>> {
+    if !chrome().is_custom() || is_fullscreen() {
+        return None;
+    }
+    // The strip: above the part of the window the title bar leaves free.
+    let free = window.contentLayoutRect();
+    if at.y < free.origin.y + free.size.height {
+        return None;
+    }
+    let on_button = BUTTONS
+        .iter()
+        .filter_map(|b| window.standardWindowButton(*b))
+        .any(|b| {
+            let r = b.convertRect_toView(b.bounds(), None::<&NSView>);
+            !b.isHidden()
+                && at.x >= r.origin.x
+                && at.x <= r.origin.x + r.size.width
+                && at.y >= r.origin.y
+                && at.y <= r.origin.y + r.size.height
+        });
+    if on_button {
+        return None;
+    }
+    let content = window.contentView()?;
+    // `hitTest:` takes a point in the view's superview.
+    let frame = unsafe { content.superview() }?;
+    let hit = content.hitTest(frame.convertPoint_fromView(at, None::<&NSView>))?;
+    // AppKit gives its controls (buttons, segmented controls, fields)
+    // their presses there itself, and tracks them itself. Prism's labels
+    // are text fields that it does not.
+    let control = hit.isKindOfClass(NSControl::class())
+        && hit.downcast_ref::<crate::label::PrismLabel>().is_none();
+    (!control).then_some(hit)
 }
 
 const BUTTONS: [NSWindowButton; 3] = [

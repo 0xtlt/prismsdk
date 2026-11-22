@@ -1210,18 +1210,6 @@ define_class!(
             false
         }
 
-        /// In a custom chrome's title bar strip (#67), AppKit gives the
-        /// presses to the title bar unless the view under them says it is
-        /// opaque there, as controls do: without this, the app's views in
-        /// the strip (a `.window_drag()` bar's text and empty part,
-        /// clickable views) never got them. AppKit asks this of views in
-        /// the strip (it is not public API; overriding it is how other
-        /// apps with content under a transparent title bar do it).
-        #[unsafe(method(_opaqueRectForWindowMoveWhenInTitlebar))]
-        fn opaque_rect_in_titlebar(&self) -> NSRect {
-            self.bounds()
-        }
-
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             // `.window_drag()` (#67): presses that clickable descendants
@@ -5518,15 +5506,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         | NSWindowStyleMask::Resizable;
     // Custom window chrome (#67): the content covers the title bar.
     let style = crate::chrome::style_mask(config.window_chrome, style);
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(mtm),
-            frame,
-            style,
-            NSBackingStoreType::Buffered,
-            false,
-        )
-    };
+    let window = crate::chrome::PrismWindow::create(mtm, frame, style);
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(&NSString::from_str(&config.title));
     window.setContentView(Some(&root));
