@@ -237,7 +237,7 @@ self.sel = SelectionEvent::caret(at - 2);
 | | Rich editing |
 |---|---|
 | Web | a `contenteditable` drawn from runs the client owns: `beforeinput` edits them (typing, deletion by character, word or line, a chip as one character), an IME composition is the browser's and is read back when it ends, undo/redo step through the field's own edits |
-| macOS | `NSTextView` with the runs as attributes and each chip an `NSTextAttachment` (its icon and label drawn in a rounded box), each icon an attachment of its SF Symbol; undo is AppKit's |
+| macOS | `NSTextView` with the runs as attributes and each chip an `NSTextAttachment` (its icon and label drawn in a rounded box), each icon an attachment of its SF Symbol; a click on a chip with an `on_click` reports it; undo is AppKit's |
 | Windows | `RichEditBox` with the runs as RichEdit character formats and each chip a picture embedded in the text (`InsertImage`: its Segoe Fluent icon and label drawn in a rounded box with Direct2D, at the window's scale); undo is RichEdit's |
 | iOS, iPadOS, visionOS | `UITextView` with the runs as attributes and each chip or icon an `NSTextAttachment` (its SF Symbol and label drawn in a rounded box, again when the appearance changes); restyling the text the field shows changes its attributes in place, so the caret, the selection and a composition stay; a tap on a chip with an `on_click` reports it; undo is UIKit's |
 | Linux | `GtkTextView` with the runs as text tags and each chip or icon a widget at a child anchor (its symbol and label in a rounded box, on the text's baseline), which the caret, the selection and Backspace treat as one character; a click on a chip with an `on_click` reports it; undo is GTK's |
