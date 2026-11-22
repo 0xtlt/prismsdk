@@ -34,6 +34,9 @@ pub struct Forms {
     /// spans.
     blocks: Vec<String>,
     blocks_selected: usize,
+    /// Whether the note and the blocks have their sample texts, made in
+    /// the app's language on the first render.
+    samples: bool,
 }
 
 impl Default for Forms {
@@ -51,30 +54,28 @@ impl Default for Forms {
             website: String::new(),
             notes: String::new(),
             shared: None,
-            note: vec![
-                span("Select "),
-                span("these words").bold(),
-                span(", or ⌘-click "),
-                link("a link", "https://github.com/0xtlt/prismsdk"),
-                span(". See "),
-                chip("page:roadmap", "Roadmap").chip_icon("doc.text"),
-                span("."),
-            ],
+            note: Vec::new(),
             note_sel: SelectionEvent::default(),
             toolbar: None,
             note_log: String::new(),
-            blocks: vec![
-                "Select from the middle of this paragraph,".into(),
-                "through this one,".into(),
-                "into the last one. Then type, or copy.".into(),
-            ],
+            blocks: Vec::new(),
             blocks_selected: 0,
+            samples: false,
         }
     }
 }
 
 impl Render for Forms {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.samples {
+            self.samples = true;
+            self.note = note_sample(cx);
+            self.blocks = vec![
+                strings::forms_block_first(cx),
+                strings::forms_block_second(cx),
+                strings::forms_block_third(cx),
+            ];
+        }
         let t = Theme::of(cx);
         let sizes: Vec<String> = strings::forms_sizes(cx)
             .split(',')
@@ -258,6 +259,58 @@ fn markdown(spans: &[Span]) -> String {
             (None, false) => s.text().to_string(),
         })
         .collect()
+}
+
+/// The rich note's sample text (#217), in the app's language: bold words,
+/// then a link a modifier-click opens (a key's click: desktops and the
+/// web; touch screens have none) and a chip a click or a tap opens.
+fn note_sample(cx: &App) -> Vec<Span> {
+    // Where the template puts each styled part.
+    const WORDS: char = '\u{E000}';
+    const LINK: char = '\u{E001}';
+    const PAGE: char = '\u{E002}';
+    let (words, link_, page) = (WORDS.to_string(), LINK.to_string(), PAGE.to_string());
+    let template = match cx.platform() {
+        Platform::Macos => strings::forms_note_text(
+            cx,
+            &words,
+            &strings::forms_note_click_mac(cx),
+            &link_,
+            &page,
+        ),
+        Platform::Windows | Platform::Linux => {
+            strings::forms_note_text(cx, &words, &strings::forms_note_click(cx), &link_, &page)
+        }
+        Platform::Web => strings::forms_note_text(
+            cx,
+            &words,
+            &strings::forms_note_click_web(cx),
+            &link_,
+            &page,
+        ),
+        _ => strings::forms_note_text_touch(cx, &words, &page),
+    };
+    let mut spans = Vec::new();
+    let mut plain = String::new();
+    for c in template.chars() {
+        let part = match c {
+            WORDS => span(strings::forms_note_words(cx)).bold(),
+            LINK => link(strings::forms_note_link(cx), "https://github.com/0xtlt/prismsdk"),
+            PAGE => chip("page:roadmap", strings::forms_note_page(cx)).chip_icon("doc.text"),
+            c => {
+                plain.push(c);
+                continue;
+            }
+        };
+        if !plain.is_empty() {
+            spans.push(span(std::mem::take(&mut plain)));
+        }
+        spans.push(part);
+    }
+    if !plain.is_empty() {
+        spans.push(span(plain));
+    }
+    spans
 }
 
 impl Forms {
