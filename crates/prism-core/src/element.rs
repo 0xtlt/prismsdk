@@ -1558,10 +1558,11 @@ text_entry!(RichInput);
 ///
 /// Styles come from the app: the field has no formatting commands of its
 /// own (⌘B is yours, with [`restyle_spans`](crate::restyle_spans)), and
-/// pasted text arrives plain. Rich editing runs on the web, macOS and
-/// Windows; iOS, GTK, Android and watchOS show a plain multi-line field of the
-/// value instead (styles not drawn, a chip shown as `U+FFFC`), whose edits
-/// still come back as spans that keep the styles of the text around them.
+/// pasted text arrives plain. Rich editing runs on the web, macOS,
+/// Windows, iOS, iPadOS, visionOS, Linux and Android; tvOS and watchOS show
+/// a plain multi-line field of the value instead (styles not drawn, a chip
+/// shown as `U+FFFC`), whose edits still come back as spans that keep the
+/// styles of the text around them.
 pub fn rich_input(spans: impl IntoIterator<Item = crate::spans::Span>) -> RichInput {
     // A paragraph: one line at least, where backends show it as a text
     // area (whose minimum is three lines, #235).
