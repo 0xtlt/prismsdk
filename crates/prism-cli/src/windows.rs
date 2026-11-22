@@ -318,18 +318,26 @@ fn device_capabilities(p: &Project) -> Vec<String> {
     caps
 }
 
+/// The MSIX's version: `[app] version`'s three numbers and 0
+/// (`1.2.0.0`). The Store wants the fourth part (the revision) to be 0,
+/// so `[app] build` stays out of it (the executable's file version keeps
+/// it), and each MSIX release needs a higher `[app] version`.
+fn package_version(p: &Project) -> String {
+    let info = prism_build::winres::AppInfo {
+        version: p.version.clone(),
+        ..Default::default()
+    };
+    let [a, b, c, _] = info.version_parts();
+    format!("{a}.{b}.{c}.0")
+}
+
 /// The MSIX's manifest.
 fn manifest(p: &Project, arch: &str, publisher: String) -> Result<msix::Manifest, String> {
     let name = msix::package_name(&p.bundle_id)?;
-    let info = prism_build::winres::AppInfo {
-        version: p.version.clone(),
-        build: p.build.clone(),
-        ..Default::default()
-    };
     Ok(msix::Manifest {
         toast_clsid: msix::class_id(&format!("{name}|{publisher}")),
         name,
-        version: info.version_quad(),
+        version: package_version(p),
         arch: arch_name(arch).to_string(),
         display_name: p.name.clone(),
         publisher_display_name: p.publisher.clone().unwrap_or_else(|| p.name.clone()),
@@ -644,7 +652,11 @@ mod tests {
         p.wns_app_id = Some("7edfab6c-25ae-4678-b406-d1848f97919a".into());
         let m = manifest(&p, "win-arm64", "CN=Example".into()).unwrap();
         assert_eq!(m.name, "com.example.app");
-        assert_eq!(m.version, "1.2.0.7");
+        // The revision is 0 (the Store's rule), whatever `[app] build` is.
+        assert_eq!(p.build.as_deref(), Some("7"));
+        assert_eq!(m.version, "1.2.0.0");
+        p.version = "2.10.3-beta.1".into();
+        assert_eq!(package_version(&p), "2.10.3.0");
         assert_eq!(m.arch, "arm64");
         assert_eq!(m.executable, "my_app.exe");
         assert_eq!(m.publisher_display_name, "Example, Inc.");

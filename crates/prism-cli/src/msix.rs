@@ -972,7 +972,7 @@ mod tests {
         let m = Manifest {
             name: "com.example.counter".into(),
             publisher: "CN=Example & Co".into(),
-            version: "1.2.0.7".into(),
+            version: "1.2.0.0".into(),
             arch: "x64".into(),
             display_name: "Counter".into(),
             publisher_display_name: "Example & Co".into(),
@@ -985,7 +985,7 @@ mod tests {
         };
         let x = m.xml();
         for part in [
-            r#"<Identity Name="com.example.counter" Publisher="CN=Example &amp; Co" Version="1.2.0.7" ProcessorArchitecture="x64" />"#,
+            r#"<Identity Name="com.example.counter" Publisher="CN=Example &amp; Co" Version="1.2.0.0" ProcessorArchitecture="x64" />"#,
             r#"<PackageDependency Name="Microsoft.WindowsAppRuntime.2" MinVersion="2.7.0.0" Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />"#,
             r#"<Application Id="App" Executable="counter.exe" EntryPoint="Windows.FullTrustApplication">"#,
             r#"Square150x150Logo="Logos\Square150x150Logo.png" Square44x44Logo="Logos\Square44x44Logo.png""#,

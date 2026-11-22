@@ -60,7 +60,7 @@ The crates are published to crates.io in dependency order; see
 | Windows | `.zip` (the app's folder) or `.msix` | `prism build windows` (`--msix`) | your download page (no Store submission yet) |
 | Web | Docker image | `prism build web --docker` | your registry or server |
 
-Versions come from `Prism.toml`. `[app] version` is the version people see. `[app] build` is the build number: `CFBundleVersion` on Apple platforms, `versionCode` on Android (or `[android] version_code`), the Debian revision on Linux, and the fourth part of the executable's version on Windows. Each upload needs a higher build number.
+Versions come from `Prism.toml`. `[app] version` is the version people see. `[app] build` is the build number: `CFBundleVersion` on Apple platforms, `versionCode` on Android (or `[android] version_code`), the Debian revision on Linux, and the fourth part of the executable's version on Windows. Each upload needs a higher build number. An MSIX's version is `[app] version` with 0 as its fourth part (`1.2.0.0`, as the Microsoft Store requires), so each MSIX release needs a higher `[app] version`.
 
 ```toml
 [app]

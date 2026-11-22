@@ -632,7 +632,7 @@ The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
 |---|---|
 | `Identity Name` | `[app] bundle_id`, `_` written `-` (3 to 50 letters, digits, `.` and `-`) |
 | `Identity Publisher` | the signing certificate's subject as Windows writes it (`CN=Example Ltd, O=Example Ltd, C=FR`), read back from the signed executable; `[windows] package_publisher` must then be equal or unset. Unsigned: `[windows] package_publisher`, else `CN=<[windows] publisher or [app] name>` |
-| `Identity Version` | `[app] version` and `[app] build` (`1.2.0.7`) |
+| `Identity Version` | `[app] version`'s three numbers and 0 (`1.2.0.0`): the Store wants the fourth part to be 0, so `[app] build` stays in the executable's file version only. Each MSIX release needs a higher `[app] version`: Windows updates an installed package only to a higher version |
 | `ProcessorArchitecture` | the target (`x64`, `arm64`, `x86`) |
 | `DisplayName`, `PublisherDisplayName`, `Description` | `[app] name`, `[windows] publisher` (else the name), `[app] description` (else the name) |
 | `Resources` | the app's languages (else `en-us`) |
@@ -654,7 +654,8 @@ app), and must trust the certificate that signed the package: a package
 signed by a certificate whose root Windows does not trust is refused
 (`0x800B0109`). A code-signing certificate from a certificate authority
 Windows trusts, or the Store's signature, avoids it. The Store also wants
-the version's fourth part to be 0, which Prism fills with `[app] build`.
+the version's fourth part to be 0, which it is (`1.2.0.0`): raise `[app] version`
+for each MSIX release.
 There is no `prism publish windows` yet.
 
 **What is proven** (on the Windows 11 test PC, with the Windows App
