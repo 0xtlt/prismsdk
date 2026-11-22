@@ -865,7 +865,7 @@ impl Render for Gallery {
         screen.child(
             body.child(self.decor)
             .child(self.forms)
-            .child(report::card())
+            .child(report::card(cx))
             .child(timetable::card(cx))
             .child(self.typography)
             .child(self.scene)

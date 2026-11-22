@@ -553,5 +553,35 @@
     "riverside": "Riverside",
     "north": "North Station",
     "open": "Open the timetable"
+  },
+  "report": {
+    "heading": "Navigation",
+    "intro": "Filters live in the URL; the report has its own header.",
+    "open": "Open the report",
+    "save_open": "Save and open",
+    "saved": "Saved ✓ — shown once, handed over by navigate_with",
+    "back": "‹ Back",
+    "title": "Report",
+    "screen": "Report · {period}",
+    "compare": "Compare with 90 days",
+    "rooms": "Rooms",
+    "selected": "Selected rooms (fits its two lines):",
+    "none": "None yet: tap rooms above.",
+    "url": "URL: {url}",
+    "visits": "Visits, last {period}",
+    "days": {
+      "one": "{count}d",
+      "other": "{count}d"
+    },
+    "room": {
+      "lobby": "Lobby",
+      "studio": "Studio",
+      "atelier": "Atelier",
+      "library": "Library",
+      "kitchen": "Kitchen",
+      "garden": "Garden",
+      "loft": "Loft",
+      "cellar": "Cellar"
+    }
   }
 }

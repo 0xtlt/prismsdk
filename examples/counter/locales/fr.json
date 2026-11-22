@@ -553,5 +553,35 @@
     "riverside": "Bord de rivière",
     "north": "Gare du Nord",
     "open": "Ouvrir les horaires"
+  },
+  "report": {
+    "heading": "Navigation",
+    "intro": "Les filtres sont dans l’URL ; le rapport a son propre en-tête.",
+    "open": "Ouvrir le rapport",
+    "save_open": "Enregistrer et ouvrir",
+    "saved": "Enregistré ✓ — affiché une fois, transmis par navigate_with",
+    "back": "‹ Retour",
+    "title": "Rapport",
+    "screen": "Rapport · {period}",
+    "compare": "Comparer sur 90 jours",
+    "rooms": "Salles",
+    "selected": "Salles choisies (tient sur ses deux lignes) :",
+    "none": "Aucune pour l’instant : touchez des salles ci-dessus.",
+    "url": "URL : {url}",
+    "visits": "Visites sur {period}",
+    "days": {
+      "one": "{count} j",
+      "other": "{count} j"
+    },
+    "room": {
+      "lobby": "Hall",
+      "studio": "Studio",
+      "atelier": "Atelier",
+      "library": "Bibliothèque",
+      "kitchen": "Cuisine",
+      "garden": "Jardin",
+      "loft": "Loft",
+      "cellar": "Cave"
+    }
   }
 }
