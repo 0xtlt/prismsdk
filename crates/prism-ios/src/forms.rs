@@ -567,7 +567,8 @@ mod text_area {
             self.placeholder.setHidden(!text.is_empty());
         }
 
-        /// Content height for `width`, at least three lines.
+        /// Content height for `width`, at least its minimum lines (#235;
+        /// one for a rich input).
         pub fn measure(&self, width: f64) -> CGSize {
             let v = &self.view;
             let fit = v.sizeThatFits(CGSize::new(width, f64::MAX / 4.));

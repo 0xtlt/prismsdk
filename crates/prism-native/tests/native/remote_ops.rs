@@ -1375,3 +1375,49 @@ fn rich_input_editing_hook_ops_and_events() {
         ))
     );
 }
+
+/// Wraps at `max_width` (10 per character), 20 per line.
+fn lines(r: &MeasureRequest) -> (f32, f32) {
+    let max = r.max_width.unwrap_or(f32::MAX);
+    let rows: f32 = r
+        .text
+        .split('\n')
+        .map(|l| (l.chars().count() as f32 * 10. / max).ceil().max(1.))
+        .sum();
+    (max.min(1000.), rows * 20.)
+}
+
+/// A text area is at least its minimum lines tall (#235), three unless
+/// set; a rich input one: a paragraph of one line is one line tall.
+#[test]
+fn a_text_area_measures_its_minimum_lines() {
+    let mut w = RemoteWidgets::new(lines).with_rich_inputs();
+    w.create(1, NodeKind::TextArea);
+    w.set_text(&1, "One line");
+    assert_eq!(w.measure(&1, Some(300.)).1, 60.);
+    // A long line wraps past them.
+    w.set_text(&1, &"x".repeat(50));
+    assert_eq!(w.measure(&1, Some(100.)).1, 100.);
+    w.set_config(&1, NodeKind::TextArea, "rows=1");
+    w.set_text(&1, "One line");
+    assert_eq!(w.measure(&1, Some(300.)).1, 20.);
+    // A rich input: a text area of `rows=1`, as `rich_input` sends it
+    // (`prism-core`'s `a_rich_input_is_one_line_at_least`).
+    w.create(2, NodeKind::RichInput);
+    w.set_config(&2, NodeKind::RichInput, "rows=1");
+    w.set_text(&2, "Select from the middle of this paragraph,");
+    assert_eq!(w.measure(&2, Some(1000.)).1, 20.);
+    w.set_text(&2, "Two\nlines");
+    assert_eq!(w.measure(&2, Some(1000.)).1, 40.);
+    // With padding, the content alone: the same lines.
+    w.set_style(
+        &2,
+        &Style {
+            padding: prism_core::Edges::all(8.),
+            ..Style::default()
+        },
+    );
+    assert_eq!(w.measure(&2, Some(1000.)).1, 40.);
+    w.set_text(&2, "One");
+    assert_eq!(w.measure(&2, Some(1000.)).1, 20.);
+}

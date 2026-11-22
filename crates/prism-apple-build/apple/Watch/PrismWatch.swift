@@ -122,12 +122,13 @@ public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointe
         result = CGSize(width: maxWidth.isFinite ? maxWidth : 120, height: line.height + 16)
     case "text_area":
         // TextEditor is unavailable on watchOS: a vertical TextField, its
-        // text wrapped inside the platter's insets, at least 3 lines.
+        // text wrapped inside the platter's insets, at least one line (its
+        // minimum lines come as lines of text, #235).
         let width = maxWidth.isFinite ? maxWidth : 160
         let line = textSize("Ag").height
         let inner = max(width - TextAreaInset.horizontal * 2, 1)
         let content = textSize(String(cString: text), width: inner).height
-        result = CGSize(width: width, height: max(content, line * 3) + TextAreaInset.vertical * 2)
+        result = CGSize(width: width, height: max(content, line) + TextAreaInset.vertical * 2)
     case "toggle", "progress":
         result = MainActor.assumeIsolated { controlSize(kind) }
         if kind == "progress", maxWidth.isFinite { result.width = maxWidth }

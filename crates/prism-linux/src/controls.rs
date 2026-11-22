@@ -562,8 +562,8 @@ impl TextArea {
         self.placeholder.set_margin_top(t);
     }
 
-    /// Content height for `width`: at least three lines, insets included.
-    /// Its height at `width`; `attrs`: a rich input's fonts and chips.
+    /// Its height at `width`, insets included: at least its minimum lines
+    /// (#235; one for a rich input). `attrs`: a rich input's fonts and chips.
     pub fn measure_height(&self, width: f32, attrs: Option<gtk::pango::AttrList>) -> f32 {
         let (l, r, t, b) = self.pad.get();
         let inner = (width - (l + r) as f32).max(1.);

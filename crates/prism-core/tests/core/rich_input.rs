@@ -89,6 +89,15 @@ fn a_rich_input_sends_its_plain_text_then_its_runs() {
     assert!(chip.link.is_some(), "a clickable chip gets a link id");
 }
 
+/// A rich input is a paragraph: where a backend shows it as a text area
+/// (three lines at least, #235), its config asks for one line.
+#[test]
+fn a_rich_input_is_one_line_at_least() {
+    let (h, id) = note(|| vec![span("One line")]);
+    let config = prism_core::controls::InputConfig::decode(&h.host.get(id).config);
+    assert_eq!(config.min_rows(), 1);
+}
+
 #[test]
 fn edits_reported_as_runs_keep_styles_links_and_chip_handlers() {
     let (mut h, id) = note(|| vec![span("Hi "), span("there").bold(), mention()]);

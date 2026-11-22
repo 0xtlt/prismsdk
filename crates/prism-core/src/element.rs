@@ -1546,8 +1546,8 @@ text_entry!(RichInput);
 /// }
 /// ```
 ///
-/// It wraps like a paragraph and grows with its content (cap it with
-/// `max_h`). Enter calls [`on_submit`](RichInput::on_submit) and inserts
+/// It wraps like a paragraph and grows with its content: one line of text
+/// tall when it holds one (cap it with `max_h`). Enter calls [`on_submit`](RichInput::on_submit) and inserts
 /// nothing (a block editor splits the block there, with
 /// [`split_spans`](crate::split_spans) at [`KeyEvent::selection`](crate::KeyEvent::selection));
 /// Shift+Enter inserts a line break (`'\n'`). Selections
@@ -1563,7 +1563,11 @@ text_entry!(RichInput);
 /// value instead (styles not drawn, a chip shown as `U+FFFC`), whose edits
 /// still come back as spans that keep the styles of the text around them.
 pub fn rich_input(spans: impl IntoIterator<Item = crate::spans::Span>) -> RichInput {
-    RichInput(VNode::new(NodeKind::RichInput)).spans(spans)
+    // A paragraph: one line at least, where backends show it as a text
+    // area (whose minimum is three lines, #235).
+    RichInput(VNode::new(NodeKind::RichInput))
+        .input_config(|c| c.rows = Some(1))
+        .spans(spans)
 }
 
 impl RichInput {
