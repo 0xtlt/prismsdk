@@ -566,14 +566,24 @@ impl TextArea {
     /// (#235; one for a rich input). `attrs`: a rich input's fonts and chips.
     pub fn measure_height(&self, width: f32, attrs: Option<gtk::pango::AttrList>) -> f32 {
         let (l, r, t, b) = self.pad.get();
-        let inner = (width - (l + r) as f32).max(1.);
+        // The scrolled window's frame (its CSS border) takes its share of
+        // the width and the height: left out, a text on two lines wrapped
+        // differently and was cut, scrolling inside its field.
+        let (fx, fy) = if self.scroll.has_frame() {
+            #[allow(deprecated)]
+            let f = self.scroll.style_context().border();
+            ((f.left() + f.right()) as f32, (f.top() + f.bottom()) as f32)
+        } else {
+            (0., 0.)
+        };
+        let inner = (width - (l + r) as f32 - fx).max(1.);
         let layout = self.view.create_pango_layout(Some(&self.text()));
         layout.set_attributes(attrs.as_ref());
         layout.set_width((inner * gtk::pango::SCALE as f32) as i32);
         layout.set_wrap(gtk::pango::WrapMode::WordChar);
         let text_h = layout.pixel_size().1 as f32;
         let line = self.view.create_pango_layout(Some("Ag")).pixel_size().1 as f32;
-        text_h.max(line * self.rows.get().max(1) as f32) + (t + b) as f32
+        text_h.max(line * self.rows.get().max(1) as f32) + (t + b) as f32 + fy
     }
 }
 
