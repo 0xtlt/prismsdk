@@ -407,6 +407,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Windows: a text area or rich input that draws its own look (a background or border, as `ui::text_area` gives it) and has no padding keeps its text 10 × 8 from its edges, as on macOS and Linux; its text touched the border. Its measure counts those insets, and a padded one wraps its text at its real width (the padding was taken off twice).
 - watchOS: a text area and a rich input show their text on as many lines as they are measured; watchOS drew a text field's text on one line, cut (« through this o… »), in a box as tall as the wrapped text.
 - Counter: the last English left in French and Arabic is translated: the widgets' names and descriptions in the gallery (named again when the language changes), the local web page of Web and video (with its `lang` and `dir`), the shared text, the first todo and the « kg » of Layout.
 - Counter: the Navigation card and the Report screen it opens are in the app's language (they stayed English in French and Arabic): their headings, buttons, room names, periods (« 30 j ») and the « Saved » notice.
