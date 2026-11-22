@@ -1,0 +1,14 @@
+# Findings of `gitleaks git` that are not secrets, one fingerprint per line
+# (commit:file:rule:line), checked by hand:
+# - test markers (S34-MARK-*) and fake OAuth tokens in prism-http's tests;
+# - the WebSocket handshake key of RFC 6455's example in prism-web's tests;
+# - the PEM markers prism-cli's JWT code looks for, and Apple's example issuer id;
+# - RFC 8292's example VAPID token in prism-push's tests.
+4f61870a558a0f9b3b321a30d236dec483e66e25:crates/prism-http/src/lib.rs:generic-api-key:691
+80d0b3dab1a33b9b1a8d1fdb7f783960da085392:crates/prism-web/tests/socket_limits.rs:generic-api-key:67
+95cd478a7f31c8a7ceebe6ca95be5cfc3bf4393c:crates/prism-web/tests/axum_host.rs:generic-api-key:153
+5ce472b26f689210029802ab5c5acc9972359cec:crates/prism-http/src/oauth.rs:generic-api-key:685
+32dd344603243d37bf01a565eb2259e0079e2924:crates/prism-cli/src/jwt.rs:private-key:11
+32dd344603243d37bf01a565eb2259e0079e2924:crates/prism-cli/src/jwt.rs:private-key:17
+32dd344603243d37bf01a565eb2259e0079e2924:crates/prism-cli/src/appstore.rs:generic-api-key:564
+80a22683f8e24bcdf2dd2275aad6221e8f02eba3:crates/prism-push/src/webpush.rs:jwt:400
