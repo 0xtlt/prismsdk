@@ -125,6 +125,14 @@ pub fn stroke(style: UnderlineStyle, size: f32) -> Stroke {
     }
 }
 
+impl Stroke {
+    /// How far under the baseline its lowest line reaches: past a text's
+    /// last line (a double underline's second line), less than a line.
+    pub fn depth(&self) -> f32 {
+        self.offsets.last().copied().unwrap_or(0.) + self.thickness / 2.
+    }
+}
+
 /// A line's center at `y`, set so a whole-pixel line covers whole pixels.
 pub fn snap(y: f32, thickness: f32) -> f32 {
     (y - thickness / 2.).round() + thickness / 2.
@@ -202,6 +210,16 @@ mod tests {
         );
         // Empty boxes (a line break) draw nothing.
         assert!(segments([(5., 0., 0., 20.)]).is_empty());
+        // XAML's are carets (no width): the one after the last character
+        // ends the line, the next line's first starts the next.
+        let carets = [0., 8., 16., 24.].map(|x| (x, 0., 0., 20.));
+        let s = segments(
+            carets
+                .into_iter()
+                .chain([(0., 20., 0., 20.), (6., 20., 0., 20.)]),
+        );
+        assert_eq!((s[0].x0, s[0].x1), (0., 24.));
+        assert_eq!((s[1].x0, s[1].x1), (0., 6.));
     }
 
     #[test]
@@ -215,6 +233,8 @@ mod tests {
         let double = stroke(UnderlineStyle::Double, 14.);
         assert_eq!(double.offsets.len(), 2);
         assert_eq!(double.offsets[1] - double.offsets[0], 2.);
+        // Its second line goes deeper than one, still above the next line.
+        assert!(double.depth() > single.depth() && double.depth() < 14. * 0.4);
         let dotted = stroke(UnderlineStyle::Dotted, 14.);
         assert!(dotted.round && dotted.dash.is_some());
         assert_eq!(stroke(UnderlineStyle::Dashed, 14.).dash, Some((4., 2.)));

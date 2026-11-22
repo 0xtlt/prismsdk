@@ -140,12 +140,19 @@ fn draw(layer: &Layer) -> Result<()> {
     let at = tb
         .TransformToVisual(&layer.canvas)?
         .TransformPoint(Point { X: 0., Y: 0. })?;
+    // Down to the lowest stroke under the last line (a double underline's
+    // second line can pass the text's bottom); lines cut off stay hidden.
+    let depth = layer
+        .marks
+        .iter()
+        .map(|(m, _)| underline::stroke(m.style, m.size).depth())
+        .fold(0., f32::max);
     let clip = RectangleGeometry::new()?;
     clip.SetRect(WinRect {
         X: at.X,
         Y: at.Y,
         Width: w as f32,
-        Height: h as f32,
+        Height: h as f32 + depth.ceil(),
     })?;
     layer.canvas.SetClip(&clip)?;
     // Lines share the first line's baseline offset.
@@ -160,14 +167,23 @@ fn draw(layer: &Layer) -> Result<()> {
             continue;
         };
         let start = run.ContentStart()?;
-        let len = run.Text()?.len() as i32;
-        let boxes = (0..len.min(4096)).filter_map(|i| {
-            let r = start
-                .GetPositionAtOffset(i, LogicalDirection::Forward)
-                .ok()?
-                .GetCharacterRect(LogicalDirection::Forward)
-                .ok()?;
-            Some((r.X + at.X, r.Y + at.Y, r.Width, r.Height))
+        let len = (run.Text()?.len() as i32).min(4096);
+        // XAML's character rects are carets (no width): each position's
+        // looking back (the end of the character before, on its line) and
+        // forward (the start of the next, maybe on the next line), so each
+        // line's last character is underlined too.
+        let boxes = (0..=len).flat_map(|i| {
+            let p = start.GetPositionAtOffset(i, LogicalDirection::Forward).ok();
+            [
+                (i > 0).then_some(LogicalDirection::Backward),
+                (i < len).then_some(LogicalDirection::Forward),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(move |dir| {
+                let r = p.as_ref()?.GetCharacterRect(dir).ok()?;
+                Some((r.X + at.X, r.Y + at.Y, r.Width, r.Height))
+            })
         });
         let lines = underline::segments(boxes);
         add_path(&kids, &lines, m, *color, |s| s.top + baseline)?;
