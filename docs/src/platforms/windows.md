@@ -701,11 +701,16 @@ and process-creation logs could read it. What each tool sees:
 | Tool | Chosen | What it exposes |
 |---|---|---|
 | `osslsigncode` | first, on every OS: `PRISM_OSSLSIGNCODE`, else on `PATH` (`brew install osslsigncode`, `apt install osslsigncode`) | the password is in a file in a new temporary folder only the user can open (0700; on Windows its inherited permissions replaced by the user's alone), deleted after signing |
-| `signtool` | on Windows without osslsigncode: `PRISM_SIGNTOOL`, else on `PATH`, else the Windows SDK's | signtool takes a password only on its command line (`/p`), so Prism gives it none: Windows PowerShell opens the `.pfx` with the password from its standard input, keeps the key in memory (no certificate store), and writes a copy without a password into such a private folder; signtool reads that copy, which is deleted right after. signtool leaves the key it imported in the user's key folders (`%APPDATA%\Microsoft\Crypto\Keys`, `…\Crypto\RSA`): the files that appeared while it signed are deleted |
+| `signtool` | on Windows without osslsigncode: `PRISM_SIGNTOOL`, else on `PATH`, else the Windows SDK's | signtool takes a `.pfx` password only on its command line (`/p`), so it gets no `.pfx`: Windows PowerShell opens it with the password from its standard input, keeps its key in memory, and imports that key, non-exportable, into a key container of the user's key store named `prism-sign-<pid>-<random>` (the CNG Microsoft Software Key Storage Provider, for RSA and ECDSA keys; if it refuses an RSA key, the Microsoft Enhanced RSA and AES Cryptographic Provider). signtool signs with that container and the public certificate (`/f cert.cer /csp … /kc prism-sign-…`), then the container is deleted by its name, also when signing fails. No key file is written and no certificate store is touched |
 
-For the few seconds of signing, the password-less copy is readable by any
-process running as the user, as the password itself would be. The
-signature is SHA-256 Authenticode. Without the variable nothing is signed: the zip
+With signtool, for the few seconds of signing, the key is in that
+container: any process running as the user can sign with it, and one that
+decrypts Windows' key files itself (they are protected for the user, not
+for one program) could read it, as such a process could read the password
+from Prism's environment. A container left by a crash (`certutil -user -csp
+"Microsoft Software Key Storage Provider" -key` lists them) is deleted by
+the next signing once its process is gone; Prism deletes no other
+container, and no file. The signature is SHA-256 Authenticode. Without the variable nothing is signed: the zip
 still runs (a downloaded unsigned executable gets a SmartScreen warning on
 its first run), the MSIX does not install.
 

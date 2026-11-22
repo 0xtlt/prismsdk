@@ -123,7 +123,8 @@ certificate (a `.pfx`), with its password in `PRISM_WINDOWS_CERTIFICATE_PASS`
 (never in `Prism.toml`) and an optional `PRISM_WINDOWS_TIMESTAMP_URL`:
 the executable before zipping or packing, then the package.
 `osslsigncode` signs where it is installed, else `signtool` on Windows;
-neither gets the password on its command line ([Windows ›
+neither gets the password on its command line, and signtool gets no key
+file, only a key container Prism deletes right after ([Windows ›
 Signing](platforms/windows.md#signing) says what each sees). The MSIX's publisher is the
 certificate's subject. Windows installs only signed packages whose
 certificate it trusts; an unsigned zip runs, with a SmartScreen warning on

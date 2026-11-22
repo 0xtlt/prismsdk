@@ -14,14 +14,16 @@
 //!   only the user reads (`-readpass`);
 //! - else, on Windows, `signtool` (`PRISM_SIGNTOOL`, `PATH`, the Windows
 //!   SDK's, or the `Microsoft.Windows.SDK.BuildTools` NuGet package's),
-//!   which takes a password only as `/p`: Windows PowerShell opens the
-//!   `.pfx` with the password read from its standard input, its key held
-//!   in memory only (`EphemeralKeySet`), and writes it again without a
-//!   password into a private temporary folder (this user only), which
-//!   signtool reads and which is deleted right after. Nothing goes into a
-//!   certificate store. signtool leaves the key it imported in the user's
-//!   key store (`%APPDATA%\Microsoft\Crypto`): the files it added are
-//!   deleted after it signed.
+//!   which takes a `.pfx` password only as `/p`, so it gets no `.pfx`:
+//!   Windows PowerShell opens the `.pfx` with the password read from its
+//!   standard input, its key held in memory only, and imports that key,
+//!   non-exportable, into a key container of the user's key store named
+//!   `prism-sign-<pid>-<random>` (`winsign/signing-key.ps1`). signtool
+//!   signs with that container (`/csp`, `/kc`) and the public certificate
+//!   (a `.cer`); the container is deleted right after, by its name, also
+//!   when signing fails ([`KeyContainer`]). No key file is written and no
+//!   certificate store is touched; containers of that name left by a run
+//!   that crashed are deleted on the next one, and no other.
 //!
 //! An MSIX's `Publisher` must be the certificate's subject, as Windows
 //! writes it (`CN=Example Ltd, O=Example Ltd, C=FR`): the executable is
@@ -88,16 +90,14 @@ impl Certificate {
         let dir = private_dir()?;
         match tool {
             Tool::Signtool(signtool) => {
-                let pfx = dir.path().join("key.pfx");
-                unprotect_pfx(&self.pfx, &self.password, &pfx)?;
-                let before = key_files();
+                let cer = dir.path().join("cert.cer");
+                let key = KeyContainer::import(&self.pfx, &self.password, dir.path(), &cer)?;
                 let result = run(
-                    self.signtool_command(&signtool, &pfx, file),
+                    self.signtool_command(&signtool, &cer, &key.provider, &key.name, file),
                     &format!("signtool sign {what}"),
                 );
-                let _ = std::fs::remove_file(&pfx);
-                remove_new_key_files(&before);
-                result
+                let removed = key.remove();
+                result.and(removed)
             }
             Tool::Osslsigncode(tool) => {
                 let pass = dir.path().join("pass");
@@ -114,10 +114,20 @@ impl Certificate {
         }
     }
 
-    /// signtool with the password-less copy of the `.pfx`: no `/p`.
-    fn signtool_command(&self, signtool: &Path, pfx: &Path, file: &Path) -> Command {
+    /// signtool with the public certificate and the key container that
+    /// holds its key: no password, no key file.
+    fn signtool_command(
+        &self,
+        signtool: &Path,
+        cer: &Path,
+        provider: &str,
+        container: &str,
+        file: &Path,
+    ) -> Command {
         let mut cmd = Command::new(signtool);
-        cmd.args(["sign", "/fd", "SHA256", "/f"]).arg(pfx);
+        cmd.args(["sign", "/fd", "SHA256", "/f"])
+            .arg(cer)
+            .args(["/csp", provider, "/kc", container]);
         if let Some(url) = &self.timestamp {
             cmd.args(["/tr", url, "/td", "SHA256"]);
         }
@@ -181,36 +191,37 @@ fn sid_of(csv: &str) -> Option<String> {
         .then(|| sid.to_string())
 }
 
-/// Windows PowerShell: the `.pfx` in `PRISM_PFX_IN` opened with the
-/// password from standard input (UTF-8), its private key kept in memory
-/// (`EphemeralKeySet`: nothing goes into a certificate or key store), and
-/// written again to `PRISM_PFX_OUT` without a password.
-const UNPROTECT_PS1: &str = r#"$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-try {
-    $in = [Console]::OpenStandardInput()
-    $buffer = New-Object IO.MemoryStream
-    $in.CopyTo($buffer)
-    $password = [Text.Encoding]::UTF8.GetString($buffer.ToArray())
-    $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]'Exportable, EphemeralKeySet'
-    $certs = New-Object Security.Cryptography.X509Certificates.X509Certificate2Collection
-    $certs.Import([IO.File]::ReadAllBytes($env:PRISM_PFX_IN), $password, $flags)
-    $type = [Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12
-    [IO.File]::WriteAllBytes($env:PRISM_PFX_OUT, $certs.Export($type))
-} catch {
-    $e = $_.Exception
-    while ($e.InnerException) { $e = $e.InnerException }
-    [Console]::Error.WriteLine($e.Message.Trim())
-    exit 1
-}
-"#;
+/// The Windows PowerShell script that imports the `.pfx` key into a key
+/// container, and deletes it (`PRISM_KEY_ACTION`).
+const SIGNING_KEY_PS1: &str = include_str!("winsign/signing-key.ps1");
 
-/// The PowerShell command that writes the password-less copy: the
-/// script as `-EncodedCommand`, the paths in the environment, nothing
-/// secret in its arguments (the password goes to its standard input).
-fn unprotect_command(pfx: &Path, out: &Path) -> Command {
+/// Runs the script in `PRISM_KEY_SCRIPT`: too long for `-EncodedCommand`
+/// (a command line holds 32767 characters), and a script block, unlike
+/// `-File`, runs whatever the execution policy.
+const BOOTSTRAP_PS1: &str = "$ErrorActionPreference = 'Stop'; \
+     & ([ScriptBlock]::Create([IO.File]::ReadAllText($env:PRISM_KEY_SCRIPT)))";
+
+/// A key container name of Prism's own: `prism-sign-<pid>-<64 random bits>`,
+/// so that a later run deletes it only once this process is gone.
+fn key_name() -> Result<String, String> {
+    use ring::rand::SecureRandom as _;
+    let mut bytes = [0u8; 8];
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| "no random bytes for a key container name".to_string())?;
+    Ok(format!(
+        "prism-sign-{}-{:016x}",
+        std::process::id(),
+        u64::from_be_bytes(bytes)
+    ))
+}
+
+/// The PowerShell command for `action` on the container `name`: the script
+/// in `script`, nothing secret in its arguments or environment (a password
+/// goes to its standard input).
+fn key_command(script: &Path, action: &str, name: &str) -> Command {
     use base64::Engine as _;
-    let utf16: Vec<u8> = UNPROTECT_PS1
+    let utf16: Vec<u8> = BOOTSTRAP_PS1
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
@@ -223,8 +234,9 @@ fn unprotect_command(pfx: &Path, out: &Path) -> Command {
         "-EncodedCommand",
     ])
     .arg(base64::engine::general_purpose::STANDARD.encode(utf16))
-    .env("PRISM_PFX_IN", pfx)
-    .env("PRISM_PFX_OUT", out)
+    .env("PRISM_KEY_SCRIPT", script)
+    .env("PRISM_KEY_ACTION", action)
+    .env("PRISM_KEY_NAME", name)
     .env_remove(PASSWORD_VAR)
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
@@ -232,23 +244,19 @@ fn unprotect_command(pfx: &Path, out: &Path) -> Command {
     cmd
 }
 
-/// Writes `pfx` again at `out` without a password, for signtool.
-fn unprotect_pfx(pfx: &Path, password: &str, out: &Path) -> Result<(), String> {
+/// Runs `cmd` with `input` on its standard input: its standard output, or
+/// its error message.
+fn run_with_input(mut cmd: Command, input: &[u8], what: &str) -> Result<String, String> {
     use std::io::Write;
-    let what = format!("opening {} with Windows PowerShell", pfx.display());
-    let mut child = unprotect_command(pfx, out)
-        .spawn()
-        .map_err(|e| format!("{what}: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("{what}: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(password.as_bytes())
-            .map_err(|e| format!("{what}: {e}"))?;
+        stdin.write_all(input).map_err(|e| format!("{what}: {e}"))?;
     }
     let output = child
         .wait_with_output()
         .map_err(|e| format!("{what}: {e}"))?;
-    if output.status.success() && out.is_file() {
-        return Ok(());
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
     // PowerShell may add progress records (CLIXML) to its error output.
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -257,40 +265,71 @@ fn unprotect_pfx(pfx: &Path, password: &str, out: &Path) -> Result<(), String> {
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with("#< CLIXML") && !l.starts_with("<Objs"))
         .collect();
-    Err(format!(
-        "{what} failed (a wrong {PASSWORD_VAR}?): {}",
-        why.join(" ")
-    ))
+    Err(format!("{what} failed: {}", why.join(" ")))
 }
 
-/// The user's key store folders signtool's import writes to: CNG keys
-/// (`Crypto\Keys`) and CryptoAPI ones (`Crypto\RSA\<SID>`).
-fn key_dirs() -> Vec<PathBuf> {
-    let Some(appdata) = std::env::var_os("APPDATA").filter(|_| cfg!(windows)) else {
-        return Vec::new();
-    };
-    let crypto = PathBuf::from(appdata).join("Microsoft").join("Crypto");
-    let mut dirs = vec![crypto.join("Keys")];
-    if let Ok(sids) = std::fs::read_dir(crypto.join("RSA")) {
-        dirs.extend(sids.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+/// The `.pfx` key in a key container of the user's key store, for signtool:
+/// deleted by [`KeyContainer::remove`], or when dropped (a signing error).
+struct KeyContainer {
+    name: String,
+    provider: String,
+    script: PathBuf,
+    removed: bool,
+}
+
+impl KeyContainer {
+    /// Imports the key of `pfx` (opened with `password`) into a new
+    /// container, and writes its certificate to `cer`; `dir` is private.
+    fn import(pfx: &Path, password: &str, dir: &Path, cer: &Path) -> Result<Self, String> {
+        let script = dir.join("signing-key.ps1");
+        if !script.is_file() {
+            write_private(&script, SIGNING_KEY_PS1)?;
+        }
+        let mut key = KeyContainer {
+            name: key_name()?,
+            provider: String::new(),
+            script,
+            removed: false,
+        };
+        let mut cmd = key_command(&key.script, "import", &key.name);
+        cmd.env("PRISM_PFX_IN", pfx).env("PRISM_CER_OUT", cer);
+        // Dropped on an error: whatever the script made is deleted.
+        let what = format!("opening {} with Windows PowerShell", pfx.display());
+        let out = run_with_input(cmd, password.as_bytes(), &what)
+            .map_err(|e| format!("{e} (a wrong {PASSWORD_VAR}?)"))?;
+        key.provider = out
+            .lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .ok_or_else(|| format!("{what}: no key container"))?
+            .to_string();
+        Ok(key)
     }
-    dirs
+
+    /// Deletes the container, and checks it is gone.
+    fn remove(mut self) -> Result<(), String> {
+        self.removed = true;
+        self.delete()
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        let cmd = key_command(&self.script, "delete", &self.name);
+        run_with_input(
+            cmd,
+            &[],
+            &format!("deleting the key container {}", self.name),
+        )
+        .map(drop)
+    }
 }
 
-/// The files in the key store folders now.
-fn key_files() -> std::collections::HashSet<PathBuf> {
-    key_dirs()
-        .iter()
-        .filter_map(|d| std::fs::read_dir(d).ok())
-        .flat_map(|entries| entries.flatten().map(|e| e.path()))
-        .collect()
-}
-
-/// Deletes the key files that appeared since `before`: the key signtool
-/// imported from the password-less `.pfx` and left behind.
-fn remove_new_key_files(before: &std::collections::HashSet<PathBuf>) {
-    for path in key_files().difference(before) {
-        let _ = std::fs::remove_file(path);
+impl Drop for KeyContainer {
+    fn drop(&mut self) {
+        if !self.removed
+            && let Err(e) = self.delete()
+        {
+            eprintln!("prism: {e}");
+        }
     }
 }
 
@@ -339,7 +378,7 @@ impl Tool {
                 .map(PathBuf::from)
         };
         // osslsigncode first, also on Windows: it reads the password from a
-        // file; signtool takes the `.pfx` without one (`unprotect_pfx`).
+        // file; signtool signs with a key container (`KeyContainer`).
         if let Some(t) = env("PRISM_OSSLSIGNCODE") {
             return Ok(Tool::Osslsigncode(t));
         }
@@ -699,8 +738,8 @@ pub(crate) mod tests {
     }
 
     /// The password is on no command line and in no child's environment:
-    /// signtool gets a password-less copy, osslsigncode a file,
-    /// PowerShell its standard input.
+    /// signtool gets a key container and a certificate, osslsigncode a
+    /// file, PowerShell its standard input.
     #[test]
     fn the_password_stays_off_command_lines() {
         let cert = Certificate {
@@ -721,7 +760,9 @@ pub(crate) mod tests {
         };
         let signtool = cert.signtool_command(
             Path::new("signtool.exe"),
-            Path::new("tmp/key.pfx"),
+            Path::new("tmp/cert.cer"),
+            "Microsoft Software Key Storage Provider",
+            "prism-sign-42-0123456789abcdef",
             Path::new("app.exe"),
         );
         let words = all(&signtool);
@@ -736,7 +777,11 @@ pub(crate) mod tests {
                 "/fd",
                 "SHA256",
                 "/f",
-                "tmp/key.pfx",
+                "tmp/cert.cer",
+                "/csp",
+                "Microsoft Software Key Storage Provider",
+                "/kc",
+                "prism-sign-42-0123456789abcdef",
                 "/tr",
                 "http://timestamp.example",
                 "/td",
@@ -753,15 +798,59 @@ pub(crate) mod tests {
         let words = all(&ossl);
         assert!(!words.iter().any(|w| w.contains("s3cret")), "{words:?}");
         assert!(words.iter().any(|w| w == "-readpass"));
-        let ps = unprotect_command(Path::new("dev.pfx"), Path::new("tmp/key.pfx"));
+        let mut ps = key_command(
+            Path::new("tmp/signing-key.ps1"),
+            "import",
+            "prism-sign-42-0123456789abcdef",
+        );
+        ps.env("PRISM_PFX_IN", "dev.pfx");
         let words = all(&ps);
         assert!(!words.iter().any(|w| w.contains("s3cret")), "{words:?}");
-        // The script reads the password from its input, keeps the key in
-        // memory and exports without a password.
-        for part in ["OpenStandardInput", "EphemeralKeySet", "Export($type)"] {
-            assert!(UNPROTECT_PS1.contains(part), "{part}");
+        assert!(words.iter().any(|w| w == "PRISM_KEY_SCRIPT"));
+    }
+
+    /// The script reads the password from its input, keeps the `.pfx` key
+    /// in memory, imports it non-exportable into the named container,
+    /// writes no key file, touches no certificate store, and deletes only
+    /// Prism's own containers.
+    #[test]
+    fn the_signing_key_script_keeps_the_key_in_a_container() {
+        for part in [
+            "OpenStandardInput",
+            "'EphemeralKeySet'",
+            "\"Export Policy\", BitConverter.GetBytes(0)",
+            "NCryptCreatePersistedKey",
+            "UseNonExportableKey",
+            "\"^prism-sign-[0-9]+-[0-9a-f]+$\"",
+            "'^prism-sign-(\\d+)-[0-9a-f]+$'",
+            "Get-Process -Id",
+            "WriteAllBytes($env:PRISM_CER_OUT, $cert.RawData)",
+        ] {
+            assert!(SIGNING_KEY_PS1.contains(part), "{part}");
         }
-        assert!(!UNPROTECT_PS1.contains("Cert:"));
+        // One file written (the public certificate), no store opened.
+        assert_eq!(SIGNING_KEY_PS1.matches("WriteAllBytes").count(), 1);
+        for absent in ["Cert:", "X509Store", "Exportable,", "Pkcs12"] {
+            assert!(!SIGNING_KEY_PS1.contains(absent), "{absent}");
+        }
+        // The bootstrap fits a command line; the script would not.
+        assert!(BOOTSTRAP_PS1.len() < 200);
+        assert!(BOOTSTRAP_PS1.contains("$env:PRISM_KEY_SCRIPT"));
+    }
+
+    #[test]
+    fn key_container_names_are_prisms_own() {
+        let a = key_name().unwrap();
+        let b = key_name().unwrap();
+        assert_ne!(a, b);
+        let prefix = format!("prism-sign-{}-", std::process::id());
+        let random = a.strip_prefix(&prefix).unwrap();
+        assert_eq!(random.len(), 16);
+        assert!(
+            random
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
     }
 
     #[test]
