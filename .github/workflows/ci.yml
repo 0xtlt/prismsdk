@@ -225,6 +225,9 @@ jobs:
       - name: Throwaway signing identity, profiles and App Store Connect key
         run: |
           bash scripts/test-signing.sh "$RUNNER_TEMP/signing" dev.prism.counter > "$RUNNER_TEMP/signing.env"
+          # On the runners codesign finds an identity only in the search list,
+          # even with --keychain ("could not be found in the keychain").
+          security list-keychains -d user -s "$RUNNER_TEMP/signing/prism-test.keychain-db" $(security list-keychains -d user | tr -d '"')
           openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$RUNNER_TEMP/AuthKey_CITEST1234.p8"
       # visionOS needs Xcode 26's SDK (XROS_DEPLOYMENT_TARGET 26): not on this image.
       - name: App Store dry runs (iOS, tvOS, watchOS, macOS) and notarization dry run

@@ -141,7 +141,7 @@ Running and shipping](platforms/windows.md#running-and-shipping) and
 
 ### Trying it without accounts
 
-`scripts/test-signing.sh <dir> <bundle id>` creates a throwaway keychain with a self-signed identity, plus provisioning profiles signed by it. It prints the `PRISM_*` variables to export. Apple refuses all of this, so it is only for exercising the builds and the dry runs. With them, `prism publish ios --dry-run` and the others build real packages, check them, and show the upload commands. Identity problems appear as warnings in a dry run and as errors for a real upload. productbuild only signs packages with an identity the system trusts, so the test `.pkg` is unsigned (`PRISM_INSTALLER_IDENTITY=-`).
+`scripts/test-signing.sh <dir> <bundle id>` creates a throwaway keychain with a self-signed identity, plus provisioning profiles signed by it. It prints the `PRISM_*` variables to export. Apple refuses all of this, so it is only for exercising the builds and the dry runs. With them, `prism publish ios --dry-run` and the others build real packages, check them, and show the upload commands. Identity problems appear as warnings in a dry run and as errors for a real upload. productbuild only signs packages with an identity the system trusts, so the test `.pkg` is unsigned (`PRISM_INSTALLER_IDENTITY=-`). On CI runners codesign finds the identity only once the keychain is in the search list (`security list-keychains -d user -s <keychain> …`, as `.github/workflows/ci.yml` does); the script leaves your own search list alone.
 
 ### Secrets for CI
 
