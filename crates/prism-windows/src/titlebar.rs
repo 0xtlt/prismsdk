@@ -13,13 +13,15 @@
 //! with a menu bar they are in its row, and over a tab bar or navigation
 //! header along the top edge that bar makes room for them; it is `None`
 //! then, so an app's title bar does not draw a second one under the bar.
-//! It follows navigations, bars shown or hidden and resizes ([`follow`]).
+//! It follows navigations, bars shown or hidden and resizes ([`follow`])
+//! in the same turn of the loop, so the first frame of a screen already
+//! shows the app's tree for it.
 
 use core::ffi::c_void;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use prism_core::{NodeId, WindowControls};
+use prism_core::{NodeId, Patch, WindowControls};
 use windows::Foundation::IReference;
 use windows::Foundation::Point;
 use windows::Graphics::RectInt32;
@@ -57,12 +59,12 @@ struct Bar {
     regions: Option<Pixels>,
     /// The caption buttons' frame (DIPs from the window's top left).
     buttons: Option<WindowControls>,
-    /// What `cx.window_controls()` was told last.
-    reported: Option<Option<WindowControls>>,
 }
 
 thread_local! {
     static BAR: RefCell<Option<Bar>> = const { RefCell::new(None) };
+    /// An update since the last frame (`PRISM_TRACE_CHROME`).
+    static TRACE_DIRTY: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Takes window `hwnd`'s title bar away (once its XAML island is there:
@@ -115,7 +117,6 @@ fn make(hwnd: HWND, dark: bool) -> Result<Option<Bar>> {
         input,
         regions: None,
         buttons: None,
-        reported: None,
     }))
 }
 
@@ -249,17 +250,54 @@ fn over_app(s: &State, buttons: Option<WindowControls>) -> Option<WindowControls
     (!chrome::bar_under(&w.scene, |id, _| bar_frame(w, id), &b)).then_some(b)
 }
 
-/// After a layout: when a bar came to or left the caption buttons (a
-/// navigation, a tab bar or header shown or hidden, a resize),
-/// `cx.window_controls()` follows, at the next turn of the loop.
-pub fn follow(s: &State) {
-    let Some((buttons, reported)) =
-        BAR.with(|b| b.borrow().as_ref().map(|b| (b.buttons, b.reported)))
-    else {
-        return;
+/// After a layout, before the frame shows it: when a bar came to or left
+/// the caption buttons (a navigation, a tab bar or header shown or hidden,
+/// a resize), `cx.window_controls()` follows now, and the app renders
+/// again in the same turn of the loop (its patches, empty when nothing
+/// changed). No frame shows the old value: the caller lays the new tree
+/// out before XAML renders.
+pub fn follow(s: &mut State) -> Vec<Patch> {
+    let Some(buttons) = BAR.with(|b| b.borrow().as_ref().map(|b| b.buttons)) else {
+        return Vec::new();
     };
-    if reported.is_some_and(|r| r != over_app(s, buttons)) {
-        crate::imp::defer(Box::new(report_controls));
+    let report = over_app(s, buttons);
+    if report == s.runtime.app.window_controls() {
+        return Vec::new();
+    }
+    trace(report);
+    s.runtime.set_window_chrome(false, report)
+}
+
+/// `PRISM_TRACE_CHROME=1`: what `cx.window_controls()` becomes, and what
+/// the first frame after each update shows ([`frame`]), so a log tells
+/// whether a frame showed an old value.
+fn trace(report: Option<WindowControls>) {
+    if tracing() {
+        log!("window_controls -> {report:?}");
+    }
+}
+
+/// Whether `PRISM_TRACE_CHROME` is set: XAML's frames are then watched.
+pub fn tracing() -> bool {
+    crate::win::env("PRISM_TRACE_CHROME").is_some()
+}
+
+/// The app committed an update: the next frame shows it.
+pub fn committed() {
+    if tracing() {
+        TRACE_DIRTY.set(true);
+    }
+}
+
+/// XAML rendered a frame (`CompositionTarget::Rendered`): with
+/// `PRISM_TRACE_CHROME=1`, the first one after an update logs the
+/// `cx.window_controls()` its tree was rendered with.
+pub fn frame(s: &State) {
+    if TRACE_DIRTY.replace(false) {
+        log!(
+            "frame: shows window_controls = {:?}",
+            s.runtime.app.window_controls()
+        );
     }
 }
 
@@ -362,29 +400,28 @@ pub fn report_controls(s: &mut State) {
         title.Height().unwrap_or(0),
         s.renderer.widgets.scale(),
     );
-    // Over a menu bar's row or a bar along the top edge, the app's views
-    // need no room for them.
-    let report = over_app(s, buttons);
-    let (moved, changed) = BAR.with(|b| {
+    let moved = BAR.with(|b| {
         let mut b = b.borrow_mut();
         let Some(bar) = b.as_mut() else {
-            return (false, false);
+            return false;
         };
         let moved = bar.buttons != buttons;
-        let changed = bar.reported != Some(report);
         bar.buttons = buttons;
-        bar.reported = Some(report);
-        (moved, changed)
+        moved
     });
-    if moved {
-        // The bars under them make room again.
-        s.renderer.widgets.restyle_bars();
+    if moved && tracing() {
+        log!("caption buttons: {buttons:?}");
     }
-    if changed {
-        let patches = s.runtime.set_window_chrome(false, report);
-        crate::imp::commit(s, patches);
-    } else if moved {
+    if moved {
+        // The bars under them make room again; the layout tells the app
+        // ([`follow`]).
+        s.renderer.widgets.restyle_bars();
         crate::imp::relayout(s);
+    } else {
+        let patches = follow(s);
+        if !patches.is_empty() {
+            crate::imp::commit(s, patches);
+        }
     }
 }
 

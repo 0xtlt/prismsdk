@@ -445,7 +445,11 @@ window's `AppWindow`:
   `cx.window_controls()` is `None` too, so an app's own title bar does not
   stack a second one under it. It is `Some` again when no bar is up there
   (a screen without a header, a navigation that hides it), and follows
-  navigations, bars shown or hidden and resizes. Menus, tabs,
+  navigations, bars shown or hidden and resizes in the same turn of the
+  loop: the layout that moves a bar to or from the buttons renders the app
+  again before XAML draws a frame, so no frame shows the old value (a
+  second title bar under a header, or the app's bar missing on a bare
+  screen). At startup the buttons are measured before the window shows. Menus, tabs,
   Back and bar buttons keep their clicks. The app's own content moves the
   window only through `.window_drag()`, as on macOS: Prism cannot tell
   which of its views are empty, and a caption region would take the
@@ -691,6 +695,7 @@ The same as the other backends, in a desktop session:
 |---|---|
 | `PRISM_PATH` | the first route |
 | `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `dblclick:Label` (a double click), `rclick:Label` (the right button), `#window` for the window's client area itself (`click:#window@20,20`: the menu row, caption regions), `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`). The window is made the active one before the steps (a popover closes when another window takes the activation); with `PRISM_TRACE_INPUT`, each step and the end of the steps log the window's frame and whether it is maximized |
+| `PRISM_TRACE_CHROME` | with a custom chrome, logs where the caption buttons are, each change of `cx.window_controls()`, and the value the first XAML frame after each update was rendered with (`CompositionTarget::Rendered`): a frame that showed an old value would say so |
 | `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app, and its clicks (position, keys held, count) and keys (caret edges, releases) |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, and what the screen shows there, the windows above it included (a tooltip), as `<name>-screen.png`, then quits |
