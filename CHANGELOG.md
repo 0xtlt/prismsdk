@@ -407,6 +407,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Windows: a rich input is measured from its runs: its bold words and each chip (its symbol, label and padding) take their room. The counter's English rich note was one line tall and its second line, « Roadmap. », was cut.
 - Windows: a rich input keeps its chips. RichEdit reported a chip's picture as a space, so the first change the field reported (the picture going in) turned the chip into a space in the app's runs: the counter's rich note lost its « Roadmap » chip, its click and its Markdown. The text is read with the chip's U+FFFC.
 - Windows: a text area or rich input that draws its own look (a background or border, as `ui::text_area` gives it) and has no padding keeps its text 10 × 8 from its edges, as on macOS and Linux; its text touched the border. Its measure counts those insets, and a padded one wraps its text at its real width (the padding was taken off twice).
 - watchOS: a text area and a rich input show their text on as many lines as they are measured; watchOS drew a text field's text on one line, cut (« through this o… »), in a box as tall as the wrapped text.

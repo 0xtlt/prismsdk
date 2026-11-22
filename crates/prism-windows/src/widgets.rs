@@ -753,6 +753,11 @@ impl Widgets for Win {
         let Some(n) = self.scene.get(*view) else {
             return (0., 0.);
         };
+        // A rich input's runs: its chips and bold words take room.
+        let runs = match self.views.get(view).map(|v| &v.content) {
+            Some(Content::Rich(r)) => Some(r.runs()),
+            _ => None,
+        };
         controls::measure(
             &mut self.measurer,
             &self.images,
@@ -760,6 +765,7 @@ impl Widgets for Win {
             *view,
             max_width,
             &self.locale,
+            runs.as_deref(),
         )
     }
 

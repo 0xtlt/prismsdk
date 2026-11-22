@@ -144,6 +144,11 @@ impl Rich {
             .SetRange(start as i32, end as i32)
     }
 
+    /// The runs shown (`set_rich_value`'s, encoded).
+    pub fn runs(&self) -> String {
+        self.runs.borrow().clone()
+    }
+
     /// Shows `runs` (`set_rich_value`) in `style`, its colors from `pal`,
     /// its chips drawn at `scale` (pixels per DIP).
     pub fn set_runs(&self, runs: &str, style: &Style, pal: &Palette, scale: f32) -> Result<()> {

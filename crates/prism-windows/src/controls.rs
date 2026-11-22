@@ -149,6 +149,43 @@ pub fn is_field(k: NodeKind) -> bool {
     )
 }
 
+/// A rich input's runs as its measure lays them out: its bold or larger
+/// words, and each chip (one character in the field) as wide as its
+/// picture (`chips.rs`): its label, 0.35 em of padding on each side and,
+/// with a symbol, the symbol (1 em) and a 0.25 em gap. Em and en spaces
+/// stand for those, joined to the label so they never break from it.
+fn rich_label(runs: &str, s: &Style) -> StyledText {
+    const JOIN: char = '\u{2060}';
+    let mut runs = prism_core::decode_runs(runs);
+    for r in &mut runs {
+        if r.chip.is_none() {
+            continue;
+        }
+        let label = r
+            .chip_label
+            .as_deref()
+            .unwrap_or_default()
+            .replace(' ', "\u{a0}");
+        let room = if r.chip_icon.is_some() {
+            format!("\u{2003}{JOIN}\u{2003}")
+        } else {
+            format!("\u{2002}{JOIN}\u{2009}")
+        };
+        r.text = format!("{JOIN}{room}{JOIN}{label}{JOIN}");
+        r.icon = None;
+    }
+    let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+    // The value is edited as typed: no case transform.
+    let style = Style {
+        text_transform: prism_core::TextTransform::None,
+        ..s.clone()
+    };
+    let mut st = StyledText::from_runs(&text, &runs, &style);
+    st.align = prism_core::TextAlign::Left;
+    st.max_lines = None;
+    st
+}
+
 /// A text area's or rich input's text insets (left, top, right, bottom)
 /// when it draws its own look without a padding: macOS's
 /// `textContainerInset` and GTK's margins.
@@ -877,6 +914,7 @@ pub fn measure(
     id: NodeId,
     max_width: Option<f32>,
     locale: &prism_core::Locale,
+    rich: Option<&str>,
 ) -> (f32, f32) {
     let s = &n.style;
     let text_size = |m: &Measurer, text: &str| m.measure(&label(text, s), None);
@@ -914,7 +952,12 @@ pub fn measure(
                 // Grows with its text (then scrolls, capped by max_h).
                 let frame = if own { il + ir } else { l + r + 2. };
                 let w = max_width.map(|w| (w - frame).max(10.));
-                let mut st = label(&n.text, s);
+                let mut st = match rich {
+                    Some(runs) if k == NodeKind::RichInput && !runs.is_empty() => {
+                        rich_label(runs, s)
+                    }
+                    _ => label(&n.text, s),
+                };
                 st.no_wrap = false;
                 let text_h = if n.text.is_empty() {
                     lh
