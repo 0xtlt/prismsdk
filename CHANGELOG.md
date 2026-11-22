@@ -572,6 +572,7 @@ The first version, not yet on crates.io.
 
 Fixes from a security review before the first release.
 
+- The workspace's `Cargo.lock` takes `url` 2.5.9 (RUSTSEC-2026-0592: a stack overflow in `Url::origin()` on nested `blob:` URLs, which `cargo audit` reported for 2.5.8).
 - WebAuthn ceremonies are bound to the operation the server chose; an enrolled credential can no longer be replaced through a protected read.
 - The payload reader refuses JSON nested deeper than 64 levels (stack exhaustion).
 - The web server bounds live sessions (`WebApp::max_sessions`, now 1024 by default), message size (`WebApp::max_message_size`, 8 MiB) and the bytes queued per session (`WebApp::max_queued_bytes`, 32 MiB), and closes sockets that stop answering pings.
