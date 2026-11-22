@@ -662,10 +662,14 @@ yet).
 redistributable installer, or the Store, which installs it with a Store
 app), and must trust the certificate that signed the package: a package
 signed by a certificate whose root Windows does not trust is refused
-(`0x800B0109`). A code-signing certificate from a certificate authority
-Windows trusts, or the Store's signature, avoids it. The Store also wants
-the version's fourth part to be 0, which it is (`1.2.0.0`): raise `[app] version`
-for each MSIX release.
+(`0x800B0109`). Trusting a self-signed certificate for the current user
+only (its public part in `Cert:\CurrentUser\TrustedPeople`) is not
+enough: the install is refused the same way. Microsoft's sideloading
+instructions put it in the machine's Trusted People store, an
+administrator's change. A code-signing certificate from a certificate
+authority Windows trusts, or the Store's signature, avoids it. The Store
+also wants the version's fourth part to be 0, which it is (`1.2.0.0`):
+raise `[app] version` for each MSIX release.
 There is no `prism publish windows` yet.
 
 **What is proven** (on the Windows 11 test PC, with the Windows App
@@ -676,10 +680,13 @@ Mac, `signtool verify /pa` on the PC reaches the test root (untrusted, as
 expected) with the test certificate as signer; the manifest's publisher
 equals the signer's subject; both packages unpack and repack with
 `makeappx`. `Add-AppxPackage` (per user) refuses them, because the PC does
-not trust the test root, and trusting it would change the PC's
-certificate stores. The unsigned route was tried too: the counter's MSIX
-with the OID publisher, `Add-AppxPackage -AllowUnsigned` for the standard
-user, refused with `0x80073D2B` (see above). So the packaged app has not
+not trust the test root: with the test certificate's public part in
+`Cert:\CurrentUser\TrustedPeople` too (`0x80073CF0`, `0x800B0109`), and
+trusting it machine-wide needs an administrator. The signtool route
+signs from a key container: proven for RSA (AES and legacy `.pfx`) and
+ECDSA, with the user's key and certificate stores unchanged afterwards.
+The unsigned route was tried too: the counter's MSIX with the OID
+publisher, `Add-AppxPackage -AllowUnsigned` for the standard user, refused with `0x80073D2B` (see above). So the packaged app has not
 been run (start, the framework's classes, fonts, notifications and push in
 a package).
 
@@ -896,7 +903,8 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
   prompt; motion and haptics are untested on a PC with the sensors or a
   vibration device.
 - **Packaging:** the MSIX is built, signed and checked but not installed
-  on a PC (its test certificate is not trusted there, see [MSIX](#msix)),
+  on a PC (its test certificate would have to be trusted machine-wide,
+  see [MSIX](#msix)),
   so the packaged app has not run; no `prism publish windows` (Store
   submission); URL schemes; an installer for the zip (Start menu shortcut,
   file associations, uninstall entry): the zip is a portable app; MSVC,
