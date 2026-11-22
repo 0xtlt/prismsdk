@@ -25,9 +25,10 @@ use crate::winui::xaml::Controls::{
     Button, ContentDialog, ContentDialogButton, ContentDialogResult, Orientation, StackPanel,
     TextBlock,
 };
+use crate::winui::xaml::Media::VisualTreeHelper;
 use crate::winui::xaml::{
-    Application, ElementTheme, HorizontalAlignment, RoutedEventHandler, Style, TextWrapping,
-    XamlRoot,
+    Application, DependencyObject, ElementTheme, HorizontalAlignment, RoutedEventHandler, Style,
+    TextAlignment, TextWrapping, XamlRoot,
 };
 use crate::winui::{boxed, h};
 
@@ -239,6 +240,15 @@ fn present(root: &XamlRoot, dark: bool, spec: &AlertSpec, asker: Asker) -> Resul
         Asker::Leave(_) => ContentDialogButton::Close,
         Asker::App => ContentDialogButton::None,
     })?;
+    // The buttons share the dialog's width (320 pixels in a narrow
+    // window): a long label (« Ignorer les modifications ») wraps rather
+    // than being cut.
+    d.Loaded(&RoutedEventHandler::new(|s, _| {
+        if let Some(d) = s.as_ref().and_then(|s| s.cast::<DependencyObject>().ok()) {
+            wrap_labels(&d, false);
+        }
+        Ok(())
+    }))?;
     let id = spec.id;
     let op = d.ShowAsync()?;
     op.SetCompleted(&windows_future::AsyncOperationCompletedHandler::new(
@@ -271,6 +281,20 @@ fn present(root: &XamlRoot, dark: bool, spec: &AlertSpec, asker: Asker) -> Resul
         },
     ))?;
     Ok(())
+}
+
+/// Lets the labels of the buttons in `e` wrap, centred.
+fn wrap_labels(e: &DependencyObject, in_button: bool) {
+    let in_button = in_button || e.cast::<Button>().is_ok();
+    if in_button && let Ok(t) = e.cast::<TextBlock>() {
+        let _ = t.SetTextWrapping(TextWrapping::Wrap);
+        let _ = t.SetTextAlignment(TextAlignment::Center);
+    }
+    for i in 0..VisualTreeHelper::GetChildrenCount(e).unwrap_or(0) {
+        if let Ok(c) = VisualTreeHelper::GetChild(e, i) {
+            wrap_labels(&c, in_button);
+        }
+    }
 }
 
 #[cfg(test)]
