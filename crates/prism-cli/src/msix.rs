@@ -205,6 +205,8 @@ pub struct Packer<W: Write> {
     /// Extension → content type, in the order first seen.
     defaults: BTreeMap<String, &'static str>,
     overrides: Vec<(String, &'static str)>,
+    /// The payload's paths, lower case: Windows' file names ignore case.
+    names: std::collections::HashSet<String>,
     time: (u16, u16),
 }
 
@@ -216,6 +218,7 @@ impl<W: Write> Packer<W> {
             files: Vec::new(),
             defaults: BTreeMap::new(),
             overrides: Vec::new(),
+            names: std::collections::HashSet::new(),
             time: crate::zip::dos_time(modified),
         }
     }
@@ -223,6 +226,12 @@ impl<W: Write> Packer<W> {
     /// Adds a payload file at `path` (`/`-separated).
     pub fn add(&mut self, path: &str, data: &[u8]) -> io::Result<()> {
         check_path(path).map_err(io::Error::other)?;
+        if !self.names.insert(path.to_lowercase()) {
+            return Err(io::Error::other(format!(
+                "{path:?} cannot go into an MSIX: another file has the same name but for its \
+                 case (Windows' file names ignore case)"
+            )));
+        }
         let ext = path
             .rsplit('/')
             .next()
@@ -353,7 +362,7 @@ impl<W: Write> Packer<W> {
             let _ = write!(
                 x,
                 "<Default Extension=\"{}\" ContentType=\"{ty}\" />",
-                xml_escape(ext)
+                xml_escape(&part_name(ext))
             );
         }
         for (part, ty) in &self.overrides {
@@ -835,6 +844,28 @@ mod tests {
         } else {
             raw.to_vec()
         }
+    }
+
+    #[test]
+    fn refuses_names_windows_refuses() {
+        let mut p = Packer::new(Vec::new(), SystemTime::now());
+        p.add("assets/Logo.png", b"a").unwrap();
+        let err = p.add("assets/logo.PNG", b"b").unwrap_err().to_string();
+        assert!(err.contains("but for its case"), "{err}");
+        assert!(p.add("Assets/LOGO.png", b"c").is_err());
+        assert!(p.add("assets/logo2.png", b"d").is_ok());
+        // An extension is written as its part name is (OPC).
+        p.add("assets/a.caf\u{e9}", b"e").unwrap();
+        p.add("assets/b.my ext", b"f").unwrap();
+        let types = p.content_types();
+        assert!(
+            types.contains(r#"<Default Extension="caf%C3%A9" "#),
+            "{types}"
+        );
+        assert!(
+            types.contains(r#"<Default Extension="my%20ext" "#),
+            "{types}"
+        );
     }
 
     #[test]
