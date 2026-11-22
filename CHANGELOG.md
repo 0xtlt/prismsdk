@@ -5,9 +5,11 @@ All notable changes to Prism. The format follows
 [Semantic Versioning](https://semver.org/) (before 1.0, a breaking change
 bumps the minor version). Every crate of the workspace shares one version.
 
-## Unreleased (0.1.0)
+## Unreleased
 
-The first version, not yet on crates.io.
+## 0.1.0 (2026-11-22)
+
+The first version.
 
 ### Added
 
