@@ -36,6 +36,31 @@ run = [
 description = "Run the unit tests"
 run = "cargo test --workspace"
 
+[tasks.build]
+description = "Build every crate and the example"
+run = "cargo build --workspace --locked"
+
+[tasks.clean]
+description = "Delete what the builds made (the target folder, docs/book) and the Docker images and volume Prism builds, printing what it frees"
+run = """
+# A CARGO_TARGET_DIR outside this checkout may be shared with other
+# checkouts: it is left alone.
+dir=$(cd "${CARGO_TARGET_DIR:-target}" 2>/dev/null && pwd -P) || dir=
+case "$dir" in
+  "") ;;
+  "$(pwd -P)"/*) cargo clean ;;
+  *) echo "$dir is outside this checkout: left alone" ;;
+esac
+du -sh docs/book 2>/dev/null && rm -rf docs/book
+if command -v docker >/dev/null 2>&1; then
+  for image in prism-linux-dev prism-linux-a11y:gtk4.8 prism-linux-a11y:newest prism-windows-cross; do
+    docker image rm "$image" >/dev/null 2>&1 && echo "removed the Docker image $image"
+  done
+  docker volume rm prism-cargo-registry >/dev/null 2>&1 && echo "removed the Docker volume prism-cargo-registry"
+fi
+true
+"""
+
 [tasks.docs]
 description = "Build the documentation site into docs/book (`mdbook serve docs` to preview it live)"
 run = "mdbook build docs"
@@ -46,6 +71,7 @@ run = "cargo install --path crates/prism-cli --locked"
 
 [tasks.web]
 description = "Serve the example as a web app (HTML/CSS/JS, no WASM) on http://localhost:3000, restarting on save"
+alias = "dev"
 dir = "examples/counter"
 run = "cargo run -q -p prismsdk-cli -- dev web"
 

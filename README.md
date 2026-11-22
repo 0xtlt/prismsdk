@@ -164,8 +164,10 @@ A crate implementing `prism_native::Widgets`, an entry point and one `cfg` line.
 mise install        # Rust 1.99 + platform targets
 mise run test       # unit tests
 mise run check      # type-check every target
-mise run web        # the example, restarting on save (also: macos, ios, android, macos-app, device)
+mise run web        # the example, restarting on save (also `mise run dev`; macos, ios, android, macos-app, device)
+mise run build      # every crate and the example
 mise run docs       # the book, into docs/book
+mise run clean      # delete target/, docs/book and the Docker images Prism built
 ```
 
 → [Development](docs/src/development.md), [CONTRIBUTING.md](CONTRIBUTING.md), [RELEASING.md](RELEASING.md), [CHANGELOG.md](CHANGELOG.md)

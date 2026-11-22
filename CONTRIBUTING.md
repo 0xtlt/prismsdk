@@ -12,8 +12,10 @@ required); the Linux backend is developed in Docker.
 mise install        # Rust 1.99 and the platform targets, Java, the Android SDK, mdBook
 mise run test       # unit tests
 mise run check      # type-check every crate on every supported target
-mise run web        # the example app, restarting on save (also: macos, ios, android, macos-app, device)
+mise run web        # the example app, restarting on save (also `mise run dev`; macos, ios, android, macos-app, device)
+mise run build      # build every crate and the example
 mise run docs       # build the book into docs/book
+mise run clean      # delete target/, docs/book and the Docker images Prism built
 ```
 
 Linux: `docker build -f docker/linux-dev.Dockerfile -t prism-linux-dev docker`,

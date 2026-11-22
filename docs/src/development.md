@@ -4,7 +4,9 @@
 mise install        # Rust 1.99 + macOS/iOS targets
 mise run test       # unit tests
 mise run check      # type-check host, web and iOS-simulator builds
-mise run web        # the example, restarting on save (also: macos, ios, android, macos-app, device)
+mise run web        # the example, restarting on save (also `mise run dev`; macos, ios, android, macos-app, device)
+mise run build      # every crate and the example
+mise run clean      # delete target/, docs/book and the Docker images Prism built
 ```
 
 - `prism dev` keeps the current screen across restarts (`PRISM_DEV_STATE`); the web client reconnects by itself.
