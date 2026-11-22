@@ -42,6 +42,19 @@ pub const VERSION: &str = "2.7.0";
 /// Its component packages the backend needs: metadata and runtime.
 pub const PACKAGES: [&str; 3] = ["foundation", "interactiveexperiences", "winui"];
 
+/// The Windows App Runtime framework package of [`VERSION`]: what an MSIX
+/// depends on instead of carrying the runtime (`PackageDependency`). Its
+/// publisher is Microsoft's.
+pub const FRAMEWORK_PACKAGE: &str = "Microsoft.WindowsAppRuntime.2";
+
+/// The framework package's version for [`VERSION`]: the oldest an MSIX
+/// accepts (`MinVersion`).
+pub const FRAMEWORK_MIN_VERSION: &str = "2.7.0.0";
+
+/// The framework package's publisher (its signing certificate's subject).
+pub const FRAMEWORK_PUBLISHER: &str =
+    "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US";
+
 /// The `Microsoft.Web.WebView2` release the WinUI package depends on
 /// (its `.nuspec`), cached as `<sdk>/webview2`.
 pub const WEBVIEW2_VERSION: &str = "1.0.3719.77";
@@ -377,6 +390,23 @@ pub fn app_manifest(sdk: &Path, app: &AppInfo) -> String {
     manifest_with(&classes(sdk), app)
 }
 
+/// The manifest of an executable shipped in an MSIX: the same without the
+/// runtime's classes, which the Windows App Runtime framework package
+/// registers (a registration here would point at DLLs the package does not
+/// carry).
+pub fn packaged_manifest(app: &AppInfo) -> String {
+    manifest_with("", app)
+}
+
+/// `PRISM_WINDOWS_PACKAGED=1` (`prism build windows --msix` sets it): the
+/// executable goes into an MSIX that depends on the Windows App Runtime
+/// framework package, so its manifest registers no runtime class and no
+/// runtime is copied next to it.
+pub fn packaged() -> bool {
+    println!("cargo:rerun-if-env-changed=PRISM_WINDOWS_PACKAGED");
+    std::env::var_os("PRISM_WINDOWS_PACKAGED").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 fn manifest_with(files: &str, app: &AppInfo) -> String {
     let name = xml_escape(&app.assembly_name());
     let version = app.version_quad();
@@ -428,9 +458,15 @@ fn manifest_with(files: &str, app: &AppInfo) -> String {
 ///   executable gets one manifest, not two;
 /// - GNU with LLVM (`*-gnullvm`): `lld` takes the `.res` itself (LLVM's
 ///   MinGW links no default manifest).
+///
+/// A packaged executable ([`packaged`]) gets [`packaged_manifest`].
 pub fn embed_resources(sdk: &Path, app: &AppInfo) {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
-    let manifest = app_manifest(sdk, app);
+    let manifest = if packaged() {
+        packaged_manifest(app)
+    } else {
+        app_manifest(sdk, app)
+    };
     // Written beside, for reading.
     let _ = fs::write(out.join("prism-app.manifest"), &manifest);
     let mut resources = Vec::new();
@@ -605,7 +641,8 @@ fn same_size(a: &Path, b: &Path) -> bool {
 /// What [`link_app`](crate::link_app) does for a Windows app built with
 /// the native backend: the runtime next to it; the manifest, the icon and
 /// the version information in it ([`AppInfo::from_env`]); the GUI
-/// subsystem for release builds.
+/// subsystem for release builds. A [`packaged`] executable gets no runtime
+/// next to it (nor does `PRISM_WINAPPSDK_NO_COPY=1`).
 pub fn link_app() {
     // A web-only build (`--no-default-features --features web`) runs no
     // WinUI.
@@ -619,7 +656,7 @@ pub fn link_app() {
     ensure(&sdk);
     embed_resources(&sdk, &AppInfo::from_env());
     gui_subsystem();
-    if std::env::var_os("PRISM_WINAPPSDK_NO_COPY").is_none() {
+    if std::env::var_os("PRISM_WINAPPSDK_NO_COPY").is_none() && !packaged() {
         let dir = profile_dir();
         deploy(&sdk, &dir);
         if dir.join("examples").is_dir() {
@@ -650,6 +687,19 @@ mod tests {
         assert!(m.contains("<description>Tom &amp; Jerry</description>"));
         assert!(m.contains(r#"<requestedExecutionLevel level="asInvoker" uiAccess="false"/>"#));
         assert!(m.contains("<asmv3:file name='x.dll'/>\n</assembly>"));
+        // Packaged: the framework package registers the runtime's classes.
+        let packaged = packaged_manifest(&app);
+        assert!(!packaged.contains("activatableClass"));
+        assert!(!packaged.contains("<asmv3:file"));
+        assert!(packaged.contains(r#"version="1.4.0.12""#));
+        assert!(FRAMEWORK_MIN_VERSION.starts_with(VERSION));
+        assert_eq!(
+            FRAMEWORK_PACKAGE,
+            format!(
+                "Microsoft.WindowsAppRuntime.{}",
+                VERSION.split('.').next().unwrap()
+            )
+        );
     }
 
     /// A tar archive holding `lib/x.txt` (`tar -xf` reads it like a

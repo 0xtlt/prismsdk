@@ -865,6 +865,37 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     }
 }
 
+/// Shows the main window the first time.
+unsafe fn show_main(main: HWND) {
+    unsafe {
+        // The first ShowWindow takes the launcher's STARTUPINFO (hidden
+        // under sshd): show it again.
+        let _ = ShowWindow(main, SW_SHOWDEFAULT);
+        if !IsWindowVisible(main).as_bool() {
+            let _ = ShowWindow(main, SW_SHOW);
+        }
+    }
+    with_state(|s| {
+        if let Some(i) = &s.renderer.widgets.island {
+            i.show();
+        }
+        // The caption buttons are laid out once shown.
+        crate::titlebar::report_controls(s);
+    });
+}
+
+/// The app, started by a push and never shown, handled it: it quits
+/// (its window goes, the message loop ends, services stop).
+pub fn quit_hidden() {
+    let main = main_hwnd();
+    unsafe {
+        if !IsWindowVisible(main).as_bool() {
+            report_lifecycle(crate::lifecycle::phase(false, false, true), true);
+            let _ = DestroyWindow(main);
+        }
+    }
+}
+
 /// The user discarded the unsaved changes (`alert::ask_leave`): window
 /// `main` closes.
 pub fn discard_and_close(main: isize) {
@@ -1076,19 +1107,13 @@ pub fn run(config: AppConfig, init: AppInit) {
             client.bottom
         );
         SetTimer(Some(main), TIMER_SECOND, 1000, None);
-        // The first ShowWindow takes the launcher's STARTUPINFO (hidden
-        // under sshd): show it again.
-        let _ = ShowWindow(main, SW_SHOWDEFAULT);
-        if !IsWindowVisible(main).as_bool() {
-            let _ = ShowWindow(main, SW_SHOW);
+        // Started by a push (the app was closed): handled without a
+        // window, then the app quits (`push::finish_launch`).
+        if crate::push::background_launch() {
+            log!("started by a push: the window stays hidden");
+        } else {
+            show_main(main);
         }
-        with_state(|s| {
-            if let Some(i) = &s.renderer.widgets.island {
-                i.show();
-            }
-            // The caption buttons are laid out once shown.
-            crate::titlebar::report_controls(s);
-        });
         crate::smoke::start(main);
 
         let pre = host::pre_translate();

@@ -393,6 +393,31 @@ pub fn icon(file: &[u8]) -> Result<Vec<Resource>, String> {
     Ok(resources)
 }
 
+/// The app icon as a `size`×`size` PNG (an MSIX package's logos), from a
+/// PNG (centered in a transparent square, then scaled) or an `.ico` file
+/// (its largest PNG image, scaled). Without an icon: a plain grey square.
+pub fn logo_png(file: Option<&[u8]>, size: u32) -> Result<Vec<u8>, String> {
+    let Some(file) = file else {
+        let grey = [0x80, 0x80, 0x80, 0xFF].repeat((size * size) as usize);
+        return encode_png(size, &grey);
+    };
+    let png = if file.starts_with(b"\x89PNG") {
+        file.to_vec()
+    } else if file.starts_with(&[0, 0, 1, 0]) {
+        read_ico(file)?
+            .into_iter()
+            .filter(|i| i.data.starts_with(b"\x89PNG"))
+            .max_by_key(|i| i.width)
+            .ok_or("an .ico file without a PNG image: give a PNG icon")?
+            .data
+    } else {
+        return Err("not a PNG or .ico file".into());
+    };
+    let (w, h, rgba) = decode_png(&png)?;
+    let (side, square) = square(w, h, &rgba);
+    encode_png(size, &resize(&square, side, size))
+}
+
 struct IconImage {
     width: u32,
     height: u32,
@@ -770,6 +795,40 @@ mod tests {
         let entry = |i: usize| &group.data[6 + i * 14..6 + (i + 1) * 14];
         assert_eq!(entry(7)[0], 16);
         assert_eq!(u16::from_le_bytes([entry(7)[12], entry(7)[13]]), 8);
+    }
+
+    #[test]
+    fn logos_from_an_icon() {
+        // 100×50: red on the left half, centered in a square then scaled.
+        let (w, h) = (100u32, 50u32);
+        let mut rgba = Vec::new();
+        for _ in 0..h {
+            for x in 0..w {
+                rgba.extend(if x < 50 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 0, 0]
+                });
+            }
+        }
+        let logo = logo_png(Some(&png(w, h, &rgba)), 44).unwrap();
+        let (lw, lh, px) = decode_png(&logo).unwrap();
+        assert_eq!((lw, lh), (44, 44));
+        let at = |x: usize, y: usize| px[(y * 44 + x) * 4..(y * 44 + x) * 4 + 4].to_vec();
+        assert_eq!(at(0, 22), [255, 0, 0, 255]);
+        assert_eq!(at(43, 22)[3], 0);
+        assert_eq!(at(0, 0)[3], 0);
+        // From an .ico: its PNG image.
+        let mut file = vec![0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 32, 0];
+        let image = png(w, h, &rgba);
+        file.extend((image.len() as u32).to_le_bytes());
+        file.extend(22u32.to_le_bytes());
+        file.extend(&image);
+        assert_eq!(logo_png(Some(&file), 44).unwrap(), logo);
+        // No icon: grey.
+        let (_, _, grey) = decode_png(&logo_png(None, 50).unwrap()).unwrap();
+        assert_eq!(&grey[..4], [0x80, 0x80, 0x80, 0xFF]);
+        assert!(logo_png(Some(b"GIF89a"), 44).is_err());
     }
 
     #[test]

@@ -10,7 +10,7 @@ symbols).
 | `ios`, `tvos`, `watchos`, `visionos` | an `.app` | real devices: `--device`, your team and a provisioning profile |
 | `android` | a signed APK, aligned for 16 KB pages | release key: `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS`, `PRISM_ANDROID_KEY_ALIAS` (default: the SDK's debug key) |
 | `linux` | a `.deb` | see [Linux](#linux) |
-| `windows` | a `.zip` of the app's folder | see [Windows](#windows) |
+| `windows` | a `.zip` of the app's folder, or an `.msix` (`--msix`) | signed with `PRISM_WINDOWS_CERTIFICATE` (a `.pfx`) and `PRISM_WINDOWS_CERTIFICATE_PASS`; see [Windows](#windows) |
 
 ## Web servers
 
@@ -57,10 +57,10 @@ The crates are published to crates.io in dependency order; see
 | macOS (Mac App Store) | `.pkg` | `prism build macos --store` | App Store Connect (`prism publish macos`) |
 | macOS (direct download) | notarized `.dmg` | `prism build macos --direct` | Apple's notary service (`prism publish macos --direct`) |
 | Linux | `.deb` | `prism build linux` | your repository or download page |
-| Windows | `.zip` (the app's folder) | `prism build windows` | your download page |
+| Windows | `.zip` (the app's folder) or `.msix` | `prism build windows` (`--msix`) | your download page (no Store submission yet) |
 | Web | Docker image | `prism build web --docker` | your registry or server |
 
-Versions come from `Prism.toml`. `[app] version` is the version people see. `[app] build` is the build number: `CFBundleVersion` on Apple platforms, `versionCode` on Android (or `[android] version_code`), the Debian revision on Linux, and the fourth part of the executable's version on Windows. Each upload needs a higher build number.
+Versions come from `Prism.toml`. `[app] version` is the version people see. `[app] build` is the build number: `CFBundleVersion` on Apple platforms, `versionCode` on Android (or `[android] version_code`), the Debian revision on Linux, and the fourth part of the executable's version on Windows. Each upload needs a higher build number. An MSIX's version is `[app] version` with 0 as its fourth part (`1.2.0.0`, as the Microsoft Store requires), so each MSIX release needs a higher `[app] version`.
 
 ```toml
 [app]
@@ -110,12 +110,30 @@ These values end up in file names, launchers, manifests and package metadata, so
 one folder with the release executable (its icon, version information and
 manifest inside, no console window), the Windows App SDK runtime (54 MB:
 the app is self-contained, nothing to install) and the app's assets. People
-unzip it and run the executable. It builds on Windows, and from macOS or
-Linux with MinGW-w64 or in Docker. Not yet: an MSIX that leaves the
-runtime to the Windows App Runtime framework package, an installer, and
-code signing (an unsigned downloaded executable gets a SmartScreen warning
-on its first run). See [Windows › Running and
-shipping](platforms/windows.md#running-and-shipping).
+unzip it and run the executable.
+
+`prism build windows --msix` makes an `.msix` instead (5.9 MB for the
+counter): the executable and assets only, with a manifest made from
+`Prism.toml` that depends on the Windows App Runtime framework package,
+which the user's PC must have (its redistributable installer, or the
+Store). The package is packed in plain Rust, on any OS.
+
+Both are signed when `PRISM_WINDOWS_CERTIFICATE` names your code-signing
+certificate (a `.pfx`), with its password in `PRISM_WINDOWS_CERTIFICATE_PASS`
+(never in `Prism.toml`) and an optional `PRISM_WINDOWS_TIMESTAMP_URL`:
+the executable before zipping or packing, then the package.
+`osslsigncode` signs where it is installed, else `signtool` on Windows;
+neither gets the password on its command line, and signtool gets no key
+file, only a key container Prism deletes right after ([Windows ›
+Signing](platforms/windows.md#signing) says what each sees). The MSIX's publisher is the
+certificate's subject. Windows installs only signed packages whose
+certificate it trusts; an unsigned zip runs, with a SmartScreen warning on
+its first run once downloaded.
+
+It builds on Windows, and from macOS or Linux with MinGW-w64 or in Docker.
+Not yet: Store submission, an installer for the zip. See [Windows ›
+Running and shipping](platforms/windows.md#running-and-shipping) and
+[MSIX](platforms/windows.md#msix).
 
 ### Web
 

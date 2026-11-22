@@ -22,8 +22,8 @@
 //! What the PC has is asked in the background from startup (`probe.rs`),
 //! never waited for: each capability turns true when its check answers
 //! (the app re-renders), a call made before then tries the API itself,
-//! and a call to what the PC lacks fails with "unavailable". Push answers
-//! "unavailable": WNS needs package identity (`push`).
+//! and a call to what the PC lacks fails with "unavailable". Push is WNS
+//! in an MSIX (`push.rs`), "unavailable" without package identity.
 //!
 //! Modal UI (dialogs, the tray's menu) starts from the services window
 //! (`shell.rs`), never while the app's state is in use; answers come back
@@ -118,6 +118,7 @@ impl WinServices {
         shell::create();
         let notifications = notify::supported();
         notify::start(data);
+        crate::push::start();
         // With `PRISM_DEVICE_REPORT` only: waits for every check.
         crate::probe::report(hwnd, data);
         // The checks' answers so far; the later ones are published.
@@ -135,6 +136,7 @@ impl WinServices {
             web_view: true,
             drop_files: true,
             drag_and_drop: true,
+            push: crate::push::service(),
             ..Default::default()
         };
         WinServices {
@@ -465,6 +467,7 @@ impl Drop for WinServices {
     fn drop(&mut self) {
         tray::remove_all();
         notify::quit();
+        crate::push::quit();
         location::stop_all();
         sensors::stop_all();
         webauthn::cancel();
@@ -504,17 +507,12 @@ impl PlatformServices for WinServices {
                 crate::imp::defer(Box::new(move |s| crate::menubar::set(s, menus)))
             }
             PlatformRequest::RegisterPush => {
-                self.unavailable(
-                    "push",
-                    "Windows push notifications (WNS) need package identity: an MSIX \
-                     package, or a sparse package for an unpackaged app",
-                );
-                crate::imp::defer(Box::new(|s| {
-                    let patches = s.runtime.push_registered(Err(DeviceError::Unavailable));
-                    crate::imp::commit(s, patches);
-                }));
+                if let Some(why) = crate::push::missing() {
+                    self.unavailable("push", why);
+                }
+                crate::push::register();
             }
-            PlatformRequest::UnregisterPush => {}
+            PlatformRequest::UnregisterPush => crate::push::unregister(),
             PlatformRequest::ScheduleBackgroundTask(task) => self.schedule(task),
             // Handled by the window (`imp::commit`), or nothing to do on a
             // desktop: widgets, Live Activities, cars, stylesheets.

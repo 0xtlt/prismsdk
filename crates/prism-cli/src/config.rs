@@ -21,6 +21,8 @@
 //!
 //! [windows]
 //! publisher = "Example Ltd"     # the executable's CompanyName
+//! package_publisher = "CN=Example Ltd, O=Example Ltd, C=FR"  # MSIX Publisher (default: the
+//!                               # signing certificate's subject, else CN=<publisher>)
 //!
 //! [permissions]               # why the app asks (shown by the system)
 //! location = "Shows todos near you."
@@ -31,6 +33,8 @@
 //! apns_environment = "development"  # "production" for TestFlight / App Store builds
 //! google_services = "google-services.json"  # Android: FCM (else UnifiedPush only)
 //! vapid_public_key = "BKv…"     # Web Push (or PRISM_VAPID_PUBLIC_KEY)
+//! wns_remote_id = "…"           # Windows (MSIX): the Entra app's object id (a GUID)
+//! wns_app_id = "…"              # Windows (MSIX): the Entra app's application (client) id
 //!
 //! [ios]
 //! team = "ABCDE12345"           # Apple team for real devices
@@ -83,6 +87,9 @@ pub struct Project {
     pub maintainer: Option<String>,
     /// `[windows] publisher`: the executable's `CompanyName`.
     pub publisher: Option<String>,
+    /// `[windows] package_publisher`: an MSIX's `Publisher`, a certificate
+    /// subject (`CN=Example Ltd, O=Example Ltd, C=FR`).
+    pub package_publisher: Option<String>,
     /// `[permissions]`: why the app asks (Info.plist usage descriptions).
     pub permissions: Vec<(String, String)>,
     /// Languages with a catalog in `locales/` (`[app] locales` to move it).
@@ -105,6 +112,13 @@ pub struct Project {
     pub google_services: Option<PathBuf>,
     /// `[push] vapid_public_key`: the web app's VAPID key.
     pub vapid_public_key: Option<String>,
+    /// `[push] wns_remote_id`: Windows push (WNS, packaged apps): the
+    /// Microsoft Entra app registration's object id, the remote id of
+    /// `PushNotificationManager::CreateChannelAsync`.
+    pub wns_remote_id: Option<String>,
+    /// `[push] wns_app_id`: the same registration's application (client)
+    /// id, the COM class WNS starts the app with.
+    pub wns_app_id: Option<String>,
     /// Cargo's target directory (the workspace's).
     pub target_dir: PathBuf,
     /// The Cargo workspace (watched by `prism dev`).
@@ -210,6 +224,18 @@ pub(crate) fn parse(source: &str) -> HashMap<String, String> {
     out
 }
 
+/// `[push] <key>`: a GUID (`7edfab6c-25ae-4678-b406-d1848f97919a`), lower
+/// case.
+fn guid(key: &str, v: String) -> Result<String, String> {
+    if crate::msix::is_guid(&v) {
+        Ok(v.to_ascii_lowercase())
+    } else {
+        Err(format!(
+            "Prism.toml [push] {key}: {v:?} is not a GUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"
+        ))
+    }
+}
+
 /// The line up to a `#` that is not inside a quoted string.
 fn strip_comment(line: &str) -> &str {
     let mut quote = None;
@@ -275,6 +301,7 @@ impl Project {
             description: get("app.description"),
             maintainer: get("linux.maintainer"),
             publisher: get("windows.publisher"),
+            package_publisher: get("windows.package_publisher"),
             permissions: {
                 let mut p: Vec<(String, String)> = config
                     .iter()
@@ -305,6 +332,12 @@ impl Project {
                 .map(|_| get("push.apns_environment").unwrap_or_else(|| "development".into())),
             google_services: get("push.google_services").map(|g| crate::resolve(root, &g)),
             vapid_public_key: get("push.vapid_public_key"),
+            wns_remote_id: get("push.wns_remote_id")
+                .map(|v| guid("wns_remote_id", v))
+                .transpose()?,
+            wns_app_id: get("push.wns_app_id")
+                .map(|v| guid("wns_app_id", v))
+                .transpose()?,
             root: root.to_path_buf(),
             package,
             name,

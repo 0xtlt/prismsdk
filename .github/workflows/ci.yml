@@ -26,8 +26,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      - name: Signing tools (Windows code-signing tests)
+        run: brew install openssl@3 osslsigncode
       - name: Tests
         run: cargo test --workspace
+        env:
+          # The signing tests fail instead of skipping without the tools.
+          PRISM_REQUIRE_SIGNING_TOOLS: "1"
       - name: A project from `prism new` builds (native and web)
         run: cargo test -p prismsdk-cli -- --ignored generated_project
       - name: Clippy (macOS)

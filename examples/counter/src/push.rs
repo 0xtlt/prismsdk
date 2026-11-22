@@ -109,6 +109,7 @@ fn service_name(s: PushService) -> &'static str {
         PushService::Fcm => "Firebase Cloud Messaging",
         PushService::WebPush => "Web Push",
         PushService::UnifiedPush => "UnifiedPush",
+        PushService::Wns => "Windows Push Notification Services",
     }
 }
 
