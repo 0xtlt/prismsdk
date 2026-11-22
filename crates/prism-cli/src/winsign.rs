@@ -503,6 +503,39 @@ pub(crate) mod tests {
         assert_eq!(windows_name(&multi).unwrap(), "OU=Ünï + CN=A");
     }
 
+    /// `PRISM_REQUIRE_SIGNING_TOOLS=1` (CI, where openssl and osslsigncode
+    /// are installed): a signing test that cannot run fails instead of
+    /// passing without testing anything.
+    pub(crate) fn skip(why: &str) {
+        let required = std::env::var("PRISM_REQUIRE_SIGNING_TOOLS").is_ok_and(|v| v == "1");
+        assert!(!required, "PRISM_REQUIRE_SIGNING_TOOLS=1, but {why}");
+        eprintln!("skipped: {why}");
+    }
+
+    /// A tiny executable signed once with osslsigncode by a throwaway
+    /// self-signed certificate (its private key was deleted): the signer
+    /// is read back on every host, without any tool.
+    const SIGNED_TINY_EXE: &[u8] = include_bytes!("testdata/signed-tiny.exe");
+
+    #[test]
+    fn reads_the_signer_of_a_signed_executable() {
+        assert_eq!(
+            signer_subject(SIGNED_TINY_EXE).unwrap(),
+            "CN=Prism Fixture, O=\"Prism Fixture, Inc.\", S=Ile-de-France, C=FR"
+        );
+        // The same file unsigned (its first 1024 bytes, the certificate
+        // table cleared), and a cut signature.
+        let mut unsigned = SIGNED_TINY_EXE[..1024].to_vec();
+        let dirs = 0x80 + 24 + 112 + 4 * 8;
+        unsigned[dirs..dirs + 8].fill(0);
+        assert_eq!(
+            signer_subject(&unsigned).unwrap_err(),
+            "the executable has no Authenticode signature"
+        );
+        let cut = &SIGNED_TINY_EXE[..SIGNED_TINY_EXE.len() - 100];
+        assert!(signer_subject(cut).is_err());
+    }
+
     /// A self-signed code-signing certificate and its `.pfx`, made with
     /// openssl in `dir` (never kept): `None` without openssl.
     pub(crate) fn test_pfx(dir: &Path, subject: &str, password: &str) -> Option<PathBuf> {
@@ -523,7 +556,7 @@ pub(crate) mod tests {
             .output()
             .is_ok_and(|o| o.status.success());
         if !ok {
-            eprintln!("skipped: no openssl to make a test certificate");
+            skip("no openssl to make a test certificate");
             return None;
         }
         let ok = Command::new("openssl")
@@ -594,7 +627,7 @@ pub(crate) mod tests {
             return;
         };
         let Ok(_) = Tool::find() else {
-            eprintln!("skipped: no signing tool");
+            skip("no signing tool");
             return;
         };
         let exe = dir.join("tiny.exe");
