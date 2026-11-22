@@ -21,6 +21,10 @@ mise run clean      # delete target/, docs/book and the Docker images Prism buil
 Linux: `docker build -f docker/linux-dev.Dockerfile -t prism-linux-dev docker`,
 then run `cargo` inside it as the CI does (`.github/workflows/ci.yml`).
 
+The CI's `secrets` job runs [gitleaks](https://github.com/gitleaks/gitleaks)
+over every commit. A finding that is not a secret (a test vector) goes into
+`.gitleaksignore` by its fingerprint, with a line saying why.
+
 ## Windows
 
 The native backend is `crates/prism-windows` (WinUI 3 from the Windows App
