@@ -14,8 +14,9 @@ runtime next to the executable (about 54 MB, x64); `prism_build::link_app()`
 embeds the manifest that registers it, with the app's icon and version.
 Builds with the GNU (MinGW) and the MSVC toolchains, and cross-compiles
 from macOS and Linux. `prism run windows` and `prism dev windows` run the
-app; `prism build windows` ships it as a zip ([Running and
-shipping](#running-and-shipping)).
+app; `prism build windows` ships it as a zip, or with `--msix` as an MSIX
+package that leaves the runtime to the Windows App Runtime framework
+package ([Running and shipping](#running-and-shipping)).
 
 The milestone: the `counter` example runs on every tab, its smoke test
 passes in a desktop session, and UI Automation presses its buttons. Some
@@ -334,7 +335,7 @@ kinds and services come next (see [Not yet](#not-yet)).
 | Menu bar | `cx.set_app_menu` / `set_menu_bar` put a WinUI `MenuBar` across the top of the window, under the title bar (the app's view starts under it; see [The menu bar](#the-menu-bar)): access keys (Alt+F), `KeyboardAccelerator`s that work with the menus closed, shortcut hints shown only, checkable items, submenus; platform actions do Windows' own (Cut, Copy, Paste, Select All, Undo, Redo in the focused field; Minimize, Zoom, Close, Quit with Alt+F4) |
 | Alerts | `ContentDialog`: the first action is the accent button unless it is destructive, Cancel is the close button (Escape), more than three actions are listed under the message |
 | Clipboard | text, HTML (`HTML Format`), RTF, pictures (`PNG` and `CF_DIBV5`, read back from either or from a plain DIB), files (`CF_HDROP` as `text/uri-list`), other MIME types as formats of their name |
-| Fonts | bundled and embedded fonts at startup, run-time ones (`cx.load_font`) when loaded: written to `%LOCALAPPDATA%\<app>\prism-fonts` (once: a file is named by its content) and named `ms-appx:///prism-fonts/<hash>.ttf#Family`. XAML loads font files by URI only, and an unpackaged app's `ms-appx:///` is its executable's folder (absolute paths, `file:` URIs and `AddFontResourceEx` are ignored): the app hands XAML its resource manager (`Application.ResourceManagerRequested`), the default one with a fallback (`ResourceManager.ResourceNotFound`) that resolves `prism-fonts/…` to the file in the data folder. So an app installed in a read-only folder (`C:\Program Files`) loads fonts too, nothing is installed, and the font is the app's alone. XAML names one file per font, so a family keeps its files by weight and style and each text takes the closest (CSS's matching); a variable font covers its weights |
+| Fonts | bundled and embedded fonts at startup, run-time ones (`cx.load_font`) when loaded: written to `%LOCALAPPDATA%\<app>\prism-fonts` (once: a file is named by its content) and named `ms-appx:///prism-fonts/<hash>.ttf#Family`. XAML loads font files by URI only, and an unpackaged app's `ms-appx:///` is its executable's folder (absolute paths, `file:` URIs and `AddFontResourceEx` are ignored): the app hands XAML its resource manager (`Application.ResourceManagerRequested`), the default one (in an MSIX, which has no `resources.pri`, one over the framework package's `Microsoft.UI.Xaml.Controls.pri`) with a fallback (`ResourceManager.ResourceNotFound`) that resolves `prism-fonts/…` to the file in the data folder. So an app installed in a read-only folder (`C:\Program Files`) loads fonts too, nothing is installed, and the font is the app's alone. XAML names one file per font, so a family keeps its files by weight and style and each text takes the closest (CSS's matching); a variable font covers its weights |
 | Background tasks | timers while the app runs, like on Linux (`PRISM_BACKGROUND_INTERVAL` shortens them) |
 | Location | `Geolocator`, Windows' location service (a GNSS receiver where the PC has one, else Wi-Fi networks and the IP address). `capabilities().location` when the location service (`lfsvc`) is installed and not disabled (it starts on demand, so it need not be running), no policy turns location off and the service has a provider. The permission is Settings › Privacy & security › Location, read without asking (`AppCapability::CheckAccess`: the device's switch, the user's, the desktop apps' one); `LocationAlways` is the same permission (a desktop app has no background limit). `request_permission` asks with `RequestAccessAsync` (Windows 11 24H2 and later show a prompt, once per app). Positions with the web's settings (`Coarse`: a kilometer and ten minutes, `Balanced`: 100 m and 30 s, `Best`: the best and 30 s; 20 s at most); a watch is `PositionChanged` with a movement threshold. Refused is `Denied`, no provider `Unavailable`, no position in time "location unknown" |
 | Motion | `Windows.Devices.Sensors`, which tablets and 2-in-1s have: `Accelerometer` (its fused gravity and linear readings where Windows has them, else gravity is the accelerometer low-pass filtered), `Gyrometer`, `Inclinometer`, read every `interval` on a thread of the watch's own, in Apple's units and axes. No permission. `capabilities().motion` when the PC has an accelerometer or a gyrometer |
@@ -356,13 +357,14 @@ rest (`UnregisterAll`, which leaves the key naming the app by its path,
 `AppUserModelId\C:.…exe`, and Windows' own settings for it under
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings`).
 With `PRISM_NOTIFICATIONS_CLEANUP=1` the app does all of that itself on quit
-and also clears its notifications: tests leave nothing behind.
+and also clears its notifications: tests leave nothing behind. In an MSIX
+the package's manifest declares the COM server and its CLSID instead, and
+Windows removes it with the package.
 
 ### Device APIs without a package
 
-Prism apps on Windows are unpackaged (no MSIX, no package identity), and
-every device API above works so. What needs a package, and what Prism does
-instead:
+The zip build is unpackaged (no package identity), and every device API
+above works so. What needs a package, and what Prism does instead:
 
 - **The camera.** `Windows.Media.Capture.CameraCaptureUI` is for UWP apps
   (a `CoreWindow`), and the Windows App SDK's (1.7 and later) makes its
@@ -477,6 +479,11 @@ writes it). On Windows it:
 - links release builds as Windows programs, which open no console (see
   [No console](#no-console)).
 
+With `PRISM_WINDOWS_PACKAGED=1` (`prism build windows --msix` sets it) it
+copies no runtime and the manifest has no `activatableClass`
+registrations: the app runs from an MSIX that depends on the framework
+package ([MSIX](#msix)).
+
 Each toolchain links the `.res` its own way. GNU (MinGW): `windres` (its
 binutils: `x86_64-w64-mingw32-windres`, else `windres`, or `WINDRES`) turns
 it into an object named like MinGW's default manifest, found first with
@@ -590,34 +597,65 @@ only on Windows.
 
 ### MSIX
 
-`prism build windows` makes no MSIX yet. A package that depends on the
-Windows App Runtime framework package, instead of carrying the 54 MB
-runtime, needs:
+`prism build windows --msix` makes
+`target/windows/<package>-<version>-windows-<arch>.msix` instead of the
+zip: the executable and the app's assets, without the Windows App SDK
+runtime, which the Windows App Runtime framework package provides
+(`Microsoft.WindowsAppRuntime.2`, 2.7.0.0 or later, published by
+Microsoft). The counter's is 5.9 MB, against 26.6 MB for its zip. It
+builds on Windows and cross-compiles from macOS and Linux like the zip.
 
-1. an `AppxManifest.xml`: the identity (the bundle id, the signing
-   certificate's subject as publisher, the four-part version), a
-   `PackageDependency` on the Windows App Runtime framework package of the
-   SDK's release, a desktop `Application` with `runFullTrust`, and logos
-   (44 and 150 pixels, from the icon);
-2. an executable without the runtime's class registrations in its manifest,
-   and no runtime next to it (`PRISM_WINAPPSDK_NO_COPY=1`): the framework
-   package registers the classes;
-3. the package's own `resources.pri` (`makepri.exe`);
-4. packing: `makeappx.exe pack` from the Windows SDK, or `makemsix` (the
-   open-source MSIX SDK, also on macOS and Linux), which writes the zip, its
-   `[Content_Types].xml` and its `AppxBlockMap.xml` (SHA-256 of each 64 KB
-   block);
-5. signing: `signtool.exe sign` with a certificate whose subject is the
-   manifest's publisher and that the user's PC trusts (the Microsoft Store
-   signs the packages it distributes);
-6. on the user's PC, the Windows App Runtime installed (its redistributable
-   installer; the Store installs it with a Store app).
+- **The executable** is built with `PRISM_WINDOWS_PACKAGED=1`: its
+  manifest registers none of the runtime's classes (the framework package
+  does) and no runtime is copied next to it.
+- **No `resources.pri`.** WinUI's own resources come from the framework
+  package: the app hands XAML a resource manager over its
+  `Microsoft.UI.Xaml.Controls.pri` (see Fonts in [Services](#services)).
+  Prism apps keep no other resources in PRI files (their strings are
+  Prism's own).
+- **Packing** is plain Rust, on any OS: the layout `makeappx` writes (Zip64
+  with data descriptors, each 64 KB block deflated on its own or stored,
+  `AppxBlockMap.xml` with each block's SHA-256, `[Content_Types].xml`).
+  The Windows SDK's `makeappx unpack` opens the packages Prism writes on a
+  Mac and on Windows, and `makeappx pack` of their unpacked files, which
+  validates the manifest against the schemas, succeeds.
+- **Signing** is not done by `prism build` yet, and Windows installs only
+  signed packages: sign it with `signtool sign /fd SHA256` and a
+  certificate whose subject is the manifest's publisher.
 
-Packing could be done in plain Rust; signing (an Authenticode PKCS #7
-signature over the package's digest) needs `signtool` or a signing service.
-The zip needs none of it, nor code signing, but a downloaded unsigned
-executable gets a SmartScreen warning on its first run; sign it with
-`signtool` and a code-signing certificate before zipping to avoid it.
+The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
+
+| Manifest | From |
+|---|---|
+| `Identity Name` | `[app] bundle_id`, `_` written `-` (3 to 50 letters, digits, `.` and `-`) |
+| `Identity Publisher` | `[windows] package_publisher`, the subject of the certificate that will sign the package as Windows writes it (`CN=Example Ltd, O=Example Ltd, C=FR`), else `CN=<[windows] publisher or [app] name>` |
+| `Identity Version` | `[app] version` and `[app] build` (`1.2.0.7`) |
+| `ProcessorArchitecture` | the target (`x64`, `arm64`, `x86`) |
+| `DisplayName`, `PublisherDisplayName`, `Description` | `[app] name`, `[windows] publisher` (else the name), `[app] description` (else the name) |
+| `Resources` | the app's languages (else `en-us`) |
+| `PackageDependency` | `Microsoft.WindowsAppRuntime.2`, `MinVersion` 2.7.0.0: the Windows App SDK release Prism builds with |
+| `TargetDeviceFamily` | `Windows.Desktop`, Windows 10 1809 (`10.0.17763.0`) to `10.0.26100.0` (tested) |
+| `Application` | the executable, `Windows.FullTrustApplication`, and the `runFullTrust` capability |
+| Logos | `StoreLogo` (50 px), `Square44x44Logo`, `Square150x150Logo`, scaled from `[app] icon` (a PNG, or the largest PNG in an `.ico`; a grey square without an icon) |
+| Notifications | `ToastNotificationActivation` and the COM server a click starts (`----AppNotificationActivated:`), its CLSID derived from the name and publisher |
+| `DeviceCapability` | `[permissions]`: `location` and `location_always` give `location`, `camera` gives `webcam`, `microphone` gives `microphone` |
+
+Not in the manifest: URL schemes and app URI handlers (`Prism.toml`
+declares no URL scheme, and the Windows backend does not read a launch URL
+yet).
+
+**Installing.** The user's PC needs the Windows App Runtime (its
+redistributable installer, or the Store, which installs it with a Store
+app), and must trust the certificate that signed the package: a package
+signed by a certificate whose root Windows does not trust is refused
+(`0x800B0109`). A code-signing certificate from a certificate authority
+Windows trusts, or the Store's signature, avoids it. The Store also wants
+the version's fourth part to be 0, which Prism fills with `[app] build`.
+There is no `prism publish windows` yet.
+
+The zip needs no signing, but a downloaded unsigned executable gets a
+SmartScreen warning on its first run; sign it with `signtool` and a
+code-signing certificate before zipping to avoid it.
 
 ## Desktop session
 
@@ -797,10 +835,11 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
   `scripts/windows-device-apis.sh` checks everything up to them, without a
   prompt; motion and haptics are untested on a PC with the sensors or a
   vibration device.
-- **Packaging:** an MSIX with the Windows App Runtime as a framework
-  dependency ([MSIX](#msix)); an installer (Start menu shortcut, file
-  associations, uninstall entry): the zip is a portable app; code signing;
-  MSVC, arm64 and x86 builds not run on a PC yet ([Architectures and
+- **Packaging:** the MSIX is built and checked but not installed on a PC
+  yet, so the packaged app has not run; code signing; no `prism publish windows` (Store
+  submission); URL schemes; an installer for the zip (Start menu shortcut,
+  file associations, uninstall entry): the zip is a portable app; MSVC,
+  arm64 and x86 builds not run on a PC yet ([Architectures and
   MSVC](#architectures-and-msvc)).
 - **Accessibility:** checked through UI Automation (`windows-a11y.sh`),
   not with Narrator listening (it speaks aloud); `PRISM_HIGH_CONTRAST`

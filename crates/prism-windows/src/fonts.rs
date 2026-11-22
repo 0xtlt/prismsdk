@@ -5,8 +5,10 @@
 //!
 //! So XAML gets its resource manager from the app
 //! (`Application::ResourceManagerRequested`): the default one (the
-//! `resources.pri` next to the executable), with a fallback for what it
-//! does not hold (`ResourceManager::ResourceNotFound`): a name under
+//! `resources.pri` next to the executable; in an MSIX, which carries no
+//! `resources.pri`, one over WinUI's own `Microsoft.UI.Xaml.Controls.pri`
+//! in the Windows App Runtime framework package), with a fallback for
+//! what it does not hold (`ResourceManager::ResourceNotFound`): a name under
 //! `prism-fonts/` resolves to that file in the app's data folder
 //! (`%LOCALAPPDATA%\<app>\prism-fonts`), always writable. The font is
 //! written there (`<hash>.ttf`, named by its content, once) and texts in
@@ -79,7 +81,12 @@ pub fn install_resolver(app: &Application) -> Result<()> {
         let Some(args) = args.as_ref() else {
             return Ok(());
         };
-        let manager = ResourceManager::new()?;
+        let packaged = windows::ApplicationModel::Package::Current().is_ok();
+        let manager = match controls_pri().filter(|_| packaged) {
+            Some(pri) => ResourceManager::CreateInstance(&HSTRING::from(pri.as_os_str()))
+                .or_else(|_| ResourceManager::new())?,
+            None => ResourceManager::new()?,
+        };
         manager.ResourceNotFound(&TypedEventHandler::<
             ResourceManager,
             ResourceNotFoundEventArgs,
@@ -99,6 +106,21 @@ pub fn install_resolver(app: &Application) -> Result<()> {
         Ok(())
     }))?;
     Ok(())
+}
+
+/// `Microsoft.UI.Xaml.Controls.pri` beside the loaded `Microsoft.UI.Xaml.dll`
+/// (for a packaged app: the framework package's).
+fn controls_pri() -> Option<PathBuf> {
+    use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+    let module = unsafe { GetModuleHandleW(windows::core::w!("Microsoft.UI.Xaml.dll")) }.ok()?;
+    let mut buf = vec![0u16; 32768];
+    let n = unsafe { GetModuleFileNameW(Some(module), &mut buf) } as usize;
+    if n == 0 || n >= buf.len() {
+        return None;
+    }
+    let dll = PathBuf::from(String::from_utf16_lossy(&buf[..n]));
+    let pri = dll.parent()?.join("Microsoft.UI.Xaml.Controls.pri");
+    pri.is_file().then_some(pri)
 }
 
 /// The file a resource name under `prism-fonts/` (`Files/prism-fonts/<hash>.ttf`)

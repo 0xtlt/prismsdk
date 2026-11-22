@@ -22,6 +22,7 @@ mod embedded;
 mod islands;
 mod jwt;
 mod linux;
+mod msix;
 mod new;
 mod play;
 mod publish;
@@ -65,6 +66,8 @@ OPTIONS:
     --store                 Apple: an App Store build (.ipa; macOS: a .pkg)
     --direct                macOS: Developer ID, hardened runtime, a .dmg
     --docker                Web: the production Docker image
+    --msix                  Windows: an MSIX package instead of a zip (it needs the
+                            Windows App Runtime framework package)
     --target <triple>       Windows: the Rust target (default: this PC's; elsewhere
                             x86_64-pc-windows-gnu, with MinGW-w64 or in Docker)
 
@@ -110,6 +113,8 @@ struct Options {
     direct: bool,
     /// Web: the Docker image.
     docker: bool,
+    /// Windows: an MSIX package instead of the zip.
+    msix: bool,
     /// `prism build`: islands above their size budget fail the build.
     strict_budget: bool,
     /// Windows: the Rust target triple.
@@ -165,6 +170,9 @@ fn check_flags(target: Target, o: &Options) -> Result<(), String> {
     }
     if o.target.is_some() && target != Target::Windows {
         return wrong("--target", "windows");
+    }
+    if o.msix && target != Target::Windows {
+        return wrong("--msix", "windows");
     }
     if o.docker && target != Target::Web {
         return wrong(
@@ -223,12 +231,16 @@ fn run(args: &[String]) -> Result<(), String> {
                 store: has("--store"),
                 direct: has("--direct"),
                 docker: has("--docker"),
+                msix: has("--msix"),
                 strict_budget: cmd == "build",
                 target: flag(args, "--target"),
             };
             check_flags(target, &opts)?;
             if cmd != "build" && (opts.store || opts.direct || opts.docker) {
                 return Err("--store, --direct and --docker are for prism build / publish".into());
+            }
+            if cmd != "build" && opts.msix {
+                return Err("--msix is for prism build windows".into());
             }
             if target == Target::Linux && cmd != "build" && !cfg!(target_os = "linux") {
                 return Err(

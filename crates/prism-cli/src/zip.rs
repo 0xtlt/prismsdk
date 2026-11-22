@@ -99,7 +99,7 @@ impl<W: Write> ZipWriter<W> {
 }
 
 /// MS-DOS time and date (UTC, two-second steps, from 1980).
-fn dos_time(t: SystemTime) -> (u16, u16) {
+pub(crate) fn dos_time(t: SystemTime) -> (u16, u16) {
     let secs = t
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

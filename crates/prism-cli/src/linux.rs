@@ -221,6 +221,7 @@ pub(crate) mod tests {
             description: Some("Counts".into()),
             maintainer: None,
             publisher: None,
+            package_publisher: None,
             permissions: vec![],
             languages: vec![],
             team: None,

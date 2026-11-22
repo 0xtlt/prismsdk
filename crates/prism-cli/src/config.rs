@@ -21,6 +21,8 @@
 //!
 //! [windows]
 //! publisher = "Example Ltd"     # the executable's CompanyName
+//! package_publisher = "CN=Example Ltd, O=Example Ltd, C=FR"  # MSIX Publisher (default:
+//!                               # CN=<publisher>): the signing certificate's subject
 //!
 //! [permissions]               # why the app asks (shown by the system)
 //! location = "Shows todos near you."
@@ -83,6 +85,9 @@ pub struct Project {
     pub maintainer: Option<String>,
     /// `[windows] publisher`: the executable's `CompanyName`.
     pub publisher: Option<String>,
+    /// `[windows] package_publisher`: an MSIX's `Publisher`, a certificate
+    /// subject (`CN=Example Ltd, O=Example Ltd, C=FR`).
+    pub package_publisher: Option<String>,
     /// `[permissions]`: why the app asks (Info.plist usage descriptions).
     pub permissions: Vec<(String, String)>,
     /// Languages with a catalog in `locales/` (`[app] locales` to move it).
@@ -275,6 +280,7 @@ impl Project {
             description: get("app.description"),
             maintainer: get("linux.maintainer"),
             publisher: get("windows.publisher"),
+            package_publisher: get("windows.package_publisher"),
             permissions: {
                 let mut p: Vec<(String, String)> = config
                     .iter()

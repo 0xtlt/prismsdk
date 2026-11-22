@@ -3,6 +3,10 @@
 //! Windows App SDK runtime, `resources.pri` and its assets. Built here on
 //! Windows; elsewhere cross-compiled for `x86_64-pc-windows-gnu` with
 //! MinGW-w64, on `PATH` or else in Docker (the `prism-windows-cross` image).
+//!
+//! `--msix`: an MSIX package instead (`msix.rs`), its executable without the
+//! runtime's class registrations, which the Windows App Runtime framework
+//! package it depends on provides.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,6 +15,7 @@ use prism_build::winappsdk;
 
 use crate::Options;
 use crate::config::Project;
+use crate::msix;
 use crate::zip::ZipWriter;
 
 const CROSS_IMAGE: &str = "prism-windows-cross";
@@ -108,12 +113,21 @@ fn plan(
     ))
 }
 
-/// Builds and packages the app; returns the zip's path.
+/// Builds and packages the app; returns the zip's (or the MSIX's) path.
 pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
     let (triple, toolchain) = plan(o.target.as_deref(), cfg!(windows), runs)?;
+    // Before the build: what Prism.toml says must fit an MSIX.
+    if o.msix {
+        msix::package_name(&p.bundle_id)?;
+        if let Some(publisher) = &p.package_publisher {
+            msix::check_publisher(publisher)
+                .map_err(|e| format!("Prism.toml [windows] package_publisher: {e}"))?;
+        }
+    }
+    let env = build_env(p, o.msix);
     let profile = match &toolchain {
         Toolchain::Host | Toolchain::Cross => {
-            cargo_build(p, triple.as_deref())?;
+            cargo_build(p, triple.as_deref(), &env)?;
             let base = match &triple {
                 Some(t) => p.target_dir.join(t),
                 None => p.target_dir.clone(),
@@ -122,7 +136,7 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
         }
         Toolchain::Docker => {
             let triple = triple.as_deref().unwrap_or(DEFAULT_CROSS);
-            docker_build(p, triple)?.join(triple).join("release")
+            docker_build(p, triple, &env)?.join(triple).join("release")
         }
     };
     let rust_arch = triple
@@ -141,44 +155,72 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
         .then(|| describe_assets(&exe))
         .flatten()
         .or_else(|| Some(p.root.join("assets")).filter(|d| d.is_dir()));
-    let sdk = winappsdk::sdk_dir_for(&profile);
-    let runtime = winappsdk::runtime_files(&sdk, arch);
-    if runtime.is_empty() {
-        return Err(format!(
-            "no Windows App SDK runtime for {arch} in {}",
-            sdk.display()
-        ));
+    let exe_name = format!("{}.exe", p.package);
+    let mut files: Vec<(PathBuf, PathBuf)> = vec![(exe_name.clone().into(), exe)];
+    if !o.msix {
+        let sdk = winappsdk::sdk_dir_for(&profile);
+        let runtime = winappsdk::runtime_files(&sdk, arch);
+        if runtime.is_empty() {
+            return Err(format!(
+                "no Windows App SDK runtime for {arch} in {}",
+                sdk.display()
+            ));
+        }
+        files.extend(runtime);
     }
-
-    let out = p.target_dir.join("windows");
-    let folder = folder_name(&p.name, &p.package);
-    let stage = out.join(&folder);
-    let _ = std::fs::remove_dir_all(&stage);
-    let mut files: Vec<(PathBuf, PathBuf)> = vec![(format!("{}.exe", p.package).into(), exe)];
-    files.extend(runtime);
     let mut asset_files = Vec::new();
     if let Some(dir) = &assets {
         list(dir, Path::new("assets"), &mut asset_files);
     }
     let has_assets = !asset_files.is_empty();
     files.extend(asset_files);
-    let zip_path = out.join(format!(
-        "{}-{}-windows-{}.zip",
+
+    let out = p.target_dir.join("windows");
+    let base = format!(
+        "{}-{}-windows-{}",
         p.package.replace('_', "-"),
         p.version,
         arch_name(arch)
-    ));
+    );
+    // The files as they ship, in a folder of their own: `<app name>` for
+    // the zip, `<base>-msix` for the package.
+    let folder = if o.msix {
+        format!("{base}-msix")
+    } else {
+        folder_name(&p.name, &p.package)
+    };
+    let stage = out.join(&folder);
+    let _ = std::fs::remove_dir_all(&stage);
     std::fs::create_dir_all(&stage).map_err(|e| format!("{}: {e}", stage.display()))?;
-    let file =
-        std::fs::File::create(&zip_path).map_err(|e| format!("{}: {e}", zip_path.display()))?;
-    let mut zip = ZipWriter::new(std::io::BufWriter::new(file));
     for (rel, src) in &files {
         let dest = stage.join(rel);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let data = std::fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
-        std::fs::write(&dest, &data).map_err(|e| format!("{}: {e}", dest.display()))?;
+        std::fs::copy(src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
+    }
+    if o.msix {
+        let path = out.join(format!("{base}.msix"));
+        let count = build_msix(p, arch, &stage, &files, &path)?;
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        println!(
+            "Built {} ({:.1} MB, {count} files: {exe_name}, logos{}; needs the \
+             {} {} framework package)",
+            path.display(),
+            size as f64 / 1e6,
+            if has_assets { ", assets" } else { "" },
+            winappsdk::FRAMEWORK_PACKAGE,
+            winappsdk::FRAMEWORK_MIN_VERSION,
+        );
+        return Ok(path);
+    }
+    let zip_path = out.join(format!("{base}.zip"));
+    let file =
+        std::fs::File::create(&zip_path).map_err(|e| format!("{}: {e}", zip_path.display()))?;
+    let mut zip = ZipWriter::new(std::io::BufWriter::new(file));
+    for (rel, src) in &files {
+        let staged = stage.join(rel);
+        let data = std::fs::read(&staged).map_err(|e| format!("{}: {e}", staged.display()))?;
         let modified = std::fs::metadata(src)
             .and_then(|m| m.modified())
             .unwrap_or_else(|_| std::time::SystemTime::now());
@@ -191,15 +233,111 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
         .map_err(|e| format!("{}: {e}", zip_path.display()))?;
     let size = std::fs::metadata(&zip_path).map(|m| m.len()).unwrap_or(0);
     println!(
-        "Built {} ({:.1} MB, {} files: {}.exe, the Windows App SDK runtime{})",
+        "Built {} ({:.1} MB, {} files: {exe_name}, the Windows App SDK runtime{})",
         zip_path.display(),
         size as f64 / 1e6,
         files.len(),
-        p.package,
         if has_assets { ", assets" } else { "" }
     );
     println!("Unzipped: {}", stage.display());
     Ok(zip_path)
+}
+
+/// The cargo build's environment: [`app_env`], and
+/// `PRISM_WINDOWS_PACKAGED=1` for an MSIX (the executable's manifest then
+/// registers no runtime class, and no runtime is copied next to it).
+fn build_env(p: &Project, msix: bool) -> Vec<(&'static str, String)> {
+    let mut env = app_env(p);
+    env.push((
+        "PRISM_WINDOWS_PACKAGED",
+        if msix { "1" } else { "0" }.into(),
+    ));
+    env
+}
+
+/// The MSIX's `Publisher`: `[windows] package_publisher`, else
+/// `CN=<publisher or name>`; the certificate that signs the package must
+/// have it as its subject.
+fn package_publisher(p: &Project) -> String {
+    match &p.package_publisher {
+        Some(set) => set.clone(),
+        None => msix::default_publisher(p.publisher.as_deref().unwrap_or(&p.name)),
+    }
+}
+
+/// `[permissions]` keys as the device capabilities an MSIX declares (the
+/// privacy settings Windows asks for).
+fn device_capabilities(p: &Project) -> Vec<String> {
+    let mut caps = Vec::new();
+    for (key, _) in &p.permissions {
+        let cap = match key.as_str() {
+            "location" | "location_always" => "location",
+            "camera" => "webcam",
+            "microphone" => "microphone",
+            _ => continue,
+        };
+        if !caps.iter().any(|c| c == cap) {
+            caps.push(cap.to_string());
+        }
+    }
+    caps
+}
+
+/// The MSIX's manifest.
+fn manifest(p: &Project, arch: &str, publisher: String) -> Result<msix::Manifest, String> {
+    let name = msix::package_name(&p.bundle_id)?;
+    let info = prism_build::winres::AppInfo {
+        version: p.version.clone(),
+        build: p.build.clone(),
+        ..Default::default()
+    };
+    Ok(msix::Manifest {
+        toast_clsid: msix::class_id(&format!("{name}|{publisher}")),
+        name,
+        version: info.version_quad(),
+        arch: arch_name(arch).to_string(),
+        display_name: p.name.clone(),
+        publisher_display_name: p.publisher.clone().unwrap_or_else(|| p.name.clone()),
+        description: p.description.clone().unwrap_or_else(|| p.name.clone()),
+        executable: format!("{}.exe", p.package),
+        languages: p.languages.clone(),
+        device_capabilities: device_capabilities(p),
+        publisher,
+    })
+}
+
+/// Packs the staged files, the logos and the manifest into `path`;
+/// returns how many files it holds.
+fn build_msix(
+    p: &Project,
+    arch: &str,
+    stage: &Path,
+    files: &[(PathBuf, PathBuf)],
+    path: &Path,
+) -> Result<usize, String> {
+    let publisher = package_publisher(p);
+    msix::check_publisher(&publisher)?;
+    let manifest = manifest(p, arch, publisher)?.xml();
+    let icon = match &p.icon {
+        Some(i) => Some(std::fs::read(i).map_err(|e| format!("{}: {e}", i.display()))?),
+        None => None,
+    };
+    let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut pack = msix::Packer::new(std::io::BufWriter::new(file), std::time::SystemTime::now());
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    for (rel, _) in files {
+        let data = std::fs::read(stage.join(rel)).map_err(|e| e.to_string())?;
+        pack.add(&zip_name(rel), &data).map_err(err)?;
+    }
+    for (logo, size) in msix::LOGOS {
+        let png = prism_build::winres::logo_png(icon.as_deref(), size)
+            .map_err(|e| format!("the app icon: {e}"))?;
+        pack.add(logo, &png).map_err(err)?;
+    }
+    pack.finish(&manifest)
+        .and_then(|mut w| std::io::Write::flush(&mut w))
+        .map_err(err)?;
+    Ok(files.len() + msix::LOGOS.len() + 1)
 }
 
 /// The folder inside the zip: the app's name without the characters
@@ -256,14 +394,18 @@ fn describe_assets(exe: &Path) -> Option<PathBuf> {
 }
 
 /// `cargo build --release` here (on Windows, or with MinGW-w64).
-fn cargo_build(p: &Project, triple: Option<&str>) -> Result<(), String> {
+fn cargo_build(
+    p: &Project,
+    triple: Option<&str>,
+    env: &[(&'static str, String)],
+) -> Result<(), String> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&p.root)
         .args(["build", "--release", "-p", &p.package]);
     if let Some(t) = triple {
         cmd.args(["--target", t]);
     }
-    for (k, v) in app_env(p) {
+    for (k, v) in env {
         cmd.env(k, v);
     }
     let status = cmd.status().map_err(|e| format!("cargo: {e}"))?;
@@ -280,7 +422,11 @@ fn cargo_build(p: &Project, triple: Option<&str>) -> Result<(), String> {
 
 /// Builds in the `prism-windows-cross` image (Rust and MinGW-w64), built
 /// if missing; returns the target directory (on this machine).
-fn docker_build(p: &Project, triple: &str) -> Result<PathBuf, String> {
+fn docker_build(
+    p: &Project,
+    triple: &str,
+    env: &[(&'static str, String)],
+) -> Result<PathBuf, String> {
     let platform = crate::embedded::extract(&p.target_dir)?;
     let has_image = Command::new("docker")
         .args(["image", "inspect", CROSS_IMAGE])
@@ -313,7 +459,7 @@ fn docker_build(p: &Project, triple: &str) -> Result<PathBuf, String> {
     // Docker mounts real paths: target/ may be a symlink.
     let out = out.canonicalize().map_err(|e| e.to_string())?;
     let status = Command::new("docker")
-        .args(docker_args(p, &out, triple)?)
+        .args(docker_args(p, &out, triple, env)?)
         .status()
         .map_err(|e| format!("docker run: {e}"))?;
     if !status.success() {
@@ -324,7 +470,12 @@ fn docker_build(p: &Project, triple: &str) -> Result<PathBuf, String> {
 
 /// The `docker run` arguments of the cross build: the workspace at
 /// `/src`, the target directory at `/out/target`.
-fn docker_args(p: &Project, out: &Path, triple: &str) -> Result<Vec<String>, String> {
+fn docker_args(
+    p: &Project,
+    out: &Path,
+    triple: &str,
+    env: &[(&'static str, String)],
+) -> Result<Vec<String>, String> {
     let mut args: Vec<String> = vec!["run".into(), "--rm".into()];
     for (host, guest) in [(p.workspace_root.as_path(), "/src"), (out, "/out/target")] {
         args.push("-v".into());
@@ -335,7 +486,7 @@ fn docker_args(p: &Project, out: &Path, triple: &str) -> Result<Vec<String>, Str
         format!("{REGISTRY_VOLUME}:/usr/local/cargo/registry"),
     ]);
     let project = crate::linux::in_container(&p.workspace_root, &p.root)?;
-    let mut env = app_env(p);
+    let mut env = env.to_vec();
     if let Some(icon) = &p.icon {
         let icon = crate::linux::in_container(&p.workspace_root, icon)?;
         env.retain(|(k, _)| *k != "PRISM_ICON");
@@ -409,10 +560,49 @@ mod tests {
     }
 
     #[test]
+    fn msix_publishers_and_capabilities() {
+        let mut p = crate::linux::tests::project();
+        assert_eq!(package_publisher(&p), "CN=My App");
+        p.publisher = Some("Example, Inc.".into());
+        assert_eq!(package_publisher(&p), "CN=\"Example, Inc.\"");
+        p.package_publisher = Some("CN=Example, O=Example, C=FR".into());
+        assert_eq!(package_publisher(&p), "CN=Example, O=Example, C=FR");
+        p.package_publisher = None;
+
+        p.permissions = [
+            "camera",
+            "face_id",
+            "location",
+            "location_always",
+            "microphone",
+        ]
+        .map(|k| (k.to_string(), "why".to_string()))
+        .to_vec();
+        assert_eq!(
+            device_capabilities(&p),
+            ["webcam", "location", "microphone"]
+        );
+
+        let m = manifest(&p, "win-arm64", "CN=Example".into()).unwrap();
+        assert_eq!(m.name, "com.example.app");
+        assert_eq!(m.version, "1.2.0.7");
+        assert_eq!(m.arch, "arm64");
+        assert_eq!(m.executable, "my_app.exe");
+        assert_eq!(m.publisher_display_name, "Example, Inc.");
+        assert_eq!(m.toast_clsid, msix::class_id("com.example.app|CN=Example"));
+    }
+
+    #[test]
     fn cross_builds_in_the_image() {
         let mut p = crate::linux::tests::project();
         p.publisher = Some("Example".into());
-        let args = docker_args(&p, Path::new("/real/out"), DEFAULT_CROSS).unwrap();
+        let args = docker_args(
+            &p,
+            Path::new("/real/out"),
+            DEFAULT_CROSS,
+            &build_env(&p, true),
+        )
+        .unwrap();
         let line = args.join(" ");
         for part in [
             "run --rm -v /w:/src -v /real/out:/out/target",
@@ -420,6 +610,7 @@ mod tests {
             "-e PRISM_PUBLISHER=Example",
             "-e PRISM_ICON=/src/examples/app/icon.png",
             "-e CARGO_TARGET_DIR=/out/target",
+            "-e PRISM_WINDOWS_PACKAGED=1",
             "-w /src/examples/app prism-windows-cross cargo build --release -p my_app --target x86_64-pc-windows-gnu",
         ] {
             assert!(line.contains(part), "{part} in {line}");
