@@ -290,6 +290,8 @@
     "reason": "Déverrouiller votre note secrète",
     "verified": "Vérifié : c’est bien vous.",
     "cancelled": "Annulé.",
+    "passkey": "Créer une clé d’accès",
+    "passkey_created": "Clé d’accès créée ({length} caractères de JSON ; aucun serveur ne la garde).",
     "unavailable": "Indisponible sur cet appareil.",
     "denied": "Non reconnu.",
     "note": "Note secrète",

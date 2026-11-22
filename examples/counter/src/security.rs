@@ -22,6 +22,10 @@
 //! the system check could accept a PIN (the web, Windows Hello, watchOS).
 //! `PRISM_APPLE_NONCE` and `PRISM_APPLE_STATE` show « Sign in with Apple »
 //! even without the entitlement, and pass that nonce and state.
+//! « Create a passkey » registers one for a demo relying party (the page's
+//! host on the web, else `example.com`) and keeps nothing;
+//! `PRISM_PASSKEY_TIMEOUT` is the ceremony's timeout in milliseconds
+//! (120000).
 
 use prism::oauth::OAuth;
 use prism::prelude::*;
@@ -92,6 +96,40 @@ impl SecurityDemo {
             cx.update_entity(&this, |d, cx| {
                 d.status = Some(match r {
                     Ok(()) => strings::security_verified(cx),
+                    Err(e) => Self::error(cx, &e),
+                })
+            });
+        });
+    }
+
+    /// Registers a passkey for a demo relying party: the options a server
+    /// would send (`PublicKeyCredentialCreationOptionsJSON`). There is no
+    /// server here, so the new credential is only measured, never kept.
+    fn passkey(&mut self, cx: &mut Context<Self>) {
+        let rp = cx
+            .page_origin()
+            .and_then(|o| {
+                o.split("://")
+                    .nth(1)
+                    .map(|h| h.split(':').next().unwrap_or(h))
+            })
+            .unwrap_or("example.com")
+            .to_string();
+        // A host name: nothing to escape in the JSON.
+        let options = format!(
+            r#"{{"rp":{{"id":"{rp}","name":"Prism Counter"}},"user":{{"id":"{user}","name":"demo@example.com","displayName":"Prism Counter demo"}},"challenge":"{challenge}","pubKeyCredParams":[{{"type":"public-key","alg":-7}},{{"type":"public-key","alg":-257}}],"authenticatorSelection":{{"residentKey":"required","userVerification":"preferred"}},"timeout":{timeout}}}"#,
+            user = base64url(b"prism-counter-demo-user"),
+            challenge = base64url(&challenge()),
+            timeout = std::env::var("PRISM_PASSKEY_TIMEOUT")
+                .ok()
+                .and_then(|t| t.parse::<u32>().ok())
+                .unwrap_or(120_000),
+        );
+        cx.spawn(async move |this, cx| {
+            let r = cx.webauthn_create(options).await;
+            cx.update_entity(&this, |d, cx| {
+                d.status = Some(match r {
+                    Ok(json) => strings::security_passkey_created(cx, json.len().to_string()),
                     Err(e) => Self::error(cx, &e),
                 })
             });
@@ -273,6 +311,14 @@ impl Render for SecurityDemo {
                     .disabled(!caps.device_auth && std::env::var_os("PRISM_AUTH").is_none())
                     .on_click(cx.listener(|this, _, cx| this.verify(cx))),
             )
+            .when(caps.passkeys, |d| {
+                d.child(
+                    ui::button(strings::security_passkey(cx))
+                        .small()
+                        .secondary()
+                        .on_click(cx.listener(|this, _, cx| this.passkey(cx))),
+                )
+            })
             .child(ui::divider())
             .child(
                 ui::text_field(strings::security_note(cx), self.note.clone())
@@ -380,4 +426,27 @@ impl Render for SecurityDemo {
             )
             .when_some(self.status.clone(), |d, s| d.child(muted(s)))
     }
+}
+
+/// A demo challenge: a real one comes from the server, random and used once.
+fn challenge() -> Vec<u8> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let mut bytes = b"prism-counter-demo-".to_vec();
+    bytes.extend_from_slice(&nanos.to_le_bytes());
+    bytes
+}
+
+/// Base64url without padding, as WebAuthn's JSON wants binary fields.
+fn base64url(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().fold(0u32, |n, &b| n << 8 | u32::from(b)) << (8 * (3 - chunk.len()));
+        for i in 0..=chunk.len() {
+            out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+    }
+    out
 }

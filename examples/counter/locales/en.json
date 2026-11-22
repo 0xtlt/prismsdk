@@ -290,6 +290,8 @@
     "reason": "Unlock your secret note",
     "verified": "Verified: it’s you.",
     "cancelled": "Cancelled.",
+    "passkey": "Create a passkey",
+    "passkey_created": "Passkey created ({length} characters of JSON; no server keeps it).",
     "unavailable": "Not available on this device.",
     "denied": "Not recognized.",
     "note": "Secret note",
