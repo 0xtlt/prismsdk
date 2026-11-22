@@ -9,18 +9,18 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole,
-    NSAccessibilityGroupRole, NSAccessibilityHeadingRole, NSAccessibilityImageRole,
-    NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityPopUpButtonRole,
-    NSAccessibilityRadioButtonRole, NSAccessibilitySliderRole, NSAccessibilityStaticTextRole,
-    NSAccessibilityTabGroupRole, NSAnimatablePropertyContainer, NSAppearance, NSApplication,
-    NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSButton, NSColor, NSControl,
-    NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate,
-    NSDatePicker, NSDatePickerElementFlags, NSDatePickerStyle, NSEvent, NSFont,
-    NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem,
-    NSPopUpButton, NSProgressIndicator, NSProgressIndicatorStyle, NSResponder, NSScrollView,
-    NSSegmentedControl, NSSlider, NSSwitch, NSText, NSTextAlignment, NSTextDelegate, NSTextField,
-    NSTextFieldDelegate, NSTextView, NSTextViewDelegate, NSUserInterfaceItemIdentification, NSView,
-    NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSAccessibilityGroupRole, NSAccessibilityImageRole, NSAccessibilityLinkRole,
+    NSAccessibilityListRole, NSAccessibilityPopUpButtonRole, NSAccessibilityRadioButtonRole,
+    NSAccessibilitySliderRole, NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole,
+    NSAnimatablePropertyContainer, NSAppearance, NSApplication, NSApplicationActivationPolicy,
+    NSBackingStoreType, NSBezierPath, NSButton, NSColor, NSControl, NSControlSize,
+    NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate, NSDatePicker,
+    NSDatePickerElementFlags, NSDatePickerStyle, NSEvent, NSFont, NSFontWeightSemibold, NSImage,
+    NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSPopUpButton,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSResponder, NSScrollView, NSSegmentedControl,
+    NSSlider, NSSwitch, NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate,
+    NSTextView, NSTextViewDelegate, NSUserInterfaceItemIdentification, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_app_kit::{NSPopover, NSPopoverDelegate, NSTrackingArea, NSTrackingAreaOptions};
 use objc2_foundation::{
@@ -5425,7 +5425,10 @@ impl Widgets for AppKit {
                 match a.role {
                     Some(Role::Button) => Some(NSAccessibilityButtonRole),
                     Some(Role::Link) => Some(NSAccessibilityLinkRole),
-                    Some(Role::Heading(_)) => Some(NSAccessibilityHeadingRole),
+                    // `NSAccessibilityHeadingRole` is macOS 26 only: linking it breaks
+                    // older SDKs and loading on macOS 13-15. VoiceOver reads its
+                    // value, "AXHeading", on every version.
+                    Some(Role::Heading(_)) => Some(objc2_foundation::ns_string!("AXHeading")),
                     Some(Role::Image) => Some(NSAccessibilityImageRole),
                     Some(Role::Text) => Some(NSAccessibilityStaticTextRole),
                     Some(Role::Switch | Role::Checkbox) => Some(NSAccessibilityCheckBoxRole),
