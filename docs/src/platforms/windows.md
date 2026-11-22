@@ -625,10 +625,16 @@ only on Windows.
   `AR_i686_pc_windows_gnullvm` to its `llvm-ar.exe`; the runtime comes
   from `runtimes-framework/win-x86`, the zip is `-x86`. `prism build`
   links the C runtime and the unwinder statically for `*-gnullvm` targets
-  (`CARGO_TARGET_<TRIPLE>_RUSTFLAGS="-C target-feature=+crt-static"`,
-  unless `RUSTFLAGS` or that variable is set): otherwise the executable
-  needs llvm-mingw's `libunwind.dll` and stops at launch with
-  `0xC0000135` (a DLL not found). A plain `cargo build` for those targets
+  (`-C target-feature=+crt-static` in `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`,
+  after your own value of that variable if you set one): otherwise the
+  executable needs llvm-mingw's `libunwind.dll` and stops at launch with
+  `0xC0000135` (a DLL not found). Cargo adds that variable to your
+  project's `target.<triple>.rustflags` and `target.<cfg>.rustflags` in
+  `.cargo/config.toml` (as a string or an array): your flags are kept, the
+  static runtime comes after them. `RUSTFLAGS` and
+  `CARGO_ENCODED_RUSTFLAGS` replace every config's flags in Cargo: when
+  one is set, `prism build` adds nothing, so include
+  `-C target-feature=+crt-static` in it yourself. A plain `cargo build` for those targets
   needs that flag too. `windows-smoke.sh` and `windows-a11y.sh` run such a
   build with `PRISM_SMOKE_EXE=target\windows\App\app.exe` (relative to
   the remote checkout): they skip their own build. `i686-pc-windows-gnu`

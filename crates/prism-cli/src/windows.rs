@@ -256,22 +256,39 @@ fn describe_assets(exe: &Path) -> Option<PathBuf> {
 }
 
 /// The rustflags that link LLVM's unwinder into a `*-gnullvm` app
-/// (`+crt-static`), unless the caller set its own (`has(var)`): linked
-/// dynamically, the app needs llvm-mingw's `libunwind.dll`, which no PC
-/// has, and does not start (0xC0000135). The C runtime stays the system's
-/// UCRT.
-fn static_unwind(triple: &str, has: impl Fn(&str) -> bool) -> Option<(String, String)> {
+/// (`+crt-static`): linked dynamically, the app needs llvm-mingw's
+/// `libunwind.dll`, which no PC has, and does not start (0xC0000135). The
+/// C runtime stays the system's UCRT.
+///
+/// They go in `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` (`get` reads the
+/// environment), after the caller's own value of it. Cargo joins that
+/// variable with the project's `target.<triple>.rustflags` and
+/// `target.<cfg>.rustflags` (`.cargo/config.toml`, string or array), so
+/// those are kept; `--config` would fail on a string. `RUSTFLAGS` and
+/// `CARGO_ENCODED_RUSTFLAGS` replace every config's flags: set, they win
+/// and nothing is added.
+fn static_unwind(triple: &str, get: impl Fn(&str) -> Option<String>) -> Option<(String, String)> {
     if !triple.ends_with("-gnullvm") {
         return None;
     }
-    let var = format!(
-        "CARGO_TARGET_{}_RUSTFLAGS",
-        triple.to_uppercase().replace('-', "_")
-    );
-    if has("RUSTFLAGS") || has("CARGO_ENCODED_RUSTFLAGS") || has(&var) {
+    if get("RUSTFLAGS").is_some() || get("CARGO_ENCODED_RUSTFLAGS").is_some() {
         return None;
     }
-    Some((var, "-C target-feature=+crt-static".into()))
+    let var = target_rustflags(triple);
+    let flag = "-C target-feature=+crt-static";
+    let value = match get(&var).filter(|v| !v.trim().is_empty()) {
+        Some(own) => format!("{own} {flag}"),
+        None => flag.into(),
+    };
+    Some((var, value))
+}
+
+/// Cargo's environment variable for `target.<triple>.rustflags`.
+fn target_rustflags(triple: &str) -> String {
+    format!(
+        "CARGO_TARGET_{}_RUSTFLAGS",
+        triple.to_uppercase().replace(['-', '.'], "_")
+    )
 }
 
 /// `cargo build --release` here (on Windows, or with MinGW-w64).
@@ -281,7 +298,7 @@ fn cargo_build(p: &Project, triple: Option<&str>) -> Result<(), String> {
         .args(["build", "--release", "-p", &p.package]);
     if let Some(t) = triple {
         cmd.args(["--target", t]);
-        if let Some((k, v)) = static_unwind(t, |k| std::env::var_os(k).is_some()) {
+        if let Some((k, v)) = static_unwind(t, |k| std::env::var(k).ok()) {
             cmd.env(k, v);
         }
     }
@@ -417,7 +434,7 @@ mod tests {
 
     #[test]
     fn llvm_builds_carry_their_unwinder() {
-        let none = |_: &str| false;
+        let none = |_: &str| None;
         assert_eq!(
             static_unwind("i686-pc-windows-gnullvm", none),
             Some((
@@ -427,11 +444,71 @@ mod tests {
         );
         assert!(static_unwind("aarch64-pc-windows-gnullvm", none).is_some());
         assert_eq!(static_unwind("x86_64-pc-windows-gnu", none), None);
-        // The caller's flags win.
+        // The caller's own value of the variable comes first.
         assert_eq!(
-            static_unwind("i686-pc-windows-gnullvm", |k| k == "RUSTFLAGS"),
+            static_unwind("i686-pc-windows-gnullvm", |k| {
+                (k == "CARGO_TARGET_I686_PC_WINDOWS_GNULLVM_RUSTFLAGS")
+                    .then(|| "-C opt-level=s".into())
+            }),
+            Some((
+                "CARGO_TARGET_I686_PC_WINDOWS_GNULLVM_RUSTFLAGS".into(),
+                "-C opt-level=s -C target-feature=+crt-static".into()
+            ))
+        );
+        // RUSTFLAGS replaces every config's flags: the caller's win.
+        assert_eq!(
+            static_unwind("i686-pc-windows-gnullvm", |k| {
+                (k == "RUSTFLAGS").then(String::new)
+            }),
             None
         );
+    }
+
+    /// Cargo joins `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` with a project's
+    /// `target.<triple>.rustflags`, in both of its forms: the CLI's flags
+    /// extend the project's instead of replacing them. Run on this
+    /// machine's triple, with flags any target takes.
+    #[test]
+    fn target_rustflags_extend_the_projects() {
+        let rustc = Command::new("rustc").arg("-vV").output().unwrap();
+        let info = String::from_utf8(rustc.stdout).unwrap();
+        let host = info
+            .lines()
+            .find_map(|l| l.strip_prefix("host: "))
+            .unwrap()
+            .to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".cargo")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"flags\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        for form in [r#"["--cfg", "from_project"]"#, r#""--cfg from_project""#] {
+            std::fs::write(
+                root.join(".cargo/config.toml"),
+                format!("[target.{host}]\nrustflags = {form}\n"),
+            )
+            .unwrap();
+            let out = Command::new("cargo")
+                .current_dir(root)
+                .args(["build", "-v", "--offline", "--target", &host])
+                .env_remove("RUSTFLAGS")
+                .env_remove("CARGO_ENCODED_RUSTFLAGS")
+                .env("CARGO_TARGET_DIR", root.join("target"))
+                .env(target_rustflags(&host), "--cfg from_prism")
+                .output()
+                .unwrap();
+            let log = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{log}");
+            assert!(log.contains("--cfg from_project"), "{form}: {log}");
+            assert!(log.contains("--cfg from_prism"), "{form}: {log}");
+            // A later build with the other form must compile again.
+            std::fs::remove_dir_all(root.join("target")).unwrap();
+        }
     }
 
     #[test]
