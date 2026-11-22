@@ -228,7 +228,8 @@ pub struct Push {
     /// something, so Web Push pushes should stay visible.
     pub silent: bool,
     /// Replaces an earlier push with the same id (APNs collapse id, FCM
-    /// collapse key, Web Push `Topic`).
+    /// collapse key, Web Push `Topic`). WNS raw notifications have none:
+    /// WNS keeps the latest one per channel for an offline PC.
     pub collapse_id: Option<String>,
     /// How long the service keeps it for an offline device (default 4 weeks
     /// on APNs and FCM; Web Push requires one: 1 day by default).

@@ -112,10 +112,18 @@ there.
    (`login.microsoftonline.com`, client credentials, scope
    `https://wns.windows.com/.default`, cached until it expires), then a
    `POST` of the payload to the channel URI as a raw notification
-   (`X-WNS-Type: wns/raw`, 5,120 bytes at most; `ttl`, `collapse_id` and
-   `urgency` become `X-WNS-TTL`, `X-WNS-Tag` and `X-WNS-Priority`). The
+   (`X-WNS-Type: wns/raw`, 5,000 bytes at most) with
+   `X-WNS-Cache-Policy: cache`, so WNS keeps the latest one for a PC that
+   is offline (raw notifications are not cached otherwise); `ttl` becomes
+   `X-WNS-TTL`. `collapse_id` and `urgency` are not sent: `X-WNS-Tag` is
+   for tiles only, and Microsoft documents no priority header. The
    sender posts only to `https://*.notify.windows.com` channels, so the
-   token never goes elsewhere; 404 and 410 are `PushError::Gone`.
+   token never goes elsewhere. A send succeeds only when WNS took the
+   notification: `X-WNS-Status: dropped` or `channelthrottled` is an
+   error. 404 and a 410 for an expired channel are `PushError::Gone`;
+   another 410, « Domain Blocked » (WNS blocked the sender), is
+   `PushError::Rejected` with WNS's `X-WNS-Error-Description`, so a
+   server does not delete every channel.
 
 In the app, `register_for_push` asks for a channel (`CreateChannelAsync`)
 and gives its URI as the token (`PushService::Wns`); a channel lasts 30

@@ -153,7 +153,7 @@ impl Sender {
                     key.token(SystemTime::now())
                 });
                 let req = crate::apns::request(sub, push, &token)?;
-                let (status, body) = self.execute(req).await?;
+                let (status, _, body) = self.execute(req).await?;
                 if status == 403 && body.windows(19).any(|w| w == b"ExpiredProviderToken") {
                     *self.apns_token.lock().unwrap() = None;
                 }
@@ -165,7 +165,7 @@ impl Sender {
                 })?;
                 let access = self.fcm_access_token(account).await?;
                 let req = account.request(&sub.token, push, &access);
-                let (status, body) = self.execute(req).await?;
+                let (status, _, body) = self.execute(req).await?;
                 check(status, &body, crate::fcm::error)
             }
             Service::Wns => {
@@ -177,18 +177,18 @@ impl Sender {
                 crate::wns::request(&sub.token, push, "")?;
                 let access = self.wns_access_token(credentials).await?;
                 let req = crate::wns::request(&sub.token, push, &access)?;
-                let (status, body) = self.execute(req).await?;
+                let (status, headers, body) = self.execute(req).await?;
                 if status == 401 {
                     // The token expired early: the next send asks again.
                     *self.wns_token.lock().unwrap() = None;
                 }
-                check(status, &body, crate::wns::error)
+                crate::wns::response(status, &headers, &body)
             }
             Service::WebPush | Service::UnifiedPush => {
                 self.check_endpoint(&sub.token)?;
                 let vapid = self.vapid.as_ref().map(|(k, s)| (k, s.as_str()));
                 let req = crate::webpush::build(sub, push, vapid, SystemTime::now())?;
-                let (status, body) = self.execute(req).await?;
+                let (status, _, body) = self.execute(req).await?;
                 check(status, &body, |status, body| match status {
                     404 | 410 => PushError::Gone,
                     _ => PushError::Rejected {
@@ -206,7 +206,7 @@ impl Sender {
         {
             return Ok(t.clone());
         }
-        let (status, body) = self.execute(credentials.token_request()).await?;
+        let (status, _, body) = self.execute(credentials.token_request()).await?;
         if status != 200 {
             return Err(PushError::Rejected {
                 status,
@@ -233,7 +233,7 @@ impl Sender {
         {
             return Ok(t.clone());
         }
-        let (status, body) = self
+        let (status, _, body) = self
             .execute(account.token_request(SystemTime::now()))
             .await?;
         if status != 200 {
@@ -256,7 +256,12 @@ impl Sender {
         Ok(token)
     }
 
-    async fn execute(&self, req: HttpRequest) -> Result<(u16, Vec<u8>), PushError> {
+    /// Posts `req`; returns the status, the response's headers (WNS says
+    /// in them whether it delivered) and its body (capped).
+    async fn execute(
+        &self,
+        req: HttpRequest,
+    ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), PushError> {
         // APNs needs HTTP/2: ALPN negotiates it (reqwest`s `http2` feature).
         let mut builder = self.http.post(&req.url).body(req.body);
         for (k, v) in &req.headers {
@@ -267,7 +272,12 @@ impl Sender {
             .await
             .map_err(|e| PushError::Http(e.to_string()))?;
         let status = res.status().as_u16();
-        Ok((status, read_capped(res).await?))
+        let headers = res
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
+            .collect();
+        Ok((status, headers, read_capped(res).await?))
     }
 
     /// Whether the sender may post to Web Push endpoint `url`: a trusted

@@ -13,7 +13,7 @@
 //! and the Entra app, which Microsoft makes on request (Windows App SDK
 //! push documentation).
 
-use crate::{HttpRequest, Push, PushError, Urgency};
+use crate::{HttpRequest, Push, PushError};
 
 pub const SCOPE: &str = "https://wns.windows.com/.default";
 
@@ -129,15 +129,25 @@ pub fn check_channel(uri: &str) -> Result<(), PushError> {
     if ok { Ok(()) } else { Err(bad()) }
 }
 
+/// The most a notification carries (WNS answers 413 above it).
+pub const MAX_PAYLOAD: usize = 5000;
+
 /// The raw notification for channel `uri`, with an access token from
 /// [`WnsCredentials::token_request`].
+///
+/// Headers, from Microsoft's « Push notification service request and
+/// response headers »: `X-WNS-Type: wns/raw`; `X-WNS-Cache-Policy: cache`,
+/// always, since raw notifications are not cached by default and one
+/// sent while the PC is offline would be lost (WNS then keeps the latest
+/// one per channel); `X-WNS-TTL` from `ttl`. `collapse_id` and `urgency`
+/// have no raw counterpart there (`X-WNS-Tag` is for tiles only, and no
+/// priority header is documented), so they are not sent.
 pub fn request(uri: &str, push: &Push, access_token: &str) -> Result<HttpRequest, PushError> {
     check_channel(uri)?;
     let body = push.payload().to_string().into_bytes();
-    // Raw notifications carry at most 5 KB.
-    if body.len() > 5120 {
+    if body.len() > MAX_PAYLOAD {
         return Err(PushError::Config(format!(
-            "WNS: the payload is {} bytes (5120 at most)",
+            "WNS: the payload is {} bytes ({MAX_PAYLOAD} at most)",
             body.len()
         )));
     }
@@ -145,19 +155,10 @@ pub fn request(uri: &str, push: &Push, access_token: &str) -> Result<HttpRequest
         ("Authorization".into(), format!("Bearer {access_token}")),
         ("Content-Type".into(), "application/octet-stream".into()),
         ("X-WNS-Type".into(), "wns/raw".into()),
+        ("X-WNS-Cache-Policy".into(), "cache".into()),
     ];
     if let Some(ttl) = push.ttl {
         headers.push(("X-WNS-TTL".into(), ttl.as_secs().to_string()));
-    }
-    if let Some(tag) = &push.collapse_id {
-        // Raw notifications keep the latest one per tag while offline.
-        headers.push(("X-WNS-Cache-Policy".into(), "cache".into()));
-        headers.push(("X-WNS-Tag".into(), tag.chars().take(16).collect()));
-    }
-    if matches!(push.urgency, Urgency::High) {
-        headers.push(("X-WNS-Priority".into(), "1".into()));
-    } else if matches!(push.urgency, Urgency::Low | Urgency::VeryLow) {
-        headers.push(("X-WNS-Priority".into(), "3".into()));
     }
     Ok(HttpRequest {
         url: uri.to_string(),
@@ -166,20 +167,71 @@ pub fn request(uri: &str, push: &Push, access_token: &str) -> Result<HttpRequest
     })
 }
 
-/// Maps a WNS answer: 404 and 410 mean the channel is gone.
-pub fn error(status: u16, body: &[u8]) -> PushError {
+/// A header of an answer, by name in any case.
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.trim())
+}
+
+/// Maps WNS's answer to a send:
+///
+/// - 2xx with `X-WNS-Status: received` (or none): sent. `dropped` (an
+///   error, or the client refuses these notifications) and
+///   `channelthrottled` are errors, not successes;
+/// - 404 (an unknown channel) and 410 for an expired channel are
+///   [`PushError::Gone`]; another 410, such as « Domain Blocked » (WNS
+///   blocked the sender), is a rejection, so the server does not delete
+///   every channel. The 410's `X-WNS-Error-Description` tells them apart;
+///   a 410 without one is the documented expired channel.
+pub fn response(status: u16, headers: &[(String, String)], body: &[u8]) -> Result<(), PushError> {
+    let description = header(headers, "X-WNS-Error-Description").unwrap_or_default();
+    let reason = |fallback: &str| {
+        let text = if description.is_empty() {
+            String::from_utf8_lossy(&body[..body.len().min(200)])
+                .trim()
+                .to_string()
+        } else {
+            description.to_string()
+        };
+        if text.is_empty() {
+            fallback.to_string()
+        } else {
+            text
+        }
+    };
+    if (200..300).contains(&status) {
+        return match header(headers, "X-WNS-Status")
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            None | Some("received") => Ok(()),
+            Some(other) => Err(PushError::Rejected {
+                status,
+                reason: format!(
+                    "WNS: {other}: {}",
+                    reason("the notification was not delivered")
+                ),
+            }),
+        };
+    }
+    let lower = description.to_ascii_lowercase();
+    let expired = description.is_empty() || lower.contains("expired");
     match status {
-        404 | 410 => PushError::Gone,
-        _ => PushError::Rejected {
+        404 => Err(PushError::Gone),
+        410 if expired && !lower.contains("block") => Err(PushError::Gone),
+        _ => Err(PushError::Rejected {
             status,
-            reason: String::from_utf8_lossy(&body[..body.len().min(200)]).into(),
-        },
+            reason: reason(""),
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Urgency;
 
     const CHANNEL: &str = "https://wns2-par02p.notify.windows.com/w/?token=AwYAAAB%2bQ";
 
@@ -196,14 +248,26 @@ mod tests {
         assert_eq!(req.header("Authorization"), Some("Bearer eyJ0"));
         assert_eq!(req.header("X-WNS-Type"), Some("wns/raw"));
         assert_eq!(req.header("X-WNS-TTL"), Some("60"));
-        assert_eq!(req.header("X-WNS-Tag"), Some("inbox-messages-1"));
-        assert_eq!(req.header("X-WNS-Priority"), Some("1"));
+        // Cached while the PC is offline, always; no tile-only tag, no
+        // undocumented priority.
+        assert_eq!(req.header("X-WNS-Cache-Policy"), Some("cache"));
+        assert_eq!(req.header("X-WNS-Tag"), None);
+        assert_eq!(req.header("X-WNS-Priority"), None);
+        let plain = request(CHANNEL, &Push::new().title("Hi"), "t").unwrap();
+        assert_eq!(plain.header("X-WNS-Cache-Policy"), Some("cache"));
+        assert_eq!(plain.header("X-WNS-TTL"), None);
         let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
         assert_eq!(body["title"], "Hi");
         assert_eq!(body["link"], "/inbox");
         let silent = request(CHANNEL, &Push::new().silent(), "t").unwrap();
         assert_eq!(silent.body, br#"{"silent":true}"#);
-        let big = Push::new().body("x".repeat(6000));
+        // 5000 bytes at most (the payload is `{"body":"…"}`: 11 more).
+        let fits = Push::new().body("x".repeat(MAX_PAYLOAD - 11));
+        assert_eq!(
+            request(CHANNEL, &fits, "t").unwrap().body.len(),
+            MAX_PAYLOAD
+        );
+        let big = Push::new().body("x".repeat(MAX_PAYLOAD - 10));
         assert!(request(CHANNEL, &big, "t").is_err());
     }
 
@@ -249,10 +313,40 @@ mod tests {
         assert!(!format!("{c:?}").contains("a~b"));
         assert!(WnsCredentials::new("a/b", "x", "s").is_err());
         assert!(WnsCredentials::new("t", "x", "").is_err());
-        assert!(matches!(error(410, b""), PushError::Gone));
+    }
+
+    fn h(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn answers() {
+        assert!(response(200, &h(&[("X-WNS-Status", "received")]), b"").is_ok());
+        assert!(response(200, &[], b"").is_ok());
+        // Dropped or throttled: not sent.
+        let dropped = response(200, &h(&[("x-wns-status", "dropped")]), b"").unwrap_err();
+        assert!(
+            matches!(&dropped, PushError::Rejected { status: 200, reason } if reason.contains("dropped")),
+            "{dropped:?}"
+        );
+        assert!(response(200, &h(&[("X-WNS-Status", "channelthrottled")]), b"").is_err());
+        // Gone: an unknown or expired channel only.
+        assert!(matches!(response(404, &[], b""), Err(PushError::Gone)));
+        assert!(matches!(response(410, &[], b""), Err(PushError::Gone)));
+        let expired = h(&[("X-WNS-Error-Description", "The channel expired.")]);
+        assert!(matches!(response(410, &expired, b""), Err(PushError::Gone)));
+        let blocked = h(&[("X-WNS-Error-Description", "Domain Blocked")]);
+        let err = response(410, &blocked, b"").unwrap_err();
+        assert!(
+            matches!(&err, PushError::Rejected { status: 410, reason } if reason == "Domain Blocked"),
+            "{err:?}"
+        );
         assert!(matches!(
-            error(401, b""),
-            PushError::Rejected { status: 401, .. }
+            response(401, &[], b"token"),
+            Err(PushError::Rejected { status: 401, .. })
         ));
     }
 }
