@@ -272,13 +272,15 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
 
 /// The cargo build's environment: [`app_env`], and
 /// `PRISM_WINDOWS_PACKAGED=1` for an MSIX (the executable's manifest then
-/// registers no runtime class, and no runtime is copied next to it).
+/// registers no runtime class, and no runtime is copied next to it). The
+/// zip's build leaves it unset, as `prism run windows` does, so switching
+/// between them does not rebuild the app (cargo reruns the build script
+/// when the variable changes, also from unset to `0`).
 fn build_env(p: &Project, msix: bool) -> Vec<(&'static str, String)> {
     let mut env = app_env(p);
-    env.push((
-        "PRISM_WINDOWS_PACKAGED",
-        if msix { "1" } else { "0" }.into(),
-    ));
+    if msix {
+        env.push(("PRISM_WINDOWS_PACKAGED", "1".into()));
+    }
     env
 }
 
@@ -461,6 +463,8 @@ fn cargo_build(
     if let Some(t) = triple {
         cmd.args(["--target", t]);
     }
+    // Set for an MSIX only (`build_env`), never inherited.
+    cmd.env_remove("PRISM_WINDOWS_PACKAGED");
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -688,5 +692,13 @@ mod tests {
             assert!(line.contains(part), "{part} in {line}");
         }
         assert_eq!(line.matches("PRISM_ICON").count(), 1);
+        // The zip's build leaves PRISM_WINDOWS_PACKAGED unset, like
+        // `prism run windows`: no rebuild when switching between them.
+        assert!(
+            !build_env(&p, false)
+                .iter()
+                .any(|(k, _)| *k == "PRISM_WINDOWS_PACKAGED")
+        );
+        assert_eq!(build_env(&p, false), app_env(&p));
     }
 }

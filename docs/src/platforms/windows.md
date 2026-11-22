@@ -481,7 +481,9 @@ writes it). On Windows it:
 - links release builds as Windows programs, which open no console (see
   [No console](#no-console)).
 
-With `PRISM_WINDOWS_PACKAGED=1` (`prism build windows --msix` sets it) it
+With `PRISM_WINDOWS_PACKAGED=1` (`prism build windows --msix` sets it; the
+zip's build and `prism run windows` leave it unset, so switching between
+them rebuilds nothing) it
 copies no runtime and the manifest has no `activatableClass`
 registrations: the app runs from an MSIX that depends on the framework
 package ([MSIX](#msix)).
