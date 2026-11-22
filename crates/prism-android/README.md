@@ -10,7 +10,7 @@ tablets, Wear OS, Android TV, Android Auto and Automotive.
 Apps get it through the `prism` facade on Android; `prism dev android` builds
 the APK without Gradle.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-android](https://docs.rs/prismsdk-android)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-android](https://docs.rs/prismsdk-android)
 
 ## License
 

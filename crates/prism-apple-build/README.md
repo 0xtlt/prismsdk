@@ -9,7 +9,7 @@ for the cargo target and links them. Requires Xcode; a no-op elsewhere.
 
 It also exposes those sources (and the widget extension) to the `prism` CLI.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-apple-build](https://docs.rs/prismsdk-apple-build)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-apple-build](https://docs.rs/prismsdk-apple-build)
 
 ## License
 

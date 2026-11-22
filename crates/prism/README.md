@@ -38,7 +38,7 @@ styles, entities), `prism-ui` as `prism::ui` and `prism-http` as
 Install the `prism` command (`cargo install prismsdk-cli`) to create, run and
 bundle apps: `prism new my-app`, `prism dev web`, `prism dev ios`.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk](https://docs.rs/prismsdk)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk](https://docs.rs/prismsdk)
 
 ## License
 

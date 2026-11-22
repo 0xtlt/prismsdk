@@ -10,7 +10,7 @@ resolve on the UI thread; migrations are applied once each, in order.
 Apps use it as `prism::db` (the `prism` facade's `db` feature). It re-exports
 sqlx 0.9, with a bundled SQLite 3.54 or later.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-db](https://docs.rs/prismsdk-db)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-db](https://docs.rs/prismsdk-db)
 
 ## License
 

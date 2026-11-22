@@ -9,7 +9,7 @@ and `Context`, the reconciler that diffs element trees into patches, the
 
 Apps use it through the `prism` facade, which re-exports everything here.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-core](https://docs.rs/prismsdk-core)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-core](https://docs.rs/prismsdk-core)
 
 ## License
 

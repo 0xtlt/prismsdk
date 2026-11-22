@@ -23,7 +23,7 @@ fn main() {
 }
 ```
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-build](https://docs.rs/prismsdk-build)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-build](https://docs.rs/prismsdk-build)
 
 ## License
 

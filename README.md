@@ -31,7 +31,7 @@ Also, as previews: tvOS, watchOS, visionOS, Linux (GTK 4), Windows, Wear OS, And
 
 **Status: 0.x preview.** The API may change between 0.x versions (a breaking change raises the middle number, as semver allows before 1.0); the [changelog](CHANGELOG.md) lists each one. Windows is the newest backend: what is not done or not yet seen working on a PC is listed under [Windows: Not yet](docs/src/platforms/windows.md#not-yet).
 
-**Documentation: the [Prism book](https://0xtlt.github.io/prismsdk/)** (sources in [`docs/`](docs/src/SUMMARY.md)), and the API reference on docs.rs. Each section below is a summary of a chapter.
+**Documentation: the [Prism book](https://prismsdk.dev/)** (sources in [`docs/`](docs/src/SUMMARY.md)), and the API reference on docs.rs. Each section below is a summary of a chapter.
 
 ## Quick start
 

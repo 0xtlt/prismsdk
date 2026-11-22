@@ -1,6 +1,6 @@
 # prism-push
 
-Send push notifications from your server to apps built with [Prism](https://github.com/0xtlt/prismsdk):
+Send push notifications from your server to apps built with [Prism](https://prismsdk.dev):
 
 - **APNs** (iOS, iPadOS, macOS, tvOS, visionOS, watchOS): token-based authentication with a `.p8` key, HTTP/2, Live Activity updates.
 - **FCM HTTP v1** (Android): service-account OAuth (RS256).
@@ -14,6 +14,6 @@ Without the default `send` feature it only builds payloads, JWTs and Web Push en
 cargo run -p prismsdk-push --example push   # VAPID keys, .apns test files, encrypt and send
 ```
 
-See the [Remote push notifications](https://0xtlt.github.io/prismsdk/guide/push.html) chapter.
+See the [Remote push notifications](https://prismsdk.dev/guide/push.html) chapter.
 
 Licensed under MIT OR Apache-2.0.

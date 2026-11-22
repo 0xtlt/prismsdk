@@ -18,7 +18,7 @@ in a desktop session only (not over SSH).
 
 Apps get it through the `prism` facade on Windows.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-windows](https://docs.rs/prismsdk-windows)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-windows](https://docs.rs/prismsdk-windows)
 
 ## License
 

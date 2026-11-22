@@ -8,7 +8,7 @@ Shared machinery for Prism's native backends. A platform implements the small
 layout with taffy, so AppKit, UIKit, GTK, Android and WinUI lay out exactly like the
 web backend's CSS.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-native](https://docs.rs/prismsdk-native)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-native](https://docs.rs/prismsdk-native)
 
 ## License
 

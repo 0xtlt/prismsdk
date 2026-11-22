@@ -20,7 +20,7 @@ The bundling scripts and the platform sources (Swift, Java) are embedded in
 the binary, so projects don't need a Prism checkout. Projects are configured
 by a `Prism.toml` next to their `Cargo.toml`.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · Command reference: [the `prism` command](https://0xtlt.github.io/prismsdk/cli.html)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · Command reference: [the `prism` command](https://prismsdk.dev/cli.html)
 
 ## License
 

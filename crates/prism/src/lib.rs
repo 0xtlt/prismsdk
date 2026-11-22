@@ -24,7 +24,7 @@
 //! a platform means adding a crate that implements
 //! `prism_native::Widgets`, plus one line in [`Application::run`].
 //!
-//! The guide is at <https://0xtlt.github.io/prismsdk/>; the `prism` command
+//! The guide is at <https://prismsdk.dev/>; the `prism` command
 //! (`cargo install prismsdk-cli`) creates, runs and bundles apps.
 //!
 //! ```no_run

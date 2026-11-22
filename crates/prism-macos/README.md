@@ -9,7 +9,7 @@ menu bar, tray items and WidgetKit widgets through a Swift bridge compiled by
 
 Apps get it through the `prism` facade on macOS.
 
-Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-macos](https://docs.rs/prismsdk-macos)
+Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-macos](https://docs.rs/prismsdk-macos)
 
 ## License
 
