@@ -298,7 +298,7 @@ impl PrismLabel {
             == Some(unsafe { objc2_app_kit::NSAccessibilityStaticTextRole })
     }
 
-    fn interactive(&self) -> bool {
+    pub(crate) fn interactive(&self) -> bool {
         self.ivars().clickable.get() || !self.links().is_empty()
     }
 

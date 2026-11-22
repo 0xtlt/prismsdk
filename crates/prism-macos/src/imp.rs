@@ -1210,15 +1210,23 @@ define_class!(
             false
         }
 
+        /// In a custom chrome's title bar strip (#67), AppKit gives the
+        /// presses to the title bar unless the view under them says it is
+        /// opaque there, as controls do: without this, the app's views in
+        /// the strip (a `.window_drag()` bar's text and empty part,
+        /// clickable views) never got them. AppKit asks this of views in
+        /// the strip (it is not public API; overriding it is how other
+        /// apps with content under a transparent title bar do it).
+        #[unsafe(method(_opaqueRectForWindowMoveWhenInTitlebar))]
+        fn opaque_rect_in_titlebar(&self) -> NSRect {
+            self.bounds()
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             // `.window_drag()` (#67): presses that clickable descendants
             // did not take move the window; a double click zooms it.
-            let iv = self.ivars();
-            let top_bar = iv.top_bar.get() && crate::chrome::along_top(self);
-            if (iv.window_drag.get() || top_bar)
-                && !iv.clickable.get()
-                && iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG == 0
+            if self.moves_window()
                 && let Some(window) = self.window()
             {
                 if event.clickCount() >= 2 {
@@ -1324,6 +1332,22 @@ fn gesture_phase(
 }
 
 impl PrismView {
+    /// Whether a press on it moves the window (#67): a `.window_drag()`
+    /// region, or a tab bar or header along a custom chrome's top edge,
+    /// that does not take the press itself.
+    pub(crate) fn moves_window(&self) -> bool {
+        let iv = self.ivars();
+        (iv.window_drag.get() || iv.top_bar.get() && crate::chrome::along_top(self))
+            && !iv.clickable.get()
+            && iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG == 0
+    }
+
+    /// Whether it takes presses of its own: clickable, or reporting drags.
+    pub(crate) fn takes_presses(&self) -> bool {
+        let iv = self.ivars();
+        iv.clickable.get() || iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG != 0
+    }
+
     fn is_cell(&self) -> bool {
         self.accessibilityRole().as_deref()
             == Some(unsafe { objc2_app_kit::NSAccessibilityCellRole })
