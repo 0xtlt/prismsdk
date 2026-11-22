@@ -407,6 +407,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Linux: a focused field keeps the focus and its selection when a sibling comes or goes. Every child was unparented and added again, so selecting words in the counter's rich note (its Bold toolbar comes beside it) moved the focus to the next field, and Ctrl+C copied nothing.
 - macOS: a click on a rich input's chip runs its `on_click`. AppKit reports clicks on an attachment's cell to the text view's delegate, and a chip's image attachment has none: the text view now finds the chip under the click itself.
 - macOS: a text area or rich input is as tall as its text lays out. An unstyled field was measured 2 pt wider than its bezel leaves its text, and sometimes empty, so a line that wrapped there (the counter's rich note, its chip on the second line) was cut off.
 - A chip's `doc.text` icon (and `doc`), the guide's example, draws as a document (📄) where Prism maps SF Symbols to glyphs (Android, the web); it was the unknown symbol's bullet.

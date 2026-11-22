@@ -213,6 +213,24 @@ impl View {
     }
 }
 
+/// How a container's children change (`set_children`): the old ones to
+/// unparent, then the order of what is left. What `stays` (popovers,
+/// pictures of removed views) comes first, then `new`. A child in both is
+/// moved in place, never unparented: unparented, a focused field would lose
+/// the focus and its selection when a sibling comes or goes.
+fn arrange_children<T: Clone + PartialEq>(
+    old: &[T],
+    new: &[T],
+    stays: impl Fn(&T) -> bool,
+) -> (Vec<T>, Vec<T>) {
+    let (kept, gone): (Vec<T>, Vec<T>) = old
+        .iter()
+        .filter(|c| !new.contains(c))
+        .cloned()
+        .partition(|c| stays(c));
+    (gone, kept.into_iter().chain(new.iter().cloned()).collect())
+}
+
 // ---------------------------------------------------------------------------
 // Overlays (#19): a popover anchored to the overlay's parent, or a modal
 // window for sheets and dialogs
@@ -2462,21 +2480,30 @@ impl Widgets for Gtk {
             View::Tabs(_, t) => vec![t.bar.clone().upcast()],
             _ => vec![],
         };
+        let mut old = Vec::new();
         let mut child = host.first_child();
         while let Some(c) = child {
             child = c.next_sibling();
-            // Context-menu popovers are children too: they stay, like
-            // pictures of removed views animating out.
-            if !keep.contains(&c) && !c.is::<gtk::Popover>() && !c.has_css_class("prism-ghost") {
-                c.unparent();
+            if !keep.contains(&c) {
+                old.push(c);
             }
         }
-        for c in &children {
-            let w = c.widget();
-            if w.parent().is_some() {
+        let new: Vec<gtk::Widget> = children.iter().map(View::widget).collect();
+        // Context-menu popovers are children too: they stay, like pictures
+        // of removed views animating out.
+        let (gone, order) = arrange_children(&old, &new, |c| {
+            c.is::<gtk::Popover>() || c.has_css_class("prism-ghost")
+        });
+        for c in gone {
+            c.unparent();
+        }
+        let mut prev: Option<gtk::Widget> = None;
+        for w in &order {
+            if w.parent().is_some_and(|p| p != host) {
                 w.unparent();
             }
-            w.set_parent(&host);
+            w.insert_after(&host, prev.as_ref());
+            prev = Some(w.clone());
         }
         // Sticky views draw over the content that scrolls under them.
         for c in &children {
@@ -2487,8 +2514,7 @@ impl Widgets for Gtk {
         }
         // The header and the tab bar draw over the screens.
         for bar in &keep {
-            bar.unparent();
-            bar.set_parent(&host);
+            bar.insert_before(&host, None::<&gtk::Widget>);
         }
         match parent {
             View::Stack(_, st) => {
@@ -5009,4 +5035,23 @@ fn load_remote_picture(p: &gtk::Picture, src: &str) {
             ),
         }
     });
+}
+
+#[cfg(test)]
+mod arrange_tests {
+    use super::arrange_children;
+
+    #[test]
+    fn a_child_that_stays_is_moved_not_removed() {
+        // A toolbar comes beside a focused field, then a ghost stays.
+        let (gone, order) =
+            arrange_children(&["field", "ghost", "old"], &["field", "toolbar"], |c| {
+                *c == "ghost"
+            });
+        assert_eq!(gone, ["old"]);
+        assert_eq!(order, ["ghost", "field", "toolbar"]);
+        let (gone, order) = arrange_children(&["a", "b"], &["b", "a"], |_| false);
+        assert!(gone.is_empty());
+        assert_eq!(order, ["b", "a"]);
+    }
 }
