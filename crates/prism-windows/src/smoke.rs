@@ -18,8 +18,9 @@
 //! - `PRISM_SCROLL=600` scrolls the visible scroll views.
 //! - `PRISM_SNAPSHOT=out.png` then saves the window's XAML, rendered by
 //!   `RenderTargetBitmap`, and what DWM shows of the window
-//!   (`PrintWindow`: Mica, shadows, open flyouts) as `out-window.png`, and
-//!   quits. `PRISM_DELAY` (seconds, default 1) before the clicks,
+//!   (`PrintWindow`: Mica, shadows, open flyouts) as `out-window.png`,
+//!   what the screen shows there (the windows above it too: a tooltip) as
+//!   `out-screen.png`, and quits. `PRISM_DELAY` (seconds, default 1) before the clicks,
 //!   `PRISM_AFTER` (default 0.7) between them and the snapshot.
 //!
 //! WinUI renders only in a desktop session: in session 0 (SSH) the clicks
@@ -362,6 +363,11 @@ pub fn snapshot(main: HWND) {
         match crate::capture::print_window(main, &window, &w.wic) {
             Ok(()) => log!("window as composed written to {window}"),
             Err(e) => log!("PrintWindow: {e}"),
+        }
+        let screen = path.replace(".png", "-screen.png");
+        match crate::capture::screen_area(main, &screen, &w.wic) {
+            Ok(()) => log!("screen over the window written to {screen}"),
+            Err(e) => log!("screen capture: {e}"),
         }
         let rtb = RenderTargetBitmap::new().map_err(|e| e.to_string())?;
         let action = rtb.RenderAsync(&w.root).map_err(|e| e.to_string())?;
