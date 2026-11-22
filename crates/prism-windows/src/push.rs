@@ -11,7 +11,9 @@
 //!   (`ExtendedActivationKind::Push`) is delivered once it runs.
 //! - `register_for_push` creates a channel for the remote id (the Entra app
 //!   registration's object id): its URI is the token (`PushService::Wns`).
-//!   A channel lasts 30 days; the app asks again at each start.
+//!   A channel lasts 30 days: the app asks again at each start, and a day
+//!   before the channel's `ExpirationTime` while it runs, the new URI going
+//!   to `on_push_token` again.
 //! - Pushes are raw notifications carrying the Prism payload
 //!   (`prism_push::wns`): visible ones become notifications while the app
 //!   is in the background; silent ones run `on_background_push`.
@@ -42,6 +44,48 @@ thread_local! {
     static CHANNEL: RefCell<Option<PushNotificationChannel>> = const { RefCell::new(None) };
     /// The manager registered at startup (unregistered at quit).
     static REGISTERED: RefCell<bool> = const { RefCell::new(false) };
+    /// The timer that renews the channel before it expires.
+    static RENEWAL: RefCell<Option<usize>> = const { RefCell::new(None) };
+}
+
+/// Windows' `DateTime` ticks (100 ns since 1601) at the Unix epoch.
+const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+
+/// Now, in `DateTime` ticks.
+fn now_ticks() -> i64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    UNIX_EPOCH_TICKS + (since.as_nanos() / 100).min(i64::MAX as u128) as i64
+}
+
+/// How long to wait before renewing a channel that expires at `expires`
+/// (ticks), now being `now`: a day before it expires (half the time left
+/// when less than two days remain), at least a minute, and at most what a
+/// Win32 timer holds (about 24.8 days: the renewal then simply comes early).
+fn renew_after_ms(expires: i64, now: i64) -> u32 {
+    const MS: i64 = 10_000;
+    const DAY: i64 = 24 * 3600 * 1000;
+    let left = expires.saturating_sub(now) / MS;
+    let wait = if left > 2 * DAY { left - DAY } else { left / 2 };
+    wait.clamp(60_000, 0x7FFF_FFFF) as u32
+}
+
+/// Renews the channel `ms` from now (replacing a renewal planned before).
+fn plan_renewal(ms: u32) {
+    cancel_renewal();
+    let id = shell::timer(ms, || {
+        RENEWAL.with(|r| r.borrow_mut().take());
+        log!("push: renewing the WNS channel before it expires");
+        register();
+    });
+    RENEWAL.with(|r| *r.borrow_mut() = Some(id));
+}
+
+fn cancel_renewal() {
+    if let Some(id) = RENEWAL.with(|r| r.borrow_mut().take()) {
+        shell::cancel(id);
+    }
 }
 
 /// Whether the process has package identity (an MSIX).
@@ -185,14 +229,22 @@ pub fn register() {
             });
             let send = match outcome {
                 Ok(channel) => match channel.Uri().and_then(|u| u.ToString()) {
-                    Ok(uri) => Ok((uri.to_string(), channel)),
+                    Ok(uri) => {
+                        // Unknown: renew in a day, as if it expired in two.
+                        let expires = channel
+                            .ExpirationTime()
+                            .map(|t| t.UniversalTime)
+                            .unwrap_or_else(|_| now_ticks() + 2 * 24 * 3600 * 10_000_000);
+                        Ok((uri.to_string(), channel, expires))
+                    }
                     Err(e) => Err(e.message()),
                 },
                 Err(e) => Err(e),
             };
             shell::on_ui(move || match send {
-                Ok((uri, channel)) => {
+                Ok((uri, channel, expires)) => {
                     CHANNEL.with(|slot| *slot.borrow_mut() = Some(channel));
+                    plan_renewal(renew_after_ms(expires, now_ticks()));
                     answer(Ok(PushSubscription::new(PushService::Wns, uri)));
                 }
                 Err(e) => {
@@ -219,6 +271,7 @@ fn answer(result: std::result::Result<PushSubscription, DeviceError>) {
 
 /// `cx.unregister_for_push()`: closes the channel.
 pub fn unregister() {
+    cancel_renewal();
     if let Some(channel) = CHANNEL.with(|c| c.borrow_mut().take())
         && let Err(e) = channel.Close()
     {
@@ -255,6 +308,21 @@ mod tests {
         assert_eq!(silent.event, PushEvent::Background);
         assert!(message(b"\xff", PushEvent::Received).is_none());
         assert!(message(b"not json", PushEvent::Received).is_none());
+    }
+
+    #[test]
+    fn renews_a_day_before_expiry() {
+        const MIN: i64 = 60 * 10_000_000;
+        const DAY: i64 = 24 * 60 * MIN;
+        let now = now_ticks();
+        // 30 days: a Win32 timer holds 24.8 days, so it comes early.
+        assert_eq!(renew_after_ms(now + 30 * DAY, now), 0x7FFF_FFFF);
+        assert_eq!(renew_after_ms(now + 10 * DAY, now), 9 * 24 * 3600 * 1000);
+        assert_eq!(renew_after_ms(now + DAY, now), 12 * 3600 * 1000);
+        assert_eq!(renew_after_ms(now + MIN, now), 60_000);
+        assert_eq!(renew_after_ms(now - DAY, now), 60_000);
+        // The epoch constant: 1970-01-01 in DateTime ticks.
+        assert!(now > UNIX_EPOCH_TICKS + 56 * 365 * DAY);
     }
 
     /// The test process is not packaged: push says why.
