@@ -267,7 +267,17 @@ fn lights(window: &NSWindow) -> Option<NSRect> {
         if button.isHidden() {
             continue;
         }
-        let r = button.convertRect_toView(button.bounds(), None::<&NSView>);
+        let mut r = button.convertRect_toView(button.bounds(), None::<&NSView>);
+        // On the way out of full screen the buttons are still in the
+        // full-screen title bar's own window: measure them from their title
+        // bar's top edge, which will be this window's.
+        if let Some(host) = button.window()
+            && *host != *window
+            && let Some(bar) = unsafe { button.superview() }
+        {
+            let b = bar.convertRect_toView(bar.bounds(), None::<&NSView>);
+            r.origin.y += window.frame().size.height - (b.origin.y + b.size.height);
+        }
         union = Some(match union {
             None => r,
             Some(u) => {
