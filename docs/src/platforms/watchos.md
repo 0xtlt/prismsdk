@@ -1,5 +1,7 @@
 # watchOS
 
+> **Preview in 0.1:** it works and can be tried, but has gaps (listed on this page) and is less tested on real devices than web, macOS, iOS and Android. See [Platforms in 0.1](../introduction.md#platforms-in-01).
+
 `prism run watchos` (simulator) / `prism build watchos`: a watch-only app (`WKApplication`, `WKWatchOnly`).
 
 watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), so the app runs in Rust and a SwiftUI host draws it (`crates/prism-apple-build/apple/Watch`).

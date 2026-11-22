@@ -1,5 +1,7 @@
 # tvOS
 
+> **Preview in 0.1:** it works and can be tried, but has gaps (listed on this page) and is less tested on real devices than web, macOS, iOS and Android. See [Platforms in 0.1](../introduction.md#platforms-in-01).
+
 `prism run tvos` (simulator) / `prism build tvos`: the UIKit backend, adapted to the Siri Remote.
 
 - Clickable views take the focus (raised with a shadow) and react to the select press; buttons use the primary action.

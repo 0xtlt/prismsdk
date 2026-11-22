@@ -9,9 +9,27 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 | **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), widgets + Dynamic Island | `prism dev ios` (simulator) / `prism run ios --device "My iPhone"` |
 | **Android** | Real Android views (`TextView`, `Button`, `EditText`, `Switch`), home-screen widgets, ongoing notifications | `prism dev android` (emulator or phone) |
 
-Also [tvOS](platforms/tvos.md), [watchOS](platforms/watchos.md),
+Also, as previews: [tvOS](platforms/tvos.md), [watchOS](platforms/watchos.md),
 [visionOS](platforms/visionos.md), [Linux (GTK 4)](platforms/linux.md),
 [Windows (WinUI 3)](platforms/windows.md), Wear OS, Android TV and car screens ([CarPlay, Android Auto](guide/car.md)).
+
+## Platforms in 0.1
+
+| Platform | In 0.1 | Oldest version |
+|---|---|---|
+| Web | supported | a current browser (tested in Chrome) |
+| macOS | supported | macOS 13 |
+| iOS and iPadOS | supported | iOS 17 |
+| Android (phones, tablets) | supported | Android 10 (API 29) |
+| tvOS | preview | tvOS 17 |
+| watchOS | preview | watchOS 10 |
+| visionOS | preview | visionOS 26 |
+| Linux | preview | GTK 4 |
+| Windows | preview | Windows 10 1809 (the Windows App SDK's minimum); tested on Windows 11 |
+| Wear OS, Android TV | preview | the Android APK, Android 10 (API 29) |
+| Car screens (CarPlay, Android Auto, Automotive) | preview | those of iOS and Android |
+
+**Supported** platforms are the ones Prism 0.1 is made for: they are tested on every change, and their bugs come first. **Preview** platforms work and can be tried, with gaps listed on their page in the Platforms part, and are less tested on real devices.
 
 ```rust
 use prism::prelude::*;

@@ -9,9 +9,27 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 | **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), widgets + Dynamic Island | `prism dev ios` (simulator) / `prism run ios --device "My iPhone"` |
 | **Android** | Real Android views (`TextView`, `Button`, `EditText`, `Switch`), home-screen widgets, ongoing notifications | `prism dev android` (emulator or phone) |
 
-Also tvOS, watchOS, visionOS, Linux (GTK 4), Windows, Wear OS, Android TV and car screens.
+Also, as previews: tvOS, watchOS, visionOS, Linux (GTK 4), Windows, Wear OS, Android TV and car screens.
 
-**Status: 0.x preview.** The API may change between 0.x versions (a breaking change raises the middle number, as semver allows before 1.0); the [changelog](CHANGELOG.md) lists each one. Windows is the newest backend: it ships so you can try it, and what is not done or not yet seen working on a PC is listed under [Windows: Not yet](docs/src/platforms/windows.md#not-yet).
+## Platforms in 0.1
+
+| Platform | In 0.1 | Oldest version |
+|---|---|---|
+| Web | supported | a current browser (tested in Chrome) |
+| macOS | supported | macOS 13 |
+| iOS and iPadOS | supported | iOS 17 |
+| Android (phones, tablets) | supported | Android 10 (API 29) |
+| tvOS | preview | tvOS 17 |
+| watchOS | preview | watchOS 10 |
+| visionOS | preview | visionOS 26 |
+| Linux | preview | GTK 4 |
+| Windows | preview | Windows 10 1809 (the Windows App SDK's minimum); tested on Windows 11 |
+| Wear OS, Android TV | preview | the Android APK, Android 10 (API 29) |
+| Car screens (CarPlay, Android Auto, Automotive) | preview | those of iOS and Android |
+
+**Supported** platforms are the ones Prism 0.1 is made for: they are tested on every change, and their bugs come first. **Preview** platforms work and can be tried, with gaps listed on their page, and are less tested on real devices.
+
+**Status: 0.x preview.** The API may change between 0.x versions (a breaking change raises the middle number, as semver allows before 1.0); the [changelog](CHANGELOG.md) lists each one. Windows is the newest backend: what is not done or not yet seen working on a PC is listed under [Windows: Not yet](docs/src/platforms/windows.md#not-yet).
 
 **Documentation: the [Prism book](https://0xtlt.github.io/prismsdk/)** (sources in [`docs/`](docs/src/SUMMARY.md)), and the API reference on docs.rs. Each section below is a summary of a chapter.
 
@@ -206,7 +224,7 @@ Real WinUI 3 controls (Windows App SDK, self-contained: its runtime goes next to
 
 Primitives: `div`, `text`, `button`, `text_input` (secure, keyboards, submit), `text_area`, `toggle`, `slider`, `picker`, `date_picker`, `spinner`, `scroll`, `picture`, `shape`, `scene3d`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, remote push (APNs, FCM, Web Push, UnifiedPush) with a server-side sender, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, charts (also in widgets), async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
-Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV), Windows (preview: see [Windows](docs/src/platforms/windows.md#not-yet)).
+Platforms: web, macOS, iOS/iPadOS and Android (phones, tablets) are supported; tvOS, watchOS, visionOS, Linux (GTK 4), Windows, Wear OS, Android TV and car screens are previews (see [Platforms in 0.1](#platforms-in-01)).
 
 ## License
 

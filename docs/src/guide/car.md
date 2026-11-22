@@ -1,5 +1,7 @@
 # In the car (CarPlay, Android Auto, Android Automotive)
 
+> **Preview in 0.1:** it works and can be tried, but has gaps and is less tested on real devices than web, macOS, iOS and Android. See [Platforms in 0.1](../introduction.md#platforms-in-01).
+
 Cars only show the platform's templates, so a car screen is described with them: lists in sections, grids, panes (rows and up to two actions) and tabs. They are rebuilt whenever the app changes, like widgets; the car only receives what differs.
 
 ```rust

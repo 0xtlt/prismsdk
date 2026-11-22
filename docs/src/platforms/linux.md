@@ -1,5 +1,7 @@
 # Linux (GTK 4)
 
+> **Preview in 0.1:** it works and can be tried, but has gaps (listed on this page) and is less tested on real devices than web, macOS, iOS and Android. See [Platforms in 0.1](../introduction.md#platforms-in-01).
+
 `cargo run` on Linux opens a native GTK 4 window: `GtkLabel`, `GtkButton`, `GtkEntry`, `GtkSwitch`, `GtkProgressBar`, `GtkPicture` and `GtkScrolledWindow`. Navigation stacks get a header with a Back button, tabs a tab bar, and modals their own window.
 
 - Layout is prism-native's flexbox: a small GTK layout manager puts each widget at its frame, so screens look like on macOS. Styles become generated CSS.

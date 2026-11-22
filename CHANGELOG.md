@@ -324,6 +324,7 @@ The first version, not yet on crates.io.
 
 ### Changed
 
+- Platforms in 0.1: web, macOS, iOS and iPadOS, and Android phones and tablets are supported; tvOS, watchOS, visionOS, Linux, Windows, Wear OS, Android TV and car screens are previews, to try, with their gaps listed. The README and the book's introduction list them with the oldest system each runs on: macOS 13, iOS 17, Android 10 (API 29), tvOS 17, watchOS 10, visionOS 26, GTK 4, Windows 10 1809.
 - prism-ui: without `ui::set_theme`, components use `Theme::system()` and follow the system's light or dark appearance, as native text and controls do. The default was the light theme, which put the system's white text on light cards wherever the system was dark: in dark mode on tvOS, and always on watchOS.
 - Prism needs Rust 1.94 or later (it was 1.88): sqlx 0.9, which brings the patched SQLite, requires it.
 - `prism::db` re-exports sqlx 0.9 (it was 0.8). sqlx 0.9 runs a query string only if it is a literal or wrapped in `sqlx::AssertSqlSafe(..)`; literal queries compile as before, and `Db::open`'s migrations still take any `&str`. sqlx's SQLite features are the ones 0.8 had (bundled SQLite; no `deserialize`, `load-extension` or `unlock-notify`).

@@ -1,5 +1,7 @@
 # visionOS
 
+> **Preview in 0.1:** it works and can be tried, but has gaps (listed on this page) and is less tested on real devices than web, macOS, iOS and Android. See [Platforms in 0.1](../introduction.md#platforms-in-01).
+
 `prism run visionos` (simulator) / `prism build visionos`: the UIKit backend in a window, like an iPad app. `cx.platform()` is `Platform::Visionos` and `cx.device_info().kind` is `Headset`; `Platform::SPATIAL` selects it in `.only()`.
 
 - Eyes and pinches arrive as touches, so controls, gestures and menus work as on iOS. Rich inputs are `UITextView`s with styles and chips, as on iOS.
