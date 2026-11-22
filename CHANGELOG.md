@@ -407,6 +407,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Windows: a text area is three lines tall at least unless `rows(n)` says otherwise (#235), as on the other platforms; it was measured one line tall.
 - Counter: the rich note and the three Blocks paragraphs are in the app's language (they stayed English in French and Arabic), and the note says what works where: ⌘-click a link on macOS, Ctrl-click on Windows and Linux, either on the web; on touch screens, which have no modifier-click, it asks for a tap on its chip.
 - A rich input is as tall as its text, as on macOS: a paragraph of one line is one line tall. iOS, Linux and Android show it as a text area, which is three lines at least (#235), so each one-line paragraph of the counter's Blocks was about three lines tall (60 pt on iOS, 70 px on Linux). `rich_input` now sends `rows=1`. On Android and watchOS, a text area's height is now measured with its `rows` too: the host measured three lines whatever `rows(n)` said, and a text area with padding measured its minimum lines in place of a longer text that wraps past them.
 - Linux: a focused field keeps the focus and its selection when a sibling comes or goes. Every child was unparented and added again, so selecting words in the counter's rich note (its Bold toolbar comes beside it) moved the focus to the next field, and Ctrl+C copied nothing.

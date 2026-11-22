@@ -884,7 +884,8 @@ pub fn measure(
         }
         k if is_field(k) => {
             let lh = line_height(m, s);
-            let rows = InputConfig::decode(&n.config).rows.unwrap_or(1).max(1) as f32;
+            // Its minimum lines (#235): three unless set, one for a rich input.
+            let rows = InputConfig::decode(&n.config).min_rows().max(1) as f32;
             let own = s.own_field_look();
             let (l, t, r, b) = if own { (0., 0., 0., 0.) } else { FIELD_PADDING };
             let content_h = if k == NodeKind::TextInput {
