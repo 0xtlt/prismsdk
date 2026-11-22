@@ -135,7 +135,7 @@ impl Render for MediaDemo {
             None => strings::media_no_message(cx),
         };
         let loaded = match &self.loaded {
-            Some(url) => strings::media_loaded(cx, url.clone()),
+            Some(url) => strings::media_loaded(cx, shown_url(url)),
             None => strings::media_loading(cx),
         };
         screen.child(
@@ -305,4 +305,28 @@ fn test_sandbox() -> Option<WebSandbox> {
         };
     }
     Some(s)
+}
+
+/// A loaded page's address as shown: a local file by its name only (its
+/// path names the user's folder, which a screenshot would show).
+fn shown_url(url: &str) -> String {
+    match url.strip_prefix("file://") {
+        Some(path) => path.rsplit(['/', '\\']).next().unwrap_or(path).to_string(),
+        None => url.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shown_url;
+
+    #[test]
+    fn a_local_page_shows_its_file_name_only() {
+        assert_eq!(shown_url("file:///C:/Users/someone/page.html"), "page.html");
+        assert_eq!(
+            shown_url("file:///home/someone/web/index.html"),
+            "index.html"
+        );
+        assert_eq!(shown_url("https://example.com/a"), "https://example.com/a");
+    }
 }

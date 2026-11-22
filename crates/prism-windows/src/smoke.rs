@@ -28,9 +28,10 @@
 
 use prism_core::{NodeKind, UiEvent};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, DestroyWindow, GetForegroundWindow, KillTimer, PostMessageW,
-    SetForegroundWindow, SetTimer,
+    BringWindowToTop, DestroyWindow, GetForegroundWindow, GetWindowThreadProcessId, KillTimer,
+    PostMessageW, SetForegroundWindow, SetTimer,
 };
 use windows_core::Interface;
 
@@ -85,7 +86,11 @@ pub fn automation(main: HWND) {
 
 /// The steps act on the active window: a popover (light dismiss) closes
 /// when another window takes the activation, an inactive window's first
-/// click only activates it.
+/// click only activates it, and Windows shows the Share dialog only over
+/// the active window. A program started by a scheduled task (run-in-session)
+/// is refused the activation when the desktop or another window has it
+/// (the foreground lock): then its input queue is joined to the active
+/// window's for the call, as if the activation came from there.
 fn front(main: HWND) {
     unsafe {
         if GetForegroundWindow() == main {
@@ -93,6 +98,16 @@ fn front(main: HWND) {
         }
         let _ = BringWindowToTop(main);
         let _ = SetForegroundWindow(main);
+        let active = GetForegroundWindow();
+        if active != main && !active.is_invalid() {
+            let theirs = GetWindowThreadProcessId(active, None);
+            let ours = GetCurrentThreadId();
+            if theirs != 0 && theirs != ours && AttachThreadInput(ours, theirs, true).as_bool() {
+                let _ = BringWindowToTop(main);
+                let _ = SetForegroundWindow(main);
+                let _ = AttachThreadInput(ours, theirs, false);
+            }
+        }
         if GetForegroundWindow() != main {
             log!("PRISM_CLICK: the window is not the active one");
         }

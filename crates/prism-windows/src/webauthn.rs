@@ -198,7 +198,11 @@ fn cancel_ceremony(api: &'static Api, id: Option<GUID>) {
 /// "cancelled", and drops the ones waiting for their turn.
 pub fn cancel() {
     if let Some(api) = api() {
-        cancel_ceremony(api, TURNS.cancel_all());
+        let open = TURNS.cancel_all();
+        if open.is_some() {
+            log!("passkeys: the open ceremony is cancelled");
+        }
+        cancel_ceremony(api, open);
     }
 }
 

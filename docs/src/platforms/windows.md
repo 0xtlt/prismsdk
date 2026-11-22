@@ -172,7 +172,17 @@ kinds and services come next (see [Not yet](#not-yet)).
   `prismHost.postMessage(JSON.stringify(value))` (main frame only), gets
   the app's messages as `message` events on `window`, and only the allowed
   origins are heard and posted to; a link to another origin, and a new
-  window when the sandbox allows popups, open in the default browser. A
+  window when the sandbox allows popups, open in the default browser, but
+  only after a click or a key from the user: WebView2 has no popup
+  blocker, so a script's `window.open` without a gesture opens nothing
+  (S41). Only web, mail and phone links leave the app. A refusal is
+  logged (`web view N: a new window for … not opened: no user gesture`),
+  and with `PRISM_TRACE` each hand-off too (`… opens in the browser (user
+  gesture)`). Seen on screen
+  (`scripts/windows/onscreen.ps1`): a page's `window.open` without a
+  gesture returned `null` and started no process and no window; a real
+  click on its `target=_blank` link went to the https handler, and with
+  `PRISM_BROWSER` set to Chrome a Chrome window showed the page. A
   sandbox without `scripts` turns JavaScript off; one without
   `same-origin` browses InPrivate; one without `forms` submits no form,
   as WebKit cancels `formSubmitted` navigations: WebView2 does not tell
@@ -342,7 +352,7 @@ kinds and services come next (see [Not yet](#not-yet)).
 | Motion | `Windows.Devices.Sensors`, which tablets and 2-in-1s have: `Accelerometer` (its fused gravity and linear readings where Windows has them, else gravity is the accelerometer low-pass filtered), `Gyrometer`, `Inclinometer`, read every `interval` on a thread of the watch's own, in Apple's units and axes. No permission. `capabilities().motion` when the PC has an accelerometer or a gyrometer |
 | Taking a photo | the Windows Camera app's capture UI, launched for a result (`microsoft.windows.camera.picker:`, the protocol `CameraCaptureUI` drives), modal to the window: the app hands it an empty file under its data directory (`<data>\picked`) through a `SharedStorageAccessManager` token, and the Camera app writes the photo (JPEG) into it. Closing it is `Cancelled`. `capabilities().camera` when the PC has a camera and the Camera app; the permission is the Camera app's camera access. See [Device APIs without a package](#device-apis-without-a-package) |
 | Share sheet | Windows' Share dialog for the window (`IDataTransferManagerInterop::GetForWindow`, `ShowShareUIForWindow`): the window's title, the text, a link (`SetWebLink`, and after the text, on its own line, for targets that read only text, as on Android) and files (read-only `StorageFile`s; a file that cannot be read is left out, and the text, the link and the other files still go). As on Apple platforms, it answers nothing |
-| Passkeys | `webauthn.dll` (Windows 10 1903 and later), the API browsers use: `WebAuthNAuthenticatorMakeCredential` and `GetAssertion` with the relying party, the user, the challenge, the algorithms, `excludeCredentials` and `allowCredentials` with their transports, user verification, the attachment, resident keys, attestation and the timeout of the WebAuthn JSON. The client data is a browser's (`origin` `https://<rpId>`), so a server checks it as it checks a browser's. Windows' own dialog, owned by the window: Windows Hello, security keys, phones. A new ceremony cancels the open one (`WebAuthNCancelCurrentOperation`: `Cancelled`) and starts once that one has returned (Windows runs one at a time; 5 s at most), and only the newest waits; errors carry the web's names as on the web and Android (`WebAuthNGetErrorName`: `NotAllowedError` is `Cancelled`; `InvalidStateError` for an excluded credential, `ConstraintError` and `NotSupportedError`, a request Windows refuses, stay `Platform` errors with that name; none is `Unavailable`). `capabilities().passkeys` when the DLL loads; `webauthn_autofill` answers `Unavailable` (no conditional mediation for apps) |
+| Passkeys | `webauthn.dll` (Windows 10 1903 and later), the API browsers use: `WebAuthNAuthenticatorMakeCredential` and `GetAssertion` with the relying party, the user, the challenge, the algorithms, `excludeCredentials` and `allowCredentials` with their transports, user verification, the attachment, resident keys, attestation and the timeout of the WebAuthn JSON. The client data is a browser's (`origin` `https://<rpId>`), so a server checks it as it checks a browser's. Windows' own dialog, owned by the window: Windows Hello, security keys, phones (seen on screen: « Choose where to save your passkey » over the counter, see [What Windows cannot do](#what-windows-cannot-do)). A new ceremony asks Windows to cancel the open one (`WebAuthNCancelCurrentOperation`) and starts once that one has returned (5 s at most), and only the newest waits; errors carry the web's names as on the web and Android (`WebAuthNGetErrorName`: `NotAllowedError` is `Cancelled`; `InvalidStateError` for an excluded credential, `ConstraintError` and `NotSupportedError`, a request Windows refuses, stay `Platform` errors with that name; none is `Unavailable`). `capabilities().passkeys` when the DLL loads; `webauthn_autofill` answers `Unavailable` (no conditional mediation for apps) |
 | Haptics | the PC's vibration device (`VibrationDevice`, its `SimpleHapticsController`): click, press, success and error waveforms, with intensity and repeats. Most PCs have none: `capabilities().haptics` is false and `haptic` does nothing. A pen's haptics (only while it touches the screen, and `haptic` names no pointer) and haptic touchpads (Windows plays their feedback, apps have no API) are not used |
 | Push | Windows Push Notification Services through the Windows App SDK's `PushNotificationManager`, in an MSIX only (`PushService::Wns`): the channel URI for `[push] wns_remote_id` is the token, pushes are raw notifications carrying Prism's payload, shown by the app when it is in the background or run by `on_background_push` when silent; a push starts a closed app (the manifest's push COM server) without showing its window, which quits once the push is handled; the channel is renewed a day before it expires while the app runs. The zip build answers « unavailable » (WNS needs package identity), and so does an MSIX built without `wns_remote_id`. Not run end to end: see [Remote push notifications](../guide/push.md#windows-wns) |
 
@@ -386,6 +396,13 @@ above works so. What needs a package, and what Prism does instead:
   lets a browser, so no domain association is needed; the server checks
   the client data's origin, `https://<rpId>`. Conditional mediation
   (passkeys in a field's suggestions) has no API for apps, packaged or not.
+  Only the user closes Windows' passkey dialog: it runs above the app's
+  integrity level (`CredentialUIBroker`), so UI Automation sees nothing
+  in it and a standard app's keys and clicks never reach it. On Windows 11
+  25H2 (build 26200), its « Choose where to save your passkey » screen
+  stayed open past the request's timeout, after
+  `WebAuthNCancelCurrentOperation`, and after the app had quit, until a
+  person pressed Cancel (the app had quit, so it got no answer).
 
 What the PC has (Windows Hello and each device API) is checked in the
 background from the start, each check on its own thread, and nothing
@@ -787,7 +804,11 @@ WinUI renders through DWM, so only in a signed-in desktop session. Started
 from SSH (session 0, services), the app builds and lays its tree out, logs
 that it cannot show it, and `PRISM_SNAPSHOT` fails. Run it in the user's
 own session with `scripts/windows/run-in-session.ps1` (the user must be
-signed in, on screen or switched away from).
+signed in, on screen or switched away from). It starts the command in a
+console that is never shown (`conhost.exe --headless`): with Windows
+Terminal as the default terminal (Windows 11's default), a console
+program started in the session otherwise opens a terminal window for as
+long as it runs.
 
 ## Development hooks
 
@@ -796,7 +817,7 @@ The same as the other backends, in a desktop session:
 | Variable | |
 |---|---|
 | `PRISM_PATH` | the first route |
-| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `dblclick:Label` (a double click), `rclick:Label` (the right button), `#window` for the window's client area itself (`click:#window@20,20`: the menu row, caption regions), `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`). The window is made the active one before the steps (a popover closes when another window takes the activation); with `PRISM_TRACE_INPUT`, each step and the end of the steps log the window's frame and whether it is maximized |
+| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `dblclick:Label` (a double click), `rclick:Label` (the right button), `#window` for the window's client area itself (`click:#window@20,20`: the menu row, caption regions), `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`). The window is made the active one before the steps (a popover closes when another window takes the activation; the Share dialog shows only over the active window), joining the active window's input queue when the foreground lock refuses it (a program started by a scheduled task); with `PRISM_TRACE_INPUT`, each step and the end of the steps log the window's frame and whether it is maximized |
 | `PRISM_TRACE_CHROME` | with a custom chrome, logs where the caption buttons are, each change of `cx.window_controls()`, and the value the first XAML frame after each update was rendered with (`CompositionTarget::Rendered`): a frame that showed an old value would say so |
 | `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app, and its clicks (position, keys held, count) and keys (caret edges, releases) |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
@@ -810,7 +831,7 @@ The same as the other backends, in a desktop session:
 | `PRISM_PROFILE` | `stacks.txt`: samples the UI thread's stacks every millisecond until the first frame (`PRISM_PROFILE_MS` more), tagged by startup phase; `scripts/perf/profile.py` names them (x64) |
 | `PRISM_SCALE` | `1.25`, `1.5`, `200%`: the app's scale in place of its monitor's (XAML's `OverrideScale` on the island, Prism's pixels per DIP) |
 | `PRISM_DEFER` | `0`: every XAML element, off-screen ones too, is made and laid out before the first frame |
-| `PRISM_BROWSER` | a browser's path or command line (`"C:\…\chrome.exe" --user-data-dir=…`): web pages, the sign-in's included, open with it instead of the default browser (for a test PC whose default must not change) |
+| `PRISM_BROWSER` | a browser's path or command line (`"C:\…\chrome.exe" --user-data-dir=…`): web pages, the sign-in's and a web view's links and new windows included, open with it instead of the default browser (for a test PC whose default must not change) |
 | `PRISM_3D_READBACK` | `1`: 3D frames through the CPU, as without `WGL_NV_DX_interop2` |
 | `PRISM_TRAY_MENU` | `<id>`: that tray item's menu opens by itself, as after a click |
 | `PRISM_NOTIFICATIONS_CLEANUP` | `1`: on quit, the app removes its notification registration and its notifications |
@@ -828,6 +849,16 @@ checks saw, the parts that need no prompt work, the passkey errors map to
 Prism's, nothing says where the PC is; with location refused, it also
 presses « Locate » (`Denied` through the app). Its header lists what only a
 person at the unlocked PC can prove (the dialogs).
+
+`scripts/windows/onscreen.ps1`, run in the session, opens what only the
+screen shows, on a PC someone else may use: it shows nothing unless the
+session has had no input for 5 minutes, and its captures keep only the
+app's window and the dialog. Cases: `s41-none` and `s41-tap` (a page's
+new windows without and with a real click), `s41-browser` (the click with
+`PRISM_BROWSER` set to Chrome or Brave, a throwaway profile, closed
+after), `share` (the Share dialog, closed with Escape) and
+`passkey -Attended` (Windows' passkey dialog: a person at the PC presses
+Cancel).
 
 `scripts/windows-smoke.sh` runs the counter on its six routes on a Windows
 machine (`scripts/windows-remote.sh`, see Contributing › Windows), through
@@ -958,11 +989,19 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
   notification banners and the Hello prompt are untested on
   screen (the test PC shows no banners from any app and has no Hello
   device: delivery, clicks and the « unavailable » answer are tested). The
-  device APIs' dialogs (the Share dialog, the Camera app's capture UI,
-  Windows' passkey dialog, the location prompt) are not run on screen:
-  `scripts/windows-device-apis.sh` checks everything up to them, without a
-  prompt; motion and haptics are untested on a PC with the sensors or a
-  vibration device.
+  device APIs' dialogs were opened on screen on the test PC (Windows 11
+  25H2, `scripts/windows/onscreen.ps1`) only in part: the Share dialog
+  opened over the window with the counter's text and link (no target
+  picked; later runs that day showed nothing, though
+  `ShowShareUIForWindow` returned no error, and closing it with Escape is
+  unproven), and Windows' passkey dialog (« Choose where to save your
+  passkey ») opened over it, but only a person can press its Cancel (see
+  [What Windows cannot do](#what-windows-cannot-do)), so the `Cancelled`
+  it should answer is unproven on screen. The Camera app's capture UI
+  (it would film the room) and the location prompt (it changes a setting)
+  are not run; `scripts/windows-device-apis.sh` checks everything up to
+  them, without a prompt; motion and haptics are untested on a PC with
+  the sensors or a vibration device.
 - **Packaging:** the MSIX is built, signed and checked but not installed
   on a PC (its test certificate would have to be trusted machine-wide,
   see [MSIX](#msix)),

@@ -22,14 +22,22 @@
 #    the button would put the PC's coordinates on screen, so it is not
 #    pressed.
 #
-# What only a person at the unlocked PC can prove (each shows Windows' UI):
-# - share: the Share dialog opens over the window; a target (Mail, Nearby
-#   sharing, an app) gets the text, the link and the files;
+# What only on-screen use can prove (each shows Windows' UI);
+# scripts/windows/onscreen.ps1 runs the parts a script can, on a PC idle
+# for 5 minutes:
+# - share: the Share dialog opens over the window (seen on Windows 11
+#   25H2: onscreen.ps1 -Case share); still unproven: Escape closing it,
+#   and a target (Mail, Nearby sharing, an app) getting the text, the link
+#   and the files;
 # - camera: « Camera » opens the Camera app's capture UI; the photo comes
 #   back as a JPEG; closing it gives Cancelled;
-# - passkeys: create and get with Windows Hello, a security key and a
-#   phone; closing the dialog gives Cancelled; an excluded credential gives
-#   InvalidStateError;
+# - passkeys: Windows' dialog opens over the window (seen: "Choose where
+#   to save your passkey"); create and get with Windows Hello, a security
+#   key and a phone; closing the dialog gives Cancelled; an excluded
+#   credential gives InvalidStateError. Only a person can close that
+#   dialog (it runs above the app's integrity level, and neither the
+#   timeout nor WebAuthNCancelCurrentOperation closed it there):
+#   onscreen.ps1 -Case passkey -Attended;
 # - location: Windows 11's prompt (24H2 and later, once per app) when
 #   access is not decided yet; positions and watch events when it was not
 #   allowed during the run;

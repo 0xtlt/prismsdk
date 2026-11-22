@@ -38,15 +38,14 @@ use prism_core::web_view::{WebViewConfig, origin_of};
 use prism_core::{NodeId, UiEvent};
 use windows::Foundation::TypedEventHandler;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SW_SHOWNORMAL, SetTimer};
-use windows::core::{PCWSTR, w};
+use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use windows_core::{HSTRING, Result};
 use windows_future::{AsyncStatus, IAsyncOperation};
 
 use crate::imp::dispatch;
+use crate::links;
 use crate::widgets::Win;
-use crate::win::{log, wide};
+use crate::win::log;
 use crate::winui::bindings::Microsoft::Web::WebView2::Core::{
     CoreWebView2, CoreWebView2Environment, CoreWebView2EnvironmentOptions,
     CoreWebView2NavigationCompletedEventArgs, CoreWebView2NavigationStartingEventArgs,
@@ -366,6 +365,9 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
         let web = matches!(uri.split(':').next(), Some("http" | "https"));
         if a.IsUserInitiated()? && web && !state.borrow().allows(page_origin(&uri).as_deref()) {
             a.SetCancel(true)?;
+            if crate::perf::on() {
+                log!("web view {id}: a link to {uri} opens in the browser (another origin)");
+            }
             open_externally(&uri);
             return Ok(());
         }
@@ -435,8 +437,20 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
         a.SetHandled(true)?;
         let popups =
             state_of(id).is_some_and(|s| s.borrow().config.sandbox.is_none_or(|s| s.popups));
-        if popups && a.IsUserInitiated()? {
-            open_externally(&a.Uri()?.to_string());
+        let uri = a.Uri()?.to_string();
+        match links::new_window(&uri, popups, a.IsUserInitiated()?) {
+            Ok(()) => {
+                if crate::perf::on() {
+                    log!(
+                        "web view {id}: a new window for {uri} opens in the browser (user gesture)"
+                    );
+                }
+                open_externally(&uri);
+            }
+            Err(why) => log!(
+                "web view {id}: a new window for {uri} not opened: {}",
+                why.reason()
+            ),
         }
         Ok(())
     }))?;
@@ -569,22 +583,14 @@ pub fn reload(web: &Web) {
     }
 }
 
-/// Web links, mail and phone numbers open in their app.
+/// Web links, mail and phone numbers open in their app, web pages with
+/// `PRISM_BROWSER` when it is set (as `open_url` does).
 fn open_externally(url: &str) {
-    let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
-    if !matches!(scheme.as_str(), "http" | "https" | "mailto" | "tel") {
+    if !links::external_scheme(url) {
         return;
     }
-    let target = wide(url);
-    unsafe {
-        ShellExecuteW(
-            None,
-            w!("open"),
-            PCWSTR(target.as_ptr()),
-            None,
-            None,
-            SW_SHOWNORMAL,
-        );
+    if let Err(e) = crate::services::open(url) {
+        log!("web view: {url} not opened: {e}");
     }
 }
 

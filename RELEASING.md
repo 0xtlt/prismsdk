@@ -46,18 +46,18 @@ the table is the same order for publishing crate by crate.
 | 1 | `prismsdk-core` | – |
 | 2 | `prismsdk-push` | – |
 | 3 | `prismsdk-apple-build` | – |
-| 4 | `prismsdk-build` | – |
+| 4 | `prismsdk-build` | apple-build |
 | 5 | `prismsdk-http` | core |
 | 6 | `prismsdk-ui` | core |
 | 7 | `prismsdk-native` | core, http |
-| 8 | `prismsdk-web` | core |
+| 8 | `prismsdk-web` | core, http |
 | 9 | `prismsdk-db` | core |
-| 10 | `prismsdk-macos` | core, native, apple-build |
-| 11 | `prismsdk-ios` | core, native, apple-build |
-| 12 | `prismsdk-watchos` | core, native, apple-build |
+| 10 | `prismsdk-macos` | core, native, apple-build (build script) |
+| 11 | `prismsdk-ios` | core, native, apple-build (build script) |
+| 12 | `prismsdk-watchos` | core, native, apple-build (build script) |
 | 13 | `prismsdk-linux` | core, native, push |
 | 14 | `prismsdk-android` | core, native, push |
-| 15 | `prismsdk-windows` | core, native, build (build script) |
+| 15 | `prismsdk-windows` | core, native, http, build (build script) |
 | 16 | `prismsdk` | core, ui, http, web, db and the six backends |
 | 17 | `prismsdk-cli` | apple-build, build |
 | 18 | `prismsdk-island` | – (islands' WASM side; built for `wasm32-unknown-unknown`) |

@@ -103,6 +103,9 @@ fn show(owner: HWND) -> windows::core::Result<()> {
         }))?;
         HANDLED.with(|h| h.borrow_mut().insert(key));
     }
+    if crate::perf::on() {
+        log!("share: the Share dialog asked for over the window");
+    }
     unsafe { interop.ShowShareUIForWindow(owner) }
 }
 
