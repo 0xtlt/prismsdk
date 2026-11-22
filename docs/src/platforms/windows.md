@@ -655,6 +655,18 @@ Windows trusts, or the Store's signature, avoids it. The Store also wants
 the version's fourth part to be 0, which Prism fills with `[app] build`.
 There is no `prism publish windows` yet.
 
+**What is proven** (on the Windows 11 test PC, with the Windows App
+Runtime 2.7.0.0 installed and a self-signed certificate made for the
+test): the counter's MSIX built on the PC with `signtool` and on a Mac
+with `osslsigncode` (in Docker); `osslsigncode verify` succeeds on the
+Mac, `signtool verify /pa` on the PC reaches the test root (untrusted, as
+expected) with the test certificate as signer; the manifest's publisher
+equals the signer's subject; both packages unpack and repack with
+`makeappx`. `Add-AppxPackage` (per user) refuses them, because the PC does
+not trust the test root, and trusting it would change the PC's
+certificate stores: so the packaged app has not been run (start, the
+framework's classes, fonts and notifications in a package).
+
 ### Signing
 
 `prism build windows` signs the executable (zip and MSIX) and the MSIX
@@ -854,7 +866,8 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
   prompt; motion and haptics are untested on a PC with the sensors or a
   vibration device.
 - **Packaging:** the MSIX is built, signed and checked but not installed
-  on a PC yet, so the packaged app has not run; no `prism publish windows` (Store
+  on a PC (its test certificate is not trusted there, see [MSIX](#msix)),
+  so the packaged app has not run; no `prism publish windows` (Store
   submission); URL schemes; an installer for the zip (Start menu shortcut,
   file associations, uninstall entry): the zip is a portable app; MSVC,
   arm64 and x86 builds not run on a PC yet ([Architectures and
