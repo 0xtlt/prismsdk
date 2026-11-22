@@ -23,7 +23,10 @@ dist=dev.prism.fakedistributor
 files=/data/data/$pkg/files
 sdk=${ANDROID_HOME:-$HOME/Library/Android/sdk}
 tools=$(ls -d "$sdk"/build-tools/* | sort -V | tail -1)
-platform=$(ls -d "$sdk"/platforms/android-* | sort -V | tail -1)
+# The newest stable platform (a preview names a codename in source.properties).
+platform=$(for d in $(ls -d "$sdk"/platforms/android-* | sort -V); do
+  grep -Eq '^(Platform|AndroidVersion)\.CodeName=.+' "$d/source.properties" 2>/dev/null || echo "$d"
+done | tail -1)
 
 case ${1:-} in
 setup)

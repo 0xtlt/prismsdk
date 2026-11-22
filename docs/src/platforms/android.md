@@ -12,6 +12,7 @@ The app runs in Rust, and a small Java host (`crates/prism-cli/platform/android`
   avdmanager create avd -n Pixel_9 -k "system-images;android-36;google_apis;arm64-v8a" -d pixel_9
   emulator -avd Pixel_9 &
   ```
+  Prism builds against the newest stable platform installed; preview platforms are skipped, since their APKs install only on that preview.
 - **The app crate:** its code lives in its library, and `main.rs` calls it. Android loads a shared library, through `prism::android_main!(run)` in `lib.rs`.
 - **Device APIs:**
   - location (`LocationManager`), motion (rotation vector, gyroscope);

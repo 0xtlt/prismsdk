@@ -48,8 +48,25 @@ cd "$ROOT"
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 
 MIN_SDK=29
-PLATFORM_DIR="$(ls -d "$ANDROID_HOME"/platforms/android-* | sort -V | tail -1)"
-TARGET_SDK="${PLATFORM_DIR##*-}"
+# The newest stable platform. A preview's (its source.properties names a
+# codename) APKs install only on that preview, not on released Android.
+PLATFORM_DIR=""
+TARGET_SDK=0
+for d in "$ANDROID_HOME"/platforms/android-*; do
+  props="$d/source.properties"
+  [[ -f "$d/android.jar" && -f "$props" ]] || continue
+  grep -Eq '^(Platform|AndroidVersion)\.CodeName=.+' "$props" && continue
+  api="$(sed -n 's/^AndroidVersion\.ApiLevel=//p' "$props" | tr -d '[:space:]')"
+  [[ "$api" =~ ^[0-9]+$ ]] || continue
+  if (( api >= TARGET_SDK )); then
+    PLATFORM_DIR="$d"
+    TARGET_SDK="$api"
+  fi
+done
+[[ -n "$PLATFORM_DIR" ]] || {
+  echo "prism: no stable Android platform in $ANDROID_HOME/platforms (sdkmanager 'platforms;android-36')" >&2
+  exit 1
+}
 ANDROID_JAR="$PLATFORM_DIR/android.jar"
 BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
 ADB="$ANDROID_HOME/platform-tools/adb"
