@@ -270,32 +270,25 @@ fn note_sample(cx: &App) -> Vec<Span> {
     const LINK: char = '\u{E001}';
     const PAGE: char = '\u{E002}';
     let (words, link_, page) = (WORDS.to_string(), LINK.to_string(), PAGE.to_string());
-    let template = match cx.platform() {
-        Platform::Macos => strings::forms_note_text(
-            cx,
-            &words,
-            &strings::forms_note_click_mac(cx),
-            &link_,
-            &page,
-        ),
-        Platform::Windows | Platform::Linux => {
-            strings::forms_note_text(cx, &words, &strings::forms_note_click(cx), &link_, &page)
-        }
-        Platform::Web => strings::forms_note_text(
-            cx,
-            &words,
-            &strings::forms_note_click_web(cx),
-            &link_,
-            &page,
-        ),
-        _ => strings::forms_note_text_touch(cx, &words, &page),
+    let click = match cx.platform() {
+        Platform::Macos => Some(strings::forms_note_click_mac(cx)),
+        Platform::Windows | Platform::Linux => Some(strings::forms_note_click(cx)),
+        Platform::Web => Some(strings::forms_note_click_web(cx)),
+        _ => None,
+    };
+    let template = match click {
+        Some(click) => strings::forms_note_text(cx, &words, click, &link_, &page),
+        None => strings::forms_note_text_touch(cx, &words, &page),
     };
     let mut spans = Vec::new();
     let mut plain = String::new();
     for c in template.chars() {
         let part = match c {
             WORDS => span(strings::forms_note_words(cx)).bold(),
-            LINK => link(strings::forms_note_link(cx), "https://github.com/0xtlt/prismsdk"),
+            LINK => link(
+                strings::forms_note_link(cx),
+                "https://github.com/0xtlt/prismsdk",
+            ),
             PAGE => chip("page:roadmap", strings::forms_note_page(cx)).chip_icon("doc.text"),
             c => {
                 plain.push(c);
