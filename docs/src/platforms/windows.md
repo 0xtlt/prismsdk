@@ -642,7 +642,7 @@ The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
 |---|---|
 | `Identity Name` | `[app] bundle_id`, `_` written `-` (3 to 50 letters, digits, `.` and `-`) |
 | `Identity Publisher` | the signing certificate's subject as Windows writes it (`CN=Example Ltd, O=Example Ltd, C=FR`), read back from the signed executable; `[windows] package_publisher` must then be equal or unset. Unsigned: `[windows] package_publisher`, else `CN=<[windows] publisher or [app] name>` |
-| `Identity Version` | `[app] version`'s three numbers and 0 (`1.2.0.0`): the Store wants the fourth part to be 0, so `[app] build` stays in the executable's file version only. Each MSIX release needs a higher `[app] version`: Windows updates an installed package only to a higher version |
+| `Identity Version` | `[app] version`'s three numbers and 0 (`1.2.0.0`): the Store wants the fourth part to be 0, so `[app] build` stays in the executable's file version only. Each MSIX release needs a higher `[app] version`: Windows updates an installed package only to a higher version. A part that is not a number up to 65535 stops the build (in `[app] version`, or in `[app] build`, the packaged executable's fourth part), where it used to become 0 |
 | `ProcessorArchitecture` | the target (`x64`, `arm64`, `x86`) |
 | `DisplayName`, `PublisherDisplayName`, `Description` | `[app] name`, `[windows] publisher` (else the name), `[app] description` (else the name) |
 | `Resources` | the app's languages (else `en-us`) |
@@ -651,7 +651,7 @@ The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
 | `Application` | the executable, `Windows.FullTrustApplication`, and the `runFullTrust` capability |
 | Logos | `StoreLogo` (50 px), `Square44x44Logo`, `Square150x150Logo`, scaled from `[app] icon` (a PNG, or the largest PNG in an `.ico`; a grey square without an icon) |
 | Notifications | `ToastNotificationActivation` and the COM server a click starts (`----AppNotificationActivated:`), its CLSID derived from the name and publisher |
-| Push | with `[push] wns_app_id`: the COM server WNS starts the app with (`----WindowsAppRuntimePushServer:`), see [Remote push notifications](../guide/push.md#windows-wns) |
+| Push | with `[push] wns_remote_id` and `wns_app_id` (both or neither, else the build stops): the COM server WNS starts the app with (`----WindowsAppRuntimePushServer:`), see [Remote push notifications](../guide/push.md#windows-wns) |
 | `DeviceCapability` | `[permissions]`: `location` and `location_always` give `location`, `camera` gives `webcam`, `microphone` gives `microphone` |
 
 Not in the manifest: URL schemes and app URI handlers (`Prism.toml`

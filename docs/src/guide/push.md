@@ -105,7 +105,8 @@ there.
    the app (`PRISM_WNS_REMOTE_ID`) for `CreateChannelAsync`, and
    `[push] wns_app_id` the application id, the COM class the manifest
    declares so WNS can start a closed app (`----WindowsAppRuntimePushServer:`).
-   Neither is a secret.
+   Neither is a secret. Set both or neither: `prism build windows --msix`
+   stops when only one is set.
 4. The server sends with `Sender::wns(WnsCredentials::new(tenant, client,
    secret)?)`: an access token from the tenant
    (`login.microsoftonline.com`, client credentials, scope

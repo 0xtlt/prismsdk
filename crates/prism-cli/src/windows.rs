@@ -134,6 +134,9 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
             msix::check_publisher(publisher)
                 .map_err(|e| format!("Prism.toml [windows] package_publisher: {e}"))?;
         }
+        package_version(p)?;
+        check_build_number(p)?;
+        check_wns_ids(p)?;
     }
     let env = build_env(p, o.msix);
     let profile = match &toolchain {
@@ -323,14 +326,68 @@ fn device_capabilities(p: &Project) -> Vec<String> {
 /// The MSIX's version: `[app] version`'s three numbers and 0
 /// (`1.2.0.0`). The Store wants the fourth part (the revision) to be 0,
 /// so `[app] build` stays out of it (the executable's file version keeps
-/// it), and each MSIX release needs a higher `[app] version`.
-fn package_version(p: &Project) -> String {
-    let info = prism_build::winres::AppInfo {
-        version: p.version.clone(),
-        ..Default::default()
+/// it), and each MSIX release needs a higher `[app] version`. Each number
+/// must fit Windows' 16 bits: one that does not stops the build instead of
+/// becoming 0.
+fn package_version(p: &Project) -> Result<String, String> {
+    let core = p.version.split(['-', '+']).next().unwrap_or_default();
+    let parts: Vec<&str> = core.split('.').collect();
+    let bad = || {
+        format!(
+            "Prism.toml [app] version: {:?} cannot version an MSIX: one to three numbers up to \
+             65535 (`1.2.0`, a suffix like `-beta.1` is left out)",
+            p.version
+        )
     };
-    let [a, b, c, _] = info.version_parts();
-    format!("{a}.{b}.{c}.0")
+    if parts.len() > 3 {
+        return Err(bad());
+    }
+    let mut numbers = [0u16; 3];
+    for (n, text) in numbers.iter_mut().zip(&parts) {
+        *n = number(text).ok_or_else(bad)?;
+    }
+    let [a, b, c] = numbers;
+    Ok(format!("{a}.{b}.{c}.0"))
+}
+
+/// `1234` → 1234; not a number, or over 65535 → `None`.
+fn number(text: &str) -> Option<u16> {
+    let t = text.trim();
+    (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| t.parse().ok())
+        .flatten()
+}
+
+/// `[app] build` goes into the packaged executable's file version, whose
+/// parts are 16 bits: one that does not fit stops an MSIX build instead of
+/// becoming 0.
+fn check_build_number(p: &Project) -> Result<(), String> {
+    match p.build.as_deref() {
+        Some(b) if number(b).is_none() => Err(format!(
+            "Prism.toml [app] build: {b:?} cannot be the fourth part of the executable's version \
+             in an MSIX: a number up to 65535"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// `[push] wns_remote_id` (the channel the app asks for) and `wns_app_id`
+/// (the COM class WNS starts the app with) come from the same app
+/// registration: an MSIX takes both or neither.
+fn check_wns_ids(p: &Project) -> Result<(), String> {
+    match (&p.wns_remote_id, &p.wns_app_id) {
+        (Some(_), None) => Err(
+            "Prism.toml [push]: wns_remote_id needs wns_app_id (the Entra app registration's \
+             application id), or a push could not start the closed app"
+                .into(),
+        ),
+        (None, Some(_)) => Err(
+            "Prism.toml [push]: wns_app_id needs wns_remote_id (the Entra app registration's \
+             object id), or the app could not ask for a push channel"
+                .into(),
+        ),
+        _ => Ok(()),
+    }
 }
 
 /// The MSIX's manifest.
@@ -339,7 +396,7 @@ fn manifest(p: &Project, arch: &str, publisher: String) -> Result<msix::Manifest
     Ok(msix::Manifest {
         toast_clsid: msix::class_id(&format!("{name}|{publisher}")),
         name,
-        version: package_version(p),
+        version: package_version(p)?,
         arch: arch_name(arch).to_string(),
         display_name: p.name.clone(),
         publisher_display_name: p.publisher.clone().unwrap_or_else(|| p.name.clone()),
@@ -660,7 +717,32 @@ mod tests {
         assert_eq!(p.build.as_deref(), Some("7"));
         assert_eq!(m.version, "1.2.0.0");
         p.version = "2.10.3-beta.1".into();
-        assert_eq!(package_version(&p), "2.10.3.0");
+        assert_eq!(package_version(&p).unwrap(), "2.10.3.0");
+        p.version = "3".into();
+        assert_eq!(package_version(&p).unwrap(), "3.0.0.0");
+        for bad in ["1.70000.0", "1.x.0", "1.2.3.4", "", "1..2"] {
+            p.version = bad.into();
+            let err = package_version(&p).unwrap_err();
+            assert!(err.contains("up to 65535"), "{bad}: {err}");
+        }
+        p.version = "1.2.0".into();
+        // A build number that does not fit 16 bits stops an MSIX build.
+        assert!(check_build_number(&p).is_ok());
+        p.build = Some("20261122".into());
+        assert!(check_build_number(&p).unwrap_err().contains("up to 65535"));
+        p.build = Some("7".into());
+        // The WNS ids go in pairs.
+        p.wns_remote_id = Some("9a0bd234-15cd-4028-9ad4-6ceb78c7e764".into());
+        assert!(check_wns_ids(&p).is_ok());
+        p.wns_app_id = None;
+        assert!(check_wns_ids(&p).unwrap_err().contains("needs wns_app_id"));
+        p.wns_remote_id = None;
+        p.wns_app_id = Some("7edfab6c-25ae-4678-b406-d1848f97919a".into());
+        assert!(
+            check_wns_ids(&p)
+                .unwrap_err()
+                .contains("needs wns_remote_id")
+        );
         assert_eq!(m.arch, "arm64");
         assert_eq!(m.executable, "my_app.exe");
         assert_eq!(m.publisher_display_name, "Example, Inc.");
