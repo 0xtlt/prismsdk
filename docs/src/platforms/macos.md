@@ -92,7 +92,11 @@ impl Render for Notes {
 - `cx.window_controls()` is the lights' frame from the window's top-left
   corner (`x`, `y`, `width`, `height`, `right()`, `bottom()`, and
   `insets(width)`: the room to keep at each end of a title bar), `None` in full
-  screen or with the standard chrome. `cx.is_fullscreen()` says whether the
+  screen, with the standard chrome, and while a tab bar or a navigation
+  header along the top edge is under the lights (it keeps room for them
+  itself, below; an app's own title bar would be a second one). It follows
+  navigations, bars shown or hidden and resizes, so the app's title bar
+  shows only where the app's own views reach the top edge. `cx.is_fullscreen()` says whether the
   window fills the screen. Both re-render the app when they change (on the
   way into full screen, before the animation ends).
 - `.window_drag()` (on any element, usually the title bar's container) makes

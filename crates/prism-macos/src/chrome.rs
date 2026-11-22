@@ -142,7 +142,8 @@ fn lights(window: &NSWindow) -> Option<NSRect> {
 }
 
 /// Where the traffic lights are, from the window's top-left corner: `None`
-/// for a standard chrome or in full screen.
+/// for a standard chrome or in full screen. `cx.window_controls()` reports
+/// them only while no bar is under them ([`over_app`]).
 pub(crate) fn controls(window: &NSWindow) -> Option<WindowControls> {
     let r = lights(window)?;
     let content = window.contentView()?;
@@ -168,6 +169,22 @@ pub(crate) fn lights_image(window: &NSWindow) -> Option<(NSRect, Retained<NSImag
     let image = NSImage::initWithSize(objc2::AllocAnyThread::alloc(), local.size);
     image.addRepresentation(&rep);
     Some((r, image))
+}
+
+/// The traffic lights, when the app's own views are under them: `None`
+/// when one of `bars` (tab bars, navigation headers) runs along the top
+/// edge under them, since it makes room for them itself ([`bar_room`])
+/// and an app's own title bar would be a second one.
+pub(crate) fn over_app<'a>(
+    window: &NSWindow,
+    bars: impl IntoIterator<Item = &'a NSView>,
+) -> Option<WindowControls> {
+    let controls = controls(window)?;
+    let covered = bars.into_iter().any(|bar| {
+        let (left, right) = bar_room(bar);
+        left > 0. || right > 0.
+    });
+    (!covered).then_some(controls)
 }
 
 /// Room between the lights and what follows them in a bar.

@@ -253,8 +253,10 @@ pub fn relayout(s: &mut State) {
         }
     }
     crate::perf::layout(|| s.renderer.widgets.flush());
-    // A custom title bar's drag regions (`titlebar.rs`).
+    // A custom title bar's drag regions, and whether the caption buttons
+    // are over the app's views (`titlebar.rs`).
     crate::titlebar::update_regions(s);
+    crate::titlebar::follow(s);
     UPDATING.set(was);
 }
 

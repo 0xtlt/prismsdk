@@ -9,8 +9,11 @@
 //! (`InputNonClientPointerSource`, `chrome.rs` has the rules), set again
 //! after each layout and scroll, and when a bar's menus, tabs or buttons
 //! move. `cx.window_controls()` is the buttons' corner (`RightInset` or
-//! `LeftInset`, `Height`) when they are over the app's views; with a menu
-//! bar they are in its row, and it is `None`.
+//! `LeftInset`, `Height`) only while they are over the app's own views:
+//! with a menu bar they are in its row, and over a tab bar or navigation
+//! header along the top edge that bar makes room for them; it is `None`
+//! then, so an app's title bar does not draw a second one under the bar.
+//! It follows navigations, bars shown or hidden and resizes ([`follow`]).
 
 use core::ffi::c_void;
 use std::cell::RefCell;
@@ -205,20 +208,59 @@ pub fn update_regions(s: &State) {
     }
 }
 
-/// The tab bar or navigation header view `id` shows at its top, and what
-/// takes clicks in it (window DIPs).
-fn bar_of(w: &Win, id: NodeId) -> Option<TopBar> {
-    let v = w.views.get(&id)?;
-    let (height, controls) = match &v.bar {
-        ViewBar::Tabs(t) => (TAB_BAR, t.controls()),
-        ViewBar::Header(hd) if w.scene.header_shown(id) => (HEADER, hd.controls()),
+/// The frame of the tab bar or navigation header view `id` shows at its
+/// top (window DIPs).
+fn bar_frame(w: &Win, id: NodeId) -> Option<Rect> {
+    let height = match &w.views.get(&id)?.bar {
+        ViewBar::Tabs(_) => TAB_BAR,
+        ViewBar::Header(_) if w.scene.header_shown(id) => HEADER,
         _ => return None,
     };
     let r = w.scene.window_rect(id);
+    Some(Rect::new(r.x, r.y, r.w, height))
+}
+
+/// The tab bar or navigation header view `id` shows at its top, and what
+/// takes clicks in it (window DIPs).
+fn bar_of(w: &Win, id: NodeId) -> Option<TopBar> {
+    let frame = bar_frame(w, id)?;
+    let controls = match &w.views.get(&id)?.bar {
+        ViewBar::Tabs(t) => t.controls(),
+        ViewBar::Header(hd) => hd.controls(),
+        ViewBar::None => return None,
+    };
     Some(TopBar {
-        frame: Rect::new(r.x, r.y, r.w, height),
+        frame,
         controls: controls.iter().filter_map(bounds).collect(),
     })
+}
+
+/// What `cx.window_controls()` says for caption buttons at `buttons`: the
+/// buttons only while the app's own views reach them. With a menu bar they
+/// are in its row (the app's views start under it); a tab bar or a
+/// navigation header along the top edge under them makes room for them
+/// itself.
+fn over_app(s: &State, buttons: Option<WindowControls>) -> Option<WindowControls> {
+    let b = buttons?;
+    if crate::menubar::height() > 0. {
+        return None;
+    }
+    let w = &s.renderer.widgets;
+    (!chrome::bar_under(&w.scene, |id, _| bar_frame(w, id), &b)).then_some(b)
+}
+
+/// After a layout: when a bar came to or left the caption buttons (a
+/// navigation, a tab bar or header shown or hidden, a resize),
+/// `cx.window_controls()` follows, at the next turn of the loop.
+pub fn follow(s: &State) {
+    let Some((buttons, reported)) =
+        BAR.with(|b| b.borrow().as_ref().map(|b| (b.buttons, b.reported)))
+    else {
+        return;
+    };
+    if reported.is_some_and(|r| r != over_app(s, buttons)) {
+        crate::imp::defer(Box::new(report_controls));
+    }
 }
 
 /// The room a bar of view `id` (a tab bar, a navigation header) keeps at
@@ -320,9 +362,9 @@ pub fn report_controls(s: &mut State) {
         title.Height().unwrap_or(0),
         s.renderer.widgets.scale(),
     );
-    // With a menu bar they are in its row: the app's views, under it,
+    // Over a menu bar's row or a bar along the top edge, the app's views
     // need no room for them.
-    let report = buttons.filter(|_| crate::menubar::height() <= 0.);
+    let report = over_app(s, buttons);
     let (moved, changed) = BAR.with(|b| {
         let mut b = b.borrow_mut();
         let Some(bar) = b.as_mut() else {

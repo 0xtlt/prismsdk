@@ -429,8 +429,9 @@ window's `AppWindow`:
   snap layouts, close) over the content's top right corner, on a
   transparent background, in the app's light or dark theme. Windows places
   them: `traffic_lights` is ignored. `cx.window_controls()` is their frame
-  (`RightInset` and the title bar's `Height`, 32 px); `is_fullscreen()`
-  stays `false`;
+  (`RightInset` and the title bar's `Height`, 32 px) while the app's own
+  views are under them, `None` while the menu bar or a tab bar or header
+  holds them (below); `is_fullscreen()` stays `false`;
 - the window's top bar moves it, as a Windows 11 title bar with menus or
   tabs does: its empty part is a caption region
   (`InputNonClientPointerSource`), so a press moves the window, a double
@@ -440,7 +441,11 @@ window's `AppWindow`:
   `cx.window_controls()` is `None`, since the app's views, under that
   row, need no room for them. Without menus, it is a tab bar or a
   navigation header along the window's top edge (each pane's, in a split
-  view): the buttons sit over its end, which it keeps free. Menus, tabs,
+  view): the buttons sit over its end, which it keeps free, and
+  `cx.window_controls()` is `None` too, so an app's own title bar does not
+  stack a second one under it. It is `Some` again when no bar is up there
+  (a screen without a header, a navigation that hides it), and follows
+  navigations, bars shown or hidden and resizes. Menus, tabs,
   Back and bar buttons keep their clicks. The app's own content moves the
   window only through `.window_drag()`, as on macOS: Prism cannot tell
   which of its views are empty, and a caption region would take the

@@ -492,6 +492,33 @@ impl State {
         }
     }
 
+    /// Full screen and the traffic lights (#67): `cx.is_fullscreen()`,
+    /// `cx.window_controls()`, which is `None` while a tab bar or a
+    /// navigation header along the top edge is under them (it makes room
+    /// for them itself). Returns whether the app rendered again.
+    fn sync_window_chrome(&mut self) -> bool {
+        let w = &self.renderer.widgets;
+        let Some(window) = w.root.window() else {
+            return false;
+        };
+        let fullscreen = crate::chrome::is_fullscreen();
+        let controls = crate::chrome::over_app(&window, w.top_bars());
+        if (fullscreen, controls)
+            == (
+                self.runtime.app.is_fullscreen(),
+                self.runtime.app.window_controls(),
+            )
+        {
+            return false;
+        }
+        let patches = self.runtime.set_window_chrome(fullscreen, controls);
+        if patches.is_empty() {
+            return false;
+        }
+        self.renderer.apply(&patches);
+        true
+    }
+
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.frame().size;
         // Responsive layouts: tell the app its window size and what covers
@@ -516,23 +543,7 @@ impl State {
                 self.renderer.apply(&patches);
             }
         }
-        // Full screen and the traffic lights (#67): `cx.is_fullscreen()`,
-        // `cx.window_controls()`.
-        if let Some(window) = self.renderer.widgets.root.window() {
-            let fullscreen = crate::chrome::is_fullscreen();
-            let controls = crate::chrome::controls(&window);
-            if (fullscreen, controls)
-                != (
-                    self.runtime.app.is_fullscreen(),
-                    self.runtime.app.window_controls(),
-                )
-            {
-                let patches = self.runtime.set_window_chrome(fullscreen, controls);
-                if !patches.is_empty() {
-                    self.renderer.apply(&patches);
-                }
-            }
-        }
+        self.sync_window_chrome();
         // Fullscreen, another screen: `cx.device_info()`.
         if w > 0.
             && self.device_size != Some((w, h))
@@ -555,9 +566,14 @@ impl State {
         };
         self.renderer
             .layout(size.width as f32, size.height as f32, insets);
-        // The bars' frames are known: they make room for the traffic
-        // lights over them.
+        // The bars' frames are known: where the traffic lights are over
+        // the app's own views follows them.
         self.renderer.widgets.place_bars();
+        if self.sync_window_chrome() {
+            self.renderer
+                .layout(size.width as f32, size.height as f32, insets);
+            self.renderer.widgets.place_bars();
+        }
         let w = &self.renderer.widgets;
         if let Some(main) = w.root.window() {
             w.ix.follow(&main);
@@ -3386,6 +3402,14 @@ impl AppKit {
             NSSize::new((w - 2. * side).max(0.), t.height),
         ));
         crate::navbar::layout(&st.bar, &st.back, w, h, self.rtl, room);
+    }
+
+    /// The bars Prism draws: tab bars and navigation headers.
+    fn top_bars(&self) -> impl Iterator<Item = &NSView> {
+        self.stacks
+            .iter()
+            .map(|st| &**st.header as &NSView)
+            .chain(self.tab_bars.iter().map(|t| &**t.bar as &NSView))
     }
 
     /// Every bar's contents again, after a layout: the traffic lights over

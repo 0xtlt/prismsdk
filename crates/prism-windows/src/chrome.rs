@@ -172,6 +172,38 @@ pub fn regions(
     r
 }
 
+/// Whether a bar Prism draws along the window's top edge (a tab bar, a
+/// navigation header: `bar(id, node)` is its frame) is under the caption
+/// buttons `b`. That bar makes room for them, so the app's own views do
+/// not reach them: `cx.window_controls()` is then `None`, and an app's own
+/// title bar would be a second one under the bar.
+pub fn bar_under(
+    scene: &Scene,
+    bar: impl Fn(NodeId, &Node) -> Option<Rect>,
+    b: &WindowControls,
+) -> bool {
+    let mut stack: Vec<NodeId> = scene.root.into_iter().collect();
+    while let Some(id) = stack.pop() {
+        let Some(n) = scene.get(id) else { continue };
+        if n.hidden {
+            continue;
+        }
+        let rect = scene.window_rect(id);
+        // Lower down: nothing inside reaches the top edge.
+        if rect.y >= 0.5 {
+            continue;
+        }
+        if let Some(frame) = bar(id, n)
+            && frame.y.abs() < 0.5
+            && overlap(&frame, b) != (0., 0.)
+        {
+            return true;
+        }
+        stack.extend(scene.shown_children(id).iter().copied());
+    }
+    false
+}
+
 /// A rectangle in physical pixels (`[x, y, width, height]`) at scale `k`:
 /// rounded to the nearest pixel, or grown to whole pixels (`grow`).
 pub fn px(r: &Rect, k: f32, grow: bool) -> [i32; 4] {
@@ -363,6 +395,31 @@ mod tests {
         let r = regions(&s, keeps, header, Some(&BUTTONS));
         assert_eq!(r.caption[0], Rect::new(0., 0., 662., 48.));
         assert_eq!(r.passthrough, vec![Rect::new(8., 56., 40., 32.)]);
+    }
+
+    #[test]
+    fn a_bar_under_the_buttons_takes_their_room_from_the_app() {
+        let frame = |id: NodeId, n: &Node| bars(id, n).map(|b| b.frame);
+        // The tab bar along the top edge is under them.
+        assert!(bar_under(&tabs(), frame, &BUTTONS));
+        // A header lower down (under the tab bar) is not.
+        let header_only = |id: NodeId, n: &Node| (id == 3).then(|| bars(id, n).unwrap().frame);
+        assert!(!bar_under(&tabs(), header_only, &BUTTONS));
+        // Without tabs, the header is the top bar.
+        let mut s = tabs();
+        s.set_children(1, &[]);
+        s.root = Some(3);
+        s.nodes.get_mut(&3).unwrap().parent = None;
+        let top = |id: NodeId, _: &Node| (id == 3).then(|| Rect::new(0., 0., 800., 48.));
+        assert!(bar_under(&s, top, &BUTTONS));
+        // Hidden (a bare screen, no header): the app's views reach them.
+        s.nodes.get_mut(&3).unwrap().hidden = true;
+        assert!(!bar_under(&s, top, &BUTTONS));
+        // A split view's left pane has a header, the right one none.
+        let left = |id: NodeId, _: &Node| (id == 1).then(|| Rect::new(0., 0., 300., 48.));
+        assert!(!bar_under(&tabs(), left, &BUTTONS));
+        // No bars at all.
+        assert!(!bar_under(&window(), |_, _| None, &BUTTONS));
     }
 
     #[test]
