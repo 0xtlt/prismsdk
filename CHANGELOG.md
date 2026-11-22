@@ -7,6 +7,10 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.1.1 (2026-11-22)
+
+A fix for the web's first paint and the crates' links.
+
 ### Fixed
 
 - Web: shapes (icons drawn with `shape()`) are in the server-rendered first
