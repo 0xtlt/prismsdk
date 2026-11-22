@@ -642,6 +642,9 @@ pub struct ViewIvars {
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
     /// Where the mouse went down (window coordinates), while pressed.
     press: Cell<Option<NSPoint>>,
+    /// A press on a region that moves the window (#67), until the mouse
+    /// moves: the window drag starts then, from it.
+    window_press: RefCell<Option<Retained<NSEvent>>>,
     dragging: Cell<bool>,
     /// The button and keys of the press being dragged (#136).
     drag_button: Cell<prism_core::PointerButton>,
@@ -1026,6 +1029,12 @@ define_class!(
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
             let iv = self.ivars();
+            if let Some(press) = iv.window_press.take() {
+                if let Some(window) = self.window() {
+                    window.performWindowDragWithEvent(&press);
+                }
+                return;
+            }
             let drags = iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG != 0;
             if iv.pointer_mask.get() & prism_core::events::pointer_mask::MOVE != 0 {
                 self.pointer(PointerPhase::Move, event);
@@ -1220,7 +1229,12 @@ define_class!(
                 if event.clickCount() >= 2 {
                     crate::chrome::double_click(&window);
                 } else {
-                    window.performWindowDragWithEvent(event);
+                    // The drag starts when the mouse moves: started now,
+                    // AppKit would log « Window move completed without
+                    // beginning » for each click.
+                    self.ivars()
+                        .window_press
+                        .replace(Some(objc2::Message::retain(event)));
                 }
                 return;
             }
@@ -1246,6 +1260,10 @@ define_class!(
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
+            // A click on a region that moves the window: nothing moved.
+            if self.ivars().window_press.take().is_some() {
+                return;
+            }
             if self.ivars().report_active.get() {
                 report_state(self.ivars().id.get(), prism_core::Interaction::Active, false);
             }
