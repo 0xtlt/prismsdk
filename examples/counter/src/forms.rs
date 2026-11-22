@@ -264,7 +264,22 @@ impl Forms {
     /// A rich note (#217): a Bold button above the selected words, copies
     /// with Markdown, pastes and ⌘-clicks reported.
     fn note(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let field = rich_input(self.note.clone())
+        // A tap or click on a chip opens its page (here, says so).
+        let spans: Vec<Span> = self
+            .note
+            .iter()
+            .map(|s| match s.chip_label() {
+                Some(label) if s.is_chip() => {
+                    let label = label.to_string();
+                    s.clone()
+                        .on_click(cx.listener(move |this, _: &ClickEvent, cx| {
+                            this.note_log = strings::forms_note_chip(cx, &label);
+                        }))
+                }
+                _ => s.clone(),
+            })
+            .collect();
+        let field = rich_input(spans)
             .placeholder(strings::forms_note_placeholder(cx))
             .accessibility_label(strings::forms_note(cx))
             .on_input(cx.listener(|this, e: &RichInputEvent, _| this.note = e.spans.clone()))

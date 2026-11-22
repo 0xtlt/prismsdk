@@ -383,6 +383,7 @@
     "note_copied": "نُسخ {count} حرفًا مع Markdown",
     "note_pasted": "لُصق، كان في الحافظة {count} أنواع",
     "note_clicked": "⌘-نقر على المقطع {count}",
+    "note_chip": "فُتح {page}",
     "blocks": "كتل: حدّد عبر الفقرات باستخدام ⇧↓ أو بالسحب",
     "blocks_selected": "تحديد عبر {count} كتل",
     "blocks_select_all": "تحديد كل الكتل",
