@@ -19,11 +19,11 @@ use std::collections::HashMap;
 use prism_core::{Color, NodeId, RemoteCaret};
 use prism_native::fields::chars_to_utf16;
 use windows::Foundation::Rect as WinRect;
-use windows_core::{HSTRING, Interface, Result};
+use windows_core::{Interface, Result};
 
 use crate::fluent::Palette;
 use crate::winui::bindings::Microsoft::UI::Dispatching::{DispatcherQueue, DispatcherQueueHandler};
-use crate::winui::bindings::Microsoft::UI::Text::{ITextRange, PointOptions, TextGetOptions};
+use crate::winui::bindings::Microsoft::UI::Text::{ITextRange, PointOptions};
 use crate::winui::xaml::Controls::{
     Border, Canvas, RichEditBox, ScrollViewer, ScrollViewerViewChangedEventArgs, TextBlock, TextBox,
 };
@@ -202,10 +202,9 @@ impl Measure {
                 host_origin(&t.cast()?, t.GetTemplateChild(&h("ContentElement")).ok()),
             ),
             Field::Rich(r) => {
-                let mut s = HSTRING::new();
-                r.Document()?.GetText(TextGetOptions::UseLf, &mut s)?;
+                let s = crate::rich::text(&r.Document()?)?;
                 (
-                    s.to_string(),
+                    s,
                     host_origin(&r.cast()?, r.GetTemplateChild(&h("ContentElement")).ok()),
                 )
             }
