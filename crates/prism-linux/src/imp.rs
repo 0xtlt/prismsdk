@@ -218,14 +218,16 @@ impl View {
 /// pictures of removed views) comes first, then `new`. A child in both is
 /// moved in place, never unparented: unparented, a focused field would lose
 /// the focus and its selection when a sibling comes or goes.
-fn arrange_children<T: Clone + PartialEq>(
+fn arrange_children<T: Clone + Eq + std::hash::Hash>(
     old: &[T],
     new: &[T],
     stays: impl Fn(&T) -> bool,
 ) -> (Vec<T>, Vec<T>) {
+    // A set: long lists have thousands of children on each side.
+    let in_new: HashSet<&T> = new.iter().collect();
     let (kept, gone): (Vec<T>, Vec<T>) = old
         .iter()
-        .filter(|c| !new.contains(c))
+        .filter(|c| !in_new.contains(c))
         .cloned()
         .partition(|c| stays(c));
     (gone, kept.into_iter().chain(new.iter().cloned()).collect())
