@@ -265,12 +265,8 @@ impl Render for DeviceDemo {
                                 .small()
                                 .ghost()
                                 .on_click(cx.listener(|_, _, cx| {
-                                    cx.share(
-                                        Share::text(
-                                            "Prism: one Rust UI for the web, macOS and iOS",
-                                        )
-                                        .url("https://www.rust-lang.org"),
-                                    )
+                                    let text = strings::device_share_text(cx);
+                                    cx.share(Share::text(text).url("https://www.rust-lang.org"))
                                 })),
                         )
                     }),

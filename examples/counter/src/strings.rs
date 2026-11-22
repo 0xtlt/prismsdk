@@ -22,6 +22,7 @@ pub fn choose(cx: &mut App, tag: Option<&str>) {
     cx.set_locale(tag.map(Locale::new));
     // Menus and widgets live outside the views: rebuild them too.
     crate::menus::refresh(cx);
+    crate::widgets::rename(cx);
     cx.reload_widgets();
 }
 

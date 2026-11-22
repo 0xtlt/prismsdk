@@ -407,6 +407,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Counter: the last English left in French and Arabic is translated: the widgets' names and descriptions in the gallery (named again when the language changes), the local web page of Web and video (with its `lang` and `dir`), the shared text, the first todo and the « kg » of Layout.
 - Counter: the Navigation card and the Report screen it opens are in the app's language (they stayed English in French and Arabic): their headings, buttons, room names, periods (« 30 j ») and the « Saved » notice.
 - Windows: a text area is three lines tall at least unless `rows(n)` says otherwise (#235), as on the other platforms; it was measured one line tall.
 - Counter: the rich note and the three Blocks paragraphs are in the app's language (they stayed English in French and Arabic), and the note says what works where: ⌘-click a link on macOS, Ctrl-click on Windows and Linux, either on the web; on touch screens, which have no modifier-click, it asks for a tap on its chip.

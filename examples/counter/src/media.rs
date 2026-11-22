@@ -20,18 +20,20 @@ use prism::ui::{self, Theme};
 
 use crate::strings;
 
-/// The local page: the bridge of the module docs of `web_view`.
+/// The local page: the bridge of the module docs of `web_view`. Its text
+/// comes from [`page_html`], in the app's language.
 const PAGE: &str = r#"<!doctype html>
+<html lang="@LANG@" dir="@DIR@">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <style>
   body { font: 15px system-ui, sans-serif; margin: 12px; color: #1b1b1f; background: #eef3fb; }
   h3 { margin: 0 0 6px; } button { font: inherit; padding: 6px 12px; }
   #log { margin-top: 8px; color: #444; }
 </style>
-<h3>Hello from a web page</h3>
-<div id="engine"></div>
-<button id="send">Send to the app</button>
-<div id="log">No message from the app yet</div>
+<h3>@HEADING@</h3>
+<div id="engine" data-text="@ENGINE@"></div>
+<button id="send">@SEND@</button>
+<div id="log" data-text="@FROM@">@NONE@</div>
 <script>
   function postToApp(value) {
     if (window.prismHost) prismHost.postMessage(JSON.stringify(value));
@@ -40,13 +42,14 @@ const PAGE: &str = r#"<!doctype html>
   var n = 0;
   document.getElementById("send").onclick = function () { n++; postToApp("tap " + n); };
   window.addEventListener("message", function (e) {
-    document.getElementById("log").textContent = "From the app: " + JSON.stringify(e.data);
+    var log = document.getElementById("log");
+    log.textContent = log.dataset.text.replace("{message}", JSON.stringify(e.data));
     // Answers, so the app shows that its message arrived.
     postToApp("got " + JSON.stringify(e.data));
   });
-  var ua = navigator.userAgent;
-  document.getElementById("engine").textContent =
-    ua.indexOf("Edg/") > 0 ? "Engine: Microsoft Edge WebView2" : "Engine: " + ua.split(") ").pop();
+  var ua = navigator.userAgent, engine = document.getElementById("engine");
+  engine.textContent = engine.dataset.text.replace("{name}",
+    ua.indexOf("Edg/") > 0 ? "Microsoft Edge WebView2" : ua.split(") ").pop());
   postToApp("ready");
 </script>
 "#;
@@ -69,7 +72,7 @@ impl MediaDemo {
         MediaDemo {
             url: test_env("PRISM_WEB_URL", option_env!("PRISM_WEB_URL")).unwrap_or_else(|| {
                 let dir = cx.data_dir().filter(|_| cx.platform() != Platform::Web);
-                page_url(dir.map(|d| d.join("web-page")).as_deref())
+                page_url(dir.map(|d| d.join("web-page")).as_deref(), &page_html(cx))
             }),
             from_page: None,
             loaded: None,
@@ -81,16 +84,38 @@ impl MediaDemo {
     }
 }
 
+/// [`PAGE`] in the app's language.
+fn page_html(cx: &App) -> String {
+    let escape = |s: String| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let rtl = cx.direction() == prism::Direction::Rtl;
+    PAGE.replace("@LANG@", cx.locale().language())
+        .replace("@DIR@", if rtl { "rtl" } else { "ltr" })
+        .replace("@HEADING@", &escape(strings::media_page_heading(cx)))
+        // The page fills in `{name}` and `{message}`.
+        .replace(
+            "@ENGINE@",
+            &escape(strings::media_page_engine(cx, "{name}")),
+        )
+        .replace("@SEND@", &escape(strings::media_page_send(cx)))
+        .replace("@FROM@", &escape(strings::media_page_from(cx, "{message}")))
+        .replace("@NONE@", &escape(strings::media_page_none(cx)))
+}
+
 /// The page to show: natively the local page as a `file://` URL, written
 /// to `dir`. A folder of its own: web views may read the page's folder.
 /// Without one (on the web, or without a data directory), a public page.
-fn page_url(dir: Option<&std::path::Path>) -> String {
+fn page_url(dir: Option<&std::path::Path>, html: &str) -> String {
     let fallback = || "https://example.com".to_string();
     let Some(dir) = dir else {
         return fallback();
     };
     let path = dir.join("page.html");
-    if std::fs::create_dir_all(dir).is_err() || std::fs::write(&path, PAGE).is_err() {
+    if std::fs::create_dir_all(dir).is_err() || std::fs::write(&path, html).is_err() {
         return fallback();
     }
     let path = path.display().to_string().replace('\\', "/");

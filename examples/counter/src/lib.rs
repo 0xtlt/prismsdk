@@ -212,7 +212,8 @@ impl Store {
                 .collect(),
             None => vec![Todo {
                 id: 1,
-                title: "Try Prism on the web".into(),
+                // A first todo, in the app's language (then kept as typed).
+                title: strings::todos_sample(cx),
                 done: true,
             }],
         };

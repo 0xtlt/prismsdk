@@ -31,7 +31,8 @@
     "add_todo": "Ajouter la tâche",
     "hint_mobile": "Balaie une tâche vers la gauche pour la supprimer, ou appuie longuement pour plus d'options.",
     "hint_desktop": "Clic droit sur une tâche pour plus d'actions.",
-    "hint_hold": "Appuie longuement sur une tâche pour plus d'actions."
+    "hint_hold": "Appuie longuement sur une tâche pour plus d'actions.",
+    "sample": "Essayer Prism sur le web"
   },
   "todo": {
     "done": "Terminée",
@@ -189,7 +190,11 @@
     "open": {
       "one": "{count} ouverte",
       "other": "{count} ouvertes"
-    }
+    },
+    "todos_name": "Tâches",
+    "todos_description": "Vos tâches ouvertes en un coup d’œil.",
+    "todo_name": "Tâche",
+    "todo_description": "Une tâche de votre choix."
   },
   "list": {
     "row": "Ligne {row} sur {total}"
@@ -213,7 +218,8 @@
     "copied": "« Prism ♥ Rust » copié",
     "paste": "Coller",
     "empty": "(presse-papiers vide)",
-    "share": "Partager"
+    "share": "Partager",
+    "share_text": "Prism : une seule UI en Rust pour le web, macOS et iOS"
   },
   "about": {
     "title": "À propos de cet appareil",
@@ -406,7 +412,8 @@
     "off_peak": "HEURES CREUSES",
     "peak": "HEURES PLEINES",
     "avatars": "Ada,Bo,Cy",
-    "avatars_note": "Des avatars qui se chevauchent, le premier dessiné au-dessus (z_index) : toujours lu et atteint au clavier en premier."
+    "avatars_note": "Des avatars qui se chevauchent, le premier dessiné au-dessus (z_index) : toujours lu et atteint au clavier en premier.",
+    "unit": "kg"
   },
   "typography": {
     "title": "Typographie",
@@ -524,7 +531,12 @@
     "drop_heading": "Des fichiers du gestionnaire de fichiers",
     "drop_hint": "Déposez des fichiers ici",
     "drop_images_hint": "Images uniquement",
-    "dropped": "Déposés : {names}"
+    "dropped": "Déposés : {names}",
+    "page_heading": "Bonjour depuis une page web",
+    "page_send": "Envoyer à l’app",
+    "page_none": "Pas encore de message de l’app",
+    "page_from": "De l’app : {message}",
+    "page_engine": "Moteur : {name}"
   },
   "scene3d": {
     "title": "Scène 3D",

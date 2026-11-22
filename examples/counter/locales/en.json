@@ -31,7 +31,8 @@
     "add_todo": "Add todo",
     "hint_mobile": "Swipe left on a todo to delete it, or touch and hold it for more.",
     "hint_desktop": "Right-click a todo for more actions.",
-    "hint_hold": "Press and hold a task for more actions."
+    "hint_hold": "Press and hold a task for more actions.",
+    "sample": "Try Prism on the web"
   },
   "todo": {
     "done": "Done",
@@ -189,7 +190,11 @@
     "open": {
       "one": "{count} open",
       "other": "{count} open"
-    }
+    },
+    "todos_name": "Todos",
+    "todos_description": "Your open todos at a glance.",
+    "todo_name": "Todo",
+    "todo_description": "One todo of your choice."
   },
   "list": {
     "row": "Row number {row} of {total}"
@@ -213,7 +218,8 @@
     "copied": "Copied “Prism ♥ Rust”",
     "paste": "Paste",
     "empty": "(clipboard empty)",
-    "share": "Share"
+    "share": "Share",
+    "share_text": "Prism: one Rust UI for the web, macOS and iOS"
   },
   "about": {
     "title": "About this device",
@@ -406,7 +412,8 @@
     "off_peak": "OFF-PEAK HOURS",
     "peak": "PEAK HOURS",
     "avatars": "Ada,Bo,Cy",
-    "avatars_note": "Overlapping avatars, the first drawn on top (z_index): still read and tabbed through first."
+    "avatars_note": "Overlapping avatars, the first drawn on top (z_index): still read and tabbed through first.",
+    "unit": "kg"
   },
   "typography": {
     "title": "Typography",
@@ -524,7 +531,12 @@
     "drop_heading": "Files from the file manager",
     "drop_hint": "Drop files here",
     "drop_images_hint": "Pictures only",
-    "dropped": "Dropped: {names}"
+    "dropped": "Dropped: {names}",
+    "page_heading": "Hello from a web page",
+    "page_send": "Send to the app",
+    "page_none": "No message from the app yet",
+    "page_from": "From the app: {message}",
+    "page_engine": "Engine: {name}"
   },
   "scene3d": {
     "title": "3D scene",

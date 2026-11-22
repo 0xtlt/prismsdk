@@ -58,7 +58,11 @@ pub fn card(cx: &App, taps: u32, on_tap: Handler<ClickEvent>) -> ui::Card {
                 .items_baseline()
                 .gap(6.)
                 .child(text("42").text_size(40.).bold().text_color(t.text))
-                .child(text("kg").text_size(15.).text_color(t.muted))
+                .child(
+                    text(strings::layout_unit(cx))
+                        .text_size(15.)
+                        .text_color(t.muted),
+                )
                 .child(
                     text(strings::layout_baseline(cx))
                         .text_size(13.)

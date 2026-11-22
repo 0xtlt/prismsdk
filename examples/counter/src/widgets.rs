@@ -22,6 +22,9 @@ pub fn no_widgets() -> bool {
     option_env!("COUNTER_NO_WIDGETS") == Some("1")
 }
 
+/// Kept so the widgets can be named again in another language.
+struct WidgetStore(Entity<Store>);
+
 pub fn register(cx: &mut App, store: Entity<Store>) {
     if no_widgets() {
         return;
@@ -29,9 +32,29 @@ pub fn register(cx: &mut App, store: Entity<Store>) {
     // The focus timer starts Live Activities (focus.rs): the iOS bundle needs
     // the extension for them even without this widget.
     cx.enable_live_activities();
+    cx.set_global(WidgetStore(store));
+    rename(cx);
+    cx.reload_widgets_on(&store);
+    // Widget buttons: runs in the app, launched in the background if needed;
+    // the widgets are redrawn when the job returns.
+    cx.on_widget_action(move |action, cx| async move {
+        if action.action == "toggle"
+            && let Ok(id) = action.payload.parse::<u64>()
+        {
+            cx.update_entity(&store, |s, cx| s.toggle(id, cx));
+        }
+    });
+}
+
+/// Registers the widgets with their names in the current language: the
+/// gallery shows them (registering a kind again replaces it).
+pub fn rename(cx: &mut App) {
+    let Some(store) = cx.try_global::<WidgetStore>().map(|w| w.0) else {
+        return;
+    };
     cx.register_widget(
-        Widget::new("todos", "Todos")
-            .description("Your open todos at a glance.")
+        Widget::new("todos", strings::widget_todos_name(cx))
+            .description(strings::widget_todos_description(cx))
             .families(&[
                 WidgetFamily::Small,
                 WidgetFamily::Medium,
@@ -141,29 +164,21 @@ pub fn register(cx: &mut App, store: Entity<Store>) {
                     .into_element()
             }),
     );
-    cx.register_widget(todo_widget(store));
-    cx.reload_widgets_on(&store);
-    // Widget buttons: runs in the app, launched in the background if needed;
-    // the widgets are redrawn when the job returns.
-    cx.on_widget_action(move |action, cx| async move {
-        if action.action == "toggle"
-            && let Ok(id) = action.payload.parse::<u64>()
-        {
-            cx.update_entity(&store, |s, cx| s.toggle(id, cx));
-        }
-    });
+    let todo = todo_widget(cx, store);
+    cx.register_widget(todo);
 }
 
 /// One todo, picked per instance. The options are the todos themselves: the
 /// edit sheet lists the current ones (written again whenever the store
 /// changes, through `reload_widgets_on`).
-fn todo_widget(store: Entity<Store>) -> Widget {
+fn todo_widget(cx: &App, store: Entity<Store>) -> Widget {
     let options = store;
-    Widget::new("todo", "Todo")
-        .description("One todo of your choice.")
+    let name = strings::widget_todo_name(cx);
+    Widget::new("todo", name.clone())
+        .description(strings::widget_todo_description(cx))
         .families(&[WidgetFamily::Small, WidgetFamily::AccessoryRectangular])
         .link("/")
-        .parameter(WidgetParameter::new("todo", "Todo").options(move |cx| {
+        .parameter(WidgetParameter::new("todo", name).options(move |cx| {
             options
                 .read(cx)
                 .todos
