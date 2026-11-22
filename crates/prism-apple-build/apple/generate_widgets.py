@@ -135,4 +135,6 @@ if platform == "ios":
 if not names and platform != "ios":
     out.append("        EmptyWidget()")
 out += ["    }", "}"]
-print("\n".join(out))
+# Bytes, not text: Windows' text mode would write CRLF line endings and its
+# ANSI code page instead of UTF-8.
+sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
