@@ -3306,9 +3306,6 @@ impl AppKit {
         }
         let selected = bar.selected.get().min(tabs.len().saturating_sub(1));
         bar.segments.setSelectedSegment(selected as isize);
-        // The selected tab's symbol in the tint (#30).
-        let icon = tabs.get(selected).and_then(|t| self.icons.get(&t.id()));
-        crate::navbar::tint_selected_segment(bar.id, &bar.segments, selected, icon);
         self.show_only(&bar.container, &[&bar.bar, &bar.separator], &tabs, selected);
     }
 
@@ -3859,7 +3856,7 @@ impl Widgets for AppKit {
         // Bar tint (#30).
         match view {
             View::Tabs(t) => {
-                crate::navbar::tint_tabs(t.id, &t.segments, style.tint.map(ns_color));
+                crate::navbar::tint_tabs(&t.segments, style.tint.map(ns_color));
                 self.refresh_tabs(t);
             }
             View::Stack(st) => {
