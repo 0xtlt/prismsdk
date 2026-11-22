@@ -1708,9 +1708,29 @@ struct PrismTextField: View {
         if node.kind == "text_area" {
             let line = UIFont.systemFont(ofSize: node.num("font", 17)).lineHeight
             let lines = max(Int((node.frame.height - TextAreaInset.vertical * 2) / max(line, 1)), 1)
-            TextField(node.placeholder, text: text, axis: .vertical)
-                .lineLimit(lines)
+            // watchOS draws a TextField's text on one line, cut, whatever
+            // its line limit (its platter is a button that opens the
+            // editor): the field's own text is hidden and its text, wrapped
+            // as measured, or its placeholder, is drawn over it. Taps still
+            // reach the field.
+            let bare = node.style["pad"] != nil || node.style["bnone"] as? Bool == true
+            let shown = text.wrappedValue.isEmpty ? node.placeholder : text.wrappedValue
+            // Its prompt is drawn over it too; the placeholder stays its
+            // label for VoiceOver.
+            TextField(text: text, prompt: Text(""), axis: .vertical) { Text(node.placeholder) }
+                .lineLimit(1)
+                .foregroundStyle(.clear)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .overlay(alignment: .topLeading) {
+                    Text(shown)
+                        .lineLimit(lines)
+                        .foregroundStyle(text.wrappedValue.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                        .padding(.horizontal, bare ? 0 : TextAreaInset.horizontal)
+                        .padding(.vertical, bare ? 0 : TextAreaInset.vertical)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
         } else if traits.secure {
             SecureField(node.placeholder, text: text)
                 .onSubmit { send(["t": "submit", "id": id]) }

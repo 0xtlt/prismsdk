@@ -407,6 +407,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- watchOS: a text area and a rich input show their text on as many lines as they are measured; watchOS drew a text field's text on one line, cut (« through this o… »), in a box as tall as the wrapped text.
 - Counter: the last English left in French and Arabic is translated: the widgets' names and descriptions in the gallery (named again when the language changes), the local web page of Web and video (with its `lang` and `dir`), the shared text, the first todo and the « kg » of Layout.
 - Counter: the Navigation card and the Report screen it opens are in the app's language (they stayed English in French and Arabic): their headings, buttons, room names, periods (« 30 j ») and the « Saved » notice.
 - Windows: a text area is three lines tall at least unless `rows(n)` says otherwise (#235), as on the other platforms; it was measured one line tall.
