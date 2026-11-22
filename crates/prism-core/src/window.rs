@@ -183,7 +183,11 @@ impl App {
 
     /// Where the system's window buttons sit over the content: `Some` only
     /// for a [`WindowChrome::Custom`] window out of full screen (macOS,
-    /// Windows). Changes re-render.
+    /// Windows), while the app's own views are under them. A tab bar or
+    /// navigation header along the top edge (or Windows' menu bar) keeps
+    /// room for them itself: `None` then, so the app's title bar shows only
+    /// where nothing else is one. Changes (navigations, bars shown or
+    /// hidden, resizes) re-render.
     ///
     /// ```ignore
     /// let (left, right) = cx

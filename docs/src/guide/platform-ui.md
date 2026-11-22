@@ -19,9 +19,14 @@ Platforms: `Ios`, `Android`, `Macos`, `Windows`, `Linux`, `Web`; sets with `|` o
 
 `Application::window_chrome(WindowChrome::Custom { traffic_lights })` removes
 the title bar on macOS and Windows so the app draws its own; `.window_drag()`
-marks the regions that move the window, and `cx.window_controls()` /
+marks the regions that move the window. The empty part of the window's top
+row moves it as well: a tab bar or navigation header along the top edge, and
+on Windows the menu bar's row, which holds the caption buttons. `cx.window_controls()` /
 `cx.is_fullscreen()` say how much room the window's buttons need
 (`insets(width)`: the traffic lights at the left, Windows' caption buttons at
-the right). Other platforms ignore them. See
+the right). `window_controls()` is `Some` only while the app's own views are
+under the buttons: with a tab bar, a navigation header or (on Windows) a menu
+bar up there, that bar is the title bar and the app draws none. Other
+platforms ignore them. See
 [macOS › Custom window chrome](../platforms/macos.md#custom-window-chrome) and
 [Windows › Custom window chrome](../platforms/windows.md#custom-window-chrome).

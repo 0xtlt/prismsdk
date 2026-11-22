@@ -92,7 +92,11 @@ impl Render for Notes {
 - `cx.window_controls()` is the lights' frame from the window's top-left
   corner (`x`, `y`, `width`, `height`, `right()`, `bottom()`, and
   `insets(width)`: the room to keep at each end of a title bar), `None` in full
-  screen or with the standard chrome. `cx.is_fullscreen()` says whether the
+  screen, with the standard chrome, and while a tab bar or a navigation
+  header along the top edge is under the lights (it keeps room for them
+  itself, below; an app's own title bar would be a second one). It follows
+  navigations, bars shown or hidden and resizes, so the app's title bar
+  shows only where the app's own views reach the top edge. `cx.is_fullscreen()` says whether the
   window fills the screen. Both re-render the app when they change (on the
   way into full screen, before the animation ends).
 - `.window_drag()` (on any element, usually the title bar's container) makes
@@ -103,7 +107,30 @@ impl Render for Notes {
   keep their own clicks; text and plain containers inside move the window.
   On a clickable element itself the click wins: put it on the container.
 - Containers outside a `.window_drag()` region don't move the window, even in
-  the title bar strip.
+  the title bar strip: the app's views there get their presses, where AppKit
+  would give them to the invisible title bar. Prism's window sends them to
+  the view under them itself (`sendEvent:`, public API only: Prism apps go
+  to the Mac App Store), as AppKit does lower down; AppKit's own controls
+  there (Back, bar buttons, tabs) and the traffic lights keep AppKit's
+  handling. So a `.window_drag()` bar in that strip drags and takes the
+  double click from its text as from its empty part, and the clickable views
+  in it get their clicks. A tab bar or a navigation header along the window's
+  top edge is the exception, as Safari's and Finder's tab bars are: its
+  empty part moves the window and takes the double click, while its tabs,
+  Back and bar buttons keep their clicks. The same bars do so on Windows.
+  `PRISM_CLICK=dblclick:#window@x,y` (dev builds) double-clicks at that
+  point of the window, and the log gives the window's frame before and
+  after, zoomed or minimized.
+- Such a bar keeps room for the traffic lights over it, as Windows' bars do
+  for the caption buttons: Back, the bar buttons and the tabs start after
+  them, at whichever end they are (the left, unless the system runs right to
+  left), and the title stays centered in the window. A right-to-left app
+  keeps its Back at the right and its trailing buttons clear of the lights.
+  A bar lower down (a header under a tab bar) and every bar in full screen,
+  where the lights hide, keep no room. Tabs too wide for what is left
+  shrink, their titles truncated.
+- `PRISM_SNAPSHOT` (dev builds) draws the traffic lights over the content
+  with a custom chrome, so a snapshot shows what they cover.
 
 Windows has it too, with its caption buttons at the top right
 ([Windows › Custom window chrome](windows.md#custom-window-chrome)). Other

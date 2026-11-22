@@ -47,6 +47,8 @@ thread_local! {
     /// Set while Prism changes the window: what XAML reports meanwhile
     /// (a control's new value, a field's text) is Prism's own doing.
     static UPDATING: Cell<bool> = const { Cell::new(false) };
+    /// `relayout` is telling the app where the caption buttons are.
+    static FOLLOWING: Cell<bool> = const { Cell::new(false) };
     static QUEUE: RefCell<VecDeque<UiEvent>> = const { RefCell::new(VecDeque::new()) };
     static DEFERRED: RefCell<Vec<Deferred>> = const { RefCell::new(Vec::new()) };
     static MAIN: Cell<isize> = const { Cell::new(0) };
@@ -196,6 +198,7 @@ pub fn commit(s: &mut State, patches: Vec<Patch>) {
     let was = UPDATING.replace(true);
     if !patches.is_empty() {
         crate::perf::patches(|| prism_core::Backend::apply(&mut s.renderer, &patches));
+        crate::titlebar::committed();
     }
     relayout(s);
     // `cx.focus(…)`, `dismiss_keyboard()`.
@@ -250,6 +253,18 @@ pub fn relayout(s: &mut State) {
         let more = prism_native::report_layout(&mut s.runtime, &mut s.renderer);
         if !more.is_empty() {
             commit(s, more);
+        }
+        // The caption buttons came over the app's views or left them (a
+        // navigation, a bar shown or hidden): the app renders again now,
+        // before XAML draws a frame (`titlebar.rs`). Once per layout, so
+        // an app that answers by moving a bar under them again cannot
+        // loop.
+        if !FOLLOWING.replace(true) {
+            let chrome = crate::titlebar::follow(s);
+            if !chrome.is_empty() {
+                commit(s, chrome);
+            }
+            FOLLOWING.set(false);
         }
     }
     crate::perf::layout(|| s.renderer.widgets.flush());
@@ -554,12 +569,17 @@ fn first_frame() {
                 if let Some(Ok(root)) = root.map(|r| windows_core::Interface::cast(&r)) {
                     log!("{} XAML elements", crate::perf::count_elements(&root));
                 }
-            } else if let Some(t) = RENDERED.take() {
+            } else if !crate::titlebar::tracing()
+                && let Some(t) = RENDERED.take()
+            {
                 let _ = CompositionTarget::RemoveRendered(t);
             }
             crate::scene3d::first_frame();
         }
         crate::perf::rendered();
+        if crate::titlebar::tracing() {
+            with_state(|s| crate::titlebar::frame(s));
+        }
         Ok(())
     });
     match CompositionTarget::Rendered(&handler) {
@@ -1038,6 +1058,9 @@ pub fn run(config: AppConfig, init: AppInit) {
                 first.len()
             ));
             commit(s, first);
+            // Where the caption buttons are, if the title bar knows yet:
+            // the app renders for them before the window shows.
+            crate::titlebar::report_controls(s);
             crate::profile::phase("XAML layout");
             if crate::perf::on() {
                 log!("XAML elements: {}", crate::perf::take());

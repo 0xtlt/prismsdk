@@ -492,6 +492,33 @@ impl State {
         }
     }
 
+    /// Full screen and the traffic lights (#67): `cx.is_fullscreen()`,
+    /// `cx.window_controls()`, which is `None` while a tab bar or a
+    /// navigation header along the top edge is under them (it makes room
+    /// for them itself). Returns whether the app rendered again.
+    fn sync_window_chrome(&mut self) -> bool {
+        let w = &self.renderer.widgets;
+        let Some(window) = w.root.window() else {
+            return false;
+        };
+        let fullscreen = crate::chrome::is_fullscreen();
+        let controls = crate::chrome::over_app(&window, w.top_bars());
+        if (fullscreen, controls)
+            == (
+                self.runtime.app.is_fullscreen(),
+                self.runtime.app.window_controls(),
+            )
+        {
+            return false;
+        }
+        let patches = self.runtime.set_window_chrome(fullscreen, controls);
+        if patches.is_empty() {
+            return false;
+        }
+        self.renderer.apply(&patches);
+        true
+    }
+
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.frame().size;
         // Responsive layouts: tell the app its window size and what covers
@@ -516,23 +543,7 @@ impl State {
                 self.renderer.apply(&patches);
             }
         }
-        // Full screen and the traffic lights (#67): `cx.is_fullscreen()`,
-        // `cx.window_controls()`.
-        if let Some(window) = self.renderer.widgets.root.window() {
-            let fullscreen = crate::chrome::is_fullscreen();
-            let controls = crate::chrome::controls(&window);
-            if (fullscreen, controls)
-                != (
-                    self.runtime.app.is_fullscreen(),
-                    self.runtime.app.window_controls(),
-                )
-            {
-                let patches = self.runtime.set_window_chrome(fullscreen, controls);
-                if !patches.is_empty() {
-                    self.renderer.apply(&patches);
-                }
-            }
-        }
+        self.sync_window_chrome();
         // Fullscreen, another screen: `cx.device_info()`.
         if w > 0.
             && self.device_size != Some((w, h))
@@ -555,6 +566,14 @@ impl State {
         };
         self.renderer
             .layout(size.width as f32, size.height as f32, insets);
+        // The bars' frames are known: where the traffic lights are over
+        // the app's own views follows them.
+        self.renderer.widgets.place_bars();
+        if self.sync_window_chrome() {
+            self.renderer
+                .layout(size.width as f32, size.height as f32, insets);
+            self.renderer.widgets.place_bars();
+        }
         let w = &self.renderer.widgets;
         if let Some(main) = w.root.window() {
             w.ix.follow(&main);
@@ -623,6 +642,9 @@ pub struct ViewIvars {
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
     /// Where the mouse went down (window coordinates), while pressed.
     press: Cell<Option<NSPoint>>,
+    /// A press on a region that moves the window (#67), until the mouse
+    /// moves: the window drag starts then, from it.
+    window_press: RefCell<Option<Retained<NSEvent>>>,
     dragging: Cell<bool>,
     /// The button and keys of the press being dragged (#136).
     drag_button: Cell<prism_core::PointerButton>,
@@ -634,6 +656,9 @@ pub struct ViewIvars {
     // --- Custom window chrome (#67) ---
     /// `.window_drag()`: a press moves the window, a double click zooms it.
     window_drag: Cell<bool>,
+    /// A tab bar's or a navigation header's bar: along the window's top
+    /// edge, with a custom chrome, it moves the window like a title bar.
+    top_bar: Cell<bool>,
     // --- Drop targets (#111) ---
     /// The file types it accepts dropped (`None`: not a drop target).
     drop_types: RefCell<Option<Vec<String>>>,
@@ -1004,6 +1029,12 @@ define_class!(
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
             let iv = self.ivars();
+            if let Some(press) = iv.window_press.take() {
+                if let Some(window) = self.window() {
+                    window.performWindowDragWithEvent(&press);
+                }
+                return;
+            }
             let drags = iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG != 0;
             if iv.pointer_mask.get() & prism_core::events::pointer_mask::MOVE != 0 {
                 self.pointer(PointerPhase::Move, event);
@@ -1192,16 +1223,18 @@ define_class!(
         fn mouse_down(&self, event: &NSEvent) {
             // `.window_drag()` (#67): presses that clickable descendants
             // did not take move the window; a double click zooms it.
-            let iv = self.ivars();
-            if iv.window_drag.get()
-                && !iv.clickable.get()
-                && iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG == 0
+            if self.moves_window()
                 && let Some(window) = self.window()
             {
                 if event.clickCount() >= 2 {
                     crate::chrome::double_click(&window);
                 } else {
-                    window.performWindowDragWithEvent(event);
+                    // The drag starts when the mouse moves: started now,
+                    // AppKit would log « Window move completed without
+                    // beginning » for each click.
+                    self.ivars()
+                        .window_press
+                        .replace(Some(objc2::Message::retain(event)));
                 }
                 return;
             }
@@ -1227,6 +1260,10 @@ define_class!(
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
+            // A click on a region that moves the window: nothing moved.
+            if self.ivars().window_press.take().is_some() {
+                return;
+            }
             if self.ivars().report_active.get() {
                 report_state(self.ivars().id.get(), prism_core::Interaction::Active, false);
             }
@@ -1301,6 +1338,22 @@ fn gesture_phase(
 }
 
 impl PrismView {
+    /// Whether a press on it moves the window (#67): a `.window_drag()`
+    /// region, or a tab bar or header along a custom chrome's top edge,
+    /// that does not take the press itself.
+    pub(crate) fn moves_window(&self) -> bool {
+        let iv = self.ivars();
+        (iv.window_drag.get() || iv.top_bar.get() && crate::chrome::along_top(self))
+            && !iv.clickable.get()
+            && iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG == 0
+    }
+
+    /// Whether it takes presses of its own: clickable, or reporting drags.
+    pub(crate) fn takes_presses(&self) -> bool {
+        let iv = self.ivars();
+        iv.clickable.get() || iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG != 0
+    }
+
     fn is_cell(&self) -> bool {
         self.accessibilityRole().as_deref()
             == Some(unsafe { objc2_app_kit::NSAccessibilityCellRole })
@@ -3175,6 +3228,7 @@ impl AppKit {
         let mtm = self.mtm;
         let header = PrismView::new(mtm, 0);
         *header.ivars().background.borrow_mut() = Some(NSColor::windowBackgroundColor());
+        header.ivars().top_bar.set(true);
         let separator = PrismView::new(mtm, 0);
         *separator.ivars().background.borrow_mut() = Some(NSColor::separatorColor());
         let target: &AnyObject = &self.target;
@@ -3211,6 +3265,7 @@ impl AppKit {
         let mtm = self.mtm;
         let bar = PrismView::new(mtm, 0);
         *bar.ivars().background.borrow_mut() = Some(NSColor::windowBackgroundColor());
+        bar.ivars().top_bar.set(true);
         let separator = PrismView::new(mtm, 0);
         *separator.ivars().background.borrow_mut() = Some(NSColor::separatorColor());
         let segments = NSSegmentedControl::new(mtm);
@@ -3333,6 +3388,71 @@ impl AppKit {
                 .is_some_and(|top| self.bare.contains(&top.id()))
     }
 
+    /// Places a tab bar's segments: centered, clear of the traffic lights
+    /// over it (#67, `chrome::bar_room`).
+    fn place_tabs(&self, t: &MacTabs) {
+        let w = t.bar.frame().size.width;
+        let (left, right) = crate::chrome::bar_room(&t.bar);
+        let sz = t.segments.fittingSize();
+        // Narrower than the segments: they shrink (their titles truncate).
+        let width = sz.width.min((w - left - right - 16.).max(0.));
+        let x = ((w - width) / 2.)
+            .min(w - right - 8. - width)
+            .max(left + 8.)
+            .round();
+        t.segments.setFrame(NSRect::new(
+            NSPoint::new(x, ((HEADER_HEIGHT - 1. - sz.height) / 2.).round()),
+            NSSize::new(width, sz.height),
+        ));
+    }
+
+    /// Places a header's Back, title and bar buttons, clear of the traffic
+    /// lights over it (#67, `chrome::bar_room`): Back at the leading end,
+    /// after them; the title centered in the window.
+    fn place_header(&self, st: &MacStack) {
+        let size = st.header.frame().size;
+        let (w, h) = (size.width, size.height);
+        let room = crate::chrome::bar_room(&st.header);
+        let b = st.back.fittingSize();
+        st.back.setFrame(NSRect::new(
+            NSPoint::new(
+                if self.rtl {
+                    w - 8. - room.1 - b.width
+                } else {
+                    8. + room.0
+                },
+                ((h - b.height) / 2.).round(),
+            ),
+            b,
+        ));
+        let t = st.title.fittingSize();
+        let side = room.0.max(room.1);
+        st.title.setFrame(NSRect::new(
+            NSPoint::new(side, ((h - t.height) / 2.).round()),
+            NSSize::new((w - 2. * side).max(0.), t.height),
+        ));
+        crate::navbar::layout(&st.bar, &st.back, w, h, self.rtl, room);
+    }
+
+    /// The bars Prism draws: tab bars and navigation headers.
+    fn top_bars(&self) -> impl Iterator<Item = &NSView> {
+        self.stacks
+            .iter()
+            .map(|st| &**st.header as &NSView)
+            .chain(self.tab_bars.iter().map(|t| &**t.bar as &NSView))
+    }
+
+    /// Every bar's contents again, after a layout: the traffic lights over
+    /// one came or went (full screen, a bar moved to the top edge or away).
+    fn place_bars(&self) {
+        for t in &self.tab_bars {
+            self.place_tabs(t);
+        }
+        for st in &self.stacks {
+            self.place_header(st);
+        }
+    }
+
     /// Shows the top screen, its title, and Back when there is somewhere to go.
     fn refresh_stack(&self, stack: &MacStack) {
         let hidden = self.header_hidden(stack);
@@ -3364,8 +3484,7 @@ impl AppKit {
         // The top screen's bar buttons (#30).
         let top = screens.last().map(View::id);
         crate::navbar::refresh(self.mtm, stack.id, &stack.header, &stack.bar, top);
-        let size = stack.header.frame().size;
-        crate::navbar::layout(&stack.bar, &stack.back, size.width, size.height, self.rtl);
+        self.place_header(stack);
         if let Some(window) = stack.container.window()
             && title.length() > 0
             && self.app_title.is_none()
@@ -4425,33 +4544,13 @@ impl Widgets for AppKit {
             let w = w as f64;
             t.bar.setFrame(rect(0., 0., w, HEADER_HEIGHT - 1.));
             t.separator.setFrame(rect(0., HEADER_HEIGHT - 1., w, 1.));
-            let sz = t.segments.fittingSize();
-            t.segments.setFrame(rect(
-                ((w - sz.width) / 2.).round(),
-                ((HEADER_HEIGHT - 1. - sz.height) / 2.).round(),
-                sz.width,
-                sz.height,
-            ));
+            self.place_tabs(t);
         }
         if let View::Stack(st) = view {
             let w = w as f64;
             st.header.setFrame(rect(0., 0., w, HEADER_HEIGHT - 1.));
             st.separator.setFrame(rect(0., HEADER_HEIGHT - 1., w, 1.));
-            let b = st.back.fittingSize();
-            st.back.setFrame(rect(
-                if self.rtl { w - 8. - b.width } else { 8. },
-                ((HEADER_HEIGHT - 1. - b.height) / 2.).round(),
-                b.width,
-                b.height,
-            ));
-            let t = st.title.fittingSize();
-            st.title.setFrame(rect(
-                0.,
-                ((HEADER_HEIGHT - 1. - t.height) / 2.).round(),
-                w,
-                t.height,
-            ));
-            crate::navbar::layout(&st.bar, &st.back, w, HEADER_HEIGHT - 1., self.rtl);
+            self.place_header(st);
         }
     }
 
@@ -5425,15 +5524,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         | NSWindowStyleMask::Resizable;
     // Custom window chrome (#67): the content covers the title bar.
     let style = crate::chrome::style_mask(config.window_chrome, style);
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(mtm),
-            frame,
-            style,
-            NSBackingStoreType::Buffered,
-            false,
-        )
-    };
+    let window = crate::chrome::PrismWindow::create(mtm, frame, style);
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(&NSString::from_str(&config.title));
     window.setContentView(Some(&root));
@@ -5924,6 +6015,78 @@ fn post_click(window: &NSWindow, view: &NSView) {
     }
 }
 
+/// `PRISM_CLICK=dblclick:#window@x,y`: a double click sent through
+/// `window` at (`x`, `y`) points from its content's top-left corner, as the
+/// mouse sends it (the view under the point gets it); logs the window's
+/// frame before and a second after (zoomed or minimized, as System
+/// Settings › Desktop & Dock › « Double-click a window's title bar » says).
+fn window_double_click(window: &NSWindow, at: &str) {
+    use objc2_app_kit::{NSEventModifierFlags, NSEventType};
+    let Some((x, y)) = at
+        .split_once(',')
+        .and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?)))
+    else {
+        eprintln!("prism-macos: PRISM_CLICK: dblclick:#window@{at}: not x,y");
+        return;
+    };
+    let Some(content) = window.contentView() else {
+        return;
+    };
+    let log = |w: &NSWindow, when: &str| {
+        let f = w.frame();
+        println!(
+            "prism-macos: PRISM_CLICK: window {when}: ({}, {}), {} x {}{}{}",
+            f.origin.x,
+            f.origin.y,
+            f.size.width,
+            f.size.height,
+            if w.isZoomed() { ", zoomed" } else { "" },
+            if w.isMiniaturized() {
+                ", minimized"
+            } else {
+                ""
+            }
+        );
+    };
+    log(window, "before");
+    // Window coordinates grow upwards.
+    let point = NSPoint::new(x, content.frame().size.height - y);
+    // The frame view (the title bar's container is above the content).
+    let frame = unsafe { content.superview() }.unwrap_or_else(|| content.clone());
+    let hit = frame
+        .hitTest(point)
+        .map(|v| v.class().name().to_str().unwrap_or("?").to_string());
+    println!("prism-macos: PRISM_CLICK: ({x}, {y}) hits {hit:?}");
+    let app = NSApplication::sharedApplication(window.mtm());
+    let now = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+    // The second click's press (a click count of 2) and its release,
+    // queued first: a single press would start the system's window drag.
+    let event = |kind| {
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            point,
+            NSEventModifierFlags::empty(),
+            now,
+            window.windowNumber(),
+            None,
+            0,
+            2,
+            1.,
+        )
+    };
+    if let (Some(down), Some(up)) = (
+        event(NSEventType::LeftMouseDown),
+        event(NSEventType::LeftMouseUp),
+    ) {
+        app.postEvent_atStart(&up, false);
+        window.sendEvent(&down);
+    }
+    let window = objc2::Message::retain(window);
+    on_main_after(std::time::Duration::from_secs(1), move || {
+        log(&window, "after");
+    });
+}
+
 /// A mouse drag from a third of the way into `from` to a third of the way
 /// into `to` (`PRISM_DRAG_TO`, #231), in a few steps, as the mouse sends it.
 fn post_drag(window: &NSWindow, from: &NSView, to: &NSView) {
@@ -6108,6 +6271,11 @@ fn snapshot_with_overlays(window: &NSWindow, path: &str) {
         }
         image.drawInRect(at);
     }
+    // A custom chrome's traffic lights, over the content (#67): what they
+    // cover shows in the snapshot.
+    if let Some((rect, image)) = crate::chrome::lights_image(window) {
+        image.drawInRect(rect);
+    }
     ctx.flushGraphics();
     NSGraphicsContext::restoreGraphicsState_class();
     let props = objc2_foundation::NSDictionary::new();
@@ -6147,6 +6315,14 @@ fn run_automation(mtm: MainThreadMarker) {
         && !CLICKED.with(|c| c.replace(true))
     {
         for title in clicks.split('|').filter(|t| !t.is_empty()) {
+            // `dblclick:#window@x,y`: a double click at that point (from
+            // the window's top-left corner), through the window.
+            if let Some(at) = title.strip_prefix("dblclick:#window@") {
+                if let Some(window) = root.window() {
+                    window_double_click(&window, at);
+                }
+                continue;
+            }
             // Sheets first: they are in front.
             let found = sheet_roots()
                 .iter()
@@ -6400,9 +6576,11 @@ fn run_automation(mtm: MainThreadMarker) {
             write_png(&content, &format!("{path}.alert.png"));
             println!("prism-macos: alert snapshot written to {path}.alert.png");
         }
-        // Layers (toasts) and popovers drawn over the window.
-        if std::env::var_os("PRISM_SNAPSHOT_OVERLAYS").is_some()
-            && let Some(window) = root.window()
+        // Layers (toasts) and popovers drawn over the window, and a custom
+        // chrome's traffic lights (#67).
+        if let Some(window) = root.window()
+            && (std::env::var_os("PRISM_SNAPSHOT_OVERLAYS").is_some()
+                || crate::chrome::controls(&window).is_some())
         {
             snapshot_with_overlays(&window, &path);
             std::process::exit(0);

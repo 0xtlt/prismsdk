@@ -15,6 +15,12 @@
 //! - `ctrlclick:Label` (`@x,y`) clicks with Ctrl held;
 //! - `dblclick:Label` (`@x,y`) clicks twice, 60 ms apart (a double
 //!   click: two `click:` steps come slower than the double-click time);
+//! - `rclick:Label` (`@x,y`) clicks with the right button;
+//! - `#window` aims at the window's client area itself, from its top-left
+//!   corner (`click:#window@20,20`): what the scene does not hold, such as
+//!   the menu bar and, with a custom chrome, its caption regions. With
+//!   `PRISM_TRACE_INPUT`, each step logs the window's frame and whether it
+//!   is maximized, and so does the end of the steps;
 //! - `chord:ctrl+c` presses keys together (`ctrl`, `shift`, `alt`, a
 //!   letter or a digit, `home`, `end`, the arrows, `enter`, `backspace`,
 //!   `delete`, `f1` to `f12`: `chord:alt+f4` closes the window);
@@ -35,19 +41,20 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
     KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK,
-    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_END,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+    VIRTUAL_KEY, VK_END,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GA_ROOT, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
-    HWND_NOTOPMOST, HWND_TOPMOST, KillTimer, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow, SetTimer,
-    SetWindowPos, WindowFromPoint,
+    GetWindowRect, HWND_NOTOPMOST, HWND_TOPMOST, IsZoomed, KillTimer, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOMOVE, SWP_NOSIZE,
+    SetForegroundWindow, SetTimer, SetWindowPos, WindowFromPoint,
 };
 
 use crate::imp::{main_hwnd, with_state};
@@ -65,6 +72,8 @@ enum Act {
     Move(i32, i32),
     Down,
     Up,
+    /// The right button, pressed or released (`true`).
+    Right(bool),
     /// A double click: press, release, press, release, 60 ms apart, from
     /// a thread of its own (a press on a caption region holds the UI
     /// thread in the system's drag loop, where this timer's next input
@@ -103,6 +112,7 @@ pub fn step(step: &str) -> Option<bool> {
             | "zoom"
             | "ctrlclick"
             | "dblclick"
+            | "rclick"
             | "chord"
             | "pinch"
             | "tswipe"
@@ -150,8 +160,14 @@ fn label_of(step: &str) -> &str {
         .unwrap_or_default()
 }
 
-/// The node showing `label`.
+/// `#window`: the window's client area.
+const WINDOW: &str = "#window";
+
+/// The node showing `label` (`Some(0)` for [`WINDOW`]).
 fn find(label: &str) -> Option<prism_core::NodeId> {
+    if label == WINDOW {
+        return Some(0);
+    }
     with_state(|s| {
         let scene = &s.renderer.widgets.scene;
         match scene.find_by_label(label) {
@@ -194,6 +210,7 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
             })
             .unwrap_or_default();
         log!("PRISM_CLICK: {kind} on {label:?} ({view}) from ({x}, {y}) px");
+        log_window();
     }
     let nums: Vec<f32> = args
         .split(',')
@@ -222,6 +239,10 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
         }
         "dblclick" => {
             acts.push((Act::Double, 400));
+        }
+        "rclick" => {
+            acts.push((Act::Right(false), 60));
+            acts.push((Act::Right(true), 120));
         }
         "ctrlclick" => {
             acts.push((Act::Key(0x11, false), 40));
@@ -330,12 +351,18 @@ fn locate(label: &str, at: Option<(f32, f32)>) -> Option<((i32, i32), f32)> {
     let id = find(label)?;
     with_state(|s| {
         let w = &s.renderer.widgets;
-        let r = w.scene.window_rect(id);
+        let window = label == WINDOW;
+        let r = if window {
+            let (width, height) = w.size;
+            crate::scene::Rect::new(0., 0., width, height + crate::menubar::height())
+        } else {
+            w.scene.window_rect(id)
+        };
         let (x, y) = at.map_or((r.x + r.w / 2., r.y + r.h / 2.), |(ax, ay)| {
             (r.x + ax, r.y + ay)
         });
         // Layout starts at the app's view, under the window's menu bar.
-        let (ox, oy) = app_origin(&w.app);
+        let (ox, oy) = if window { (0., 0.) } else { app_origin(&w.app) };
         let k = w.scale();
         let mut p = POINT {
             x: ((x + ox) * k).round() as i32,
@@ -362,6 +389,24 @@ fn app_origin(app: &crate::winui::xaml::Controls::Canvas) -> (f32, f32) {
         .map_or((0., 0.), |p| (p.X, p.Y))
 }
 
+/// Logs the window's frame (screen pixels) and whether it is maximized.
+fn log_window() {
+    let main = main_hwnd();
+    let mut r = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(main, &mut r);
+    }
+    let zoomed = unsafe { IsZoomed(main) }.as_bool();
+    log!(
+        "PRISM_CLICK: window at ({}, {}), {} x {} px{}",
+        r.left,
+        r.top,
+        r.right - r.left,
+        r.bottom - r.top,
+        if zoomed { ", maximized" } else { "" }
+    );
+}
+
 /// Plays the next input, then waits its pause.
 unsafe extern "system" fn play(_: HWND, _: u32, timer: usize, _: u32) {
     unsafe {
@@ -369,6 +414,10 @@ unsafe extern "system" fn play(_: HWND, _: u32, timer: usize, _: u32) {
     }
     let Some((act, pause)) = QUEUE.with(|q| q.borrow_mut().pop_front()) else {
         PLAYING.set(false);
+        if crate::win::env("PRISM_TRACE_INPUT").is_some() {
+            log!("PRISM_CLICK: the steps played");
+            log_window();
+        }
         unsafe {
             let _ = SetWindowPos(
                 main_hwnd(),
@@ -385,7 +434,7 @@ unsafe extern "system" fn play(_: HWND, _: u32, timer: usize, _: u32) {
     let pause = match act {
         // In sight first (the scroll views around it move), then aimed.
         Act::Aim(step) => {
-            if let Some(id) = find(label_of(&step)) {
+            if let Some(id) = find(label_of(&step)).filter(|&id| id != 0) {
                 with_state(|s| {
                     if let Some(e) = s.renderer.widgets.outer(id) {
                         let _ = e.StartBringIntoView();
@@ -486,6 +535,12 @@ fn allowed(act: &Act) -> bool {
             ok
         }
         Act::Up => !DROPPED.replace(false),
+        Act::Right(false) => {
+            let ok = ours_at(cursor()) && active();
+            DROPPED.set(!ok);
+            ok
+        }
+        Act::Right(true) => !DROPPED.replace(false),
         Act::Double => ours_at(cursor()) && active(),
         Act::Touch(contacts) => match contacts.first() {
             Some(c) if c.phase == crate::touch::Phase::Down => {
@@ -543,6 +598,8 @@ fn send(act: &Act) {
         Act::Move(x, y) => (MOUSEEVENTF_MOVE, 0, Some((x, y))),
         Act::Down => (MOUSEEVENTF_LEFTDOWN, 0, None),
         Act::Up => (MOUSEEVENTF_LEFTUP, 0, None),
+        Act::Right(false) => (MOUSEEVENTF_RIGHTDOWN, 0, None),
+        Act::Right(true) => (MOUSEEVENTF_RIGHTUP, 0, None),
         Act::Wheel(d, false) => (MOUSEEVENTF_WHEEL, d, None),
         Act::Wheel(d, true) => (MOUSEEVENTF_HWHEEL, d, None),
         // A pause (the end of a chord).

@@ -66,7 +66,9 @@ OPTIONS:
     --direct                macOS: Developer ID, hardened runtime, a .dmg
     --docker                Web: the production Docker image
     --target <triple>       Windows: the Rust target (default: this PC's; elsewhere
-                            x86_64-pc-windows-gnu, with MinGW-w64 or in Docker)
+                            x86_64-pc-windows-gnu, with MinGW-w64 or in Docker);
+                            aarch64-pc-windows-gnullvm (arm64) and
+                            i686-pc-windows-gnullvm (x86) with llvm-mingw
 
 PUBLISH OPTIONS:
     --dry-run               Build and check everything, send nothing

@@ -210,6 +210,11 @@ pub(crate) fn hit(view: &PrismView, point: NSPoint) -> *mut NSView {
             continue;
         }
         if let Some(found) = sub.hitTest(p) {
+            // Text in a region that moves the window moves it too (#67):
+            // the region takes the press, not the label.
+            if view.moves_window() && passive_text(&found, view) {
+                break;
+            }
             return Retained::autorelease_return(found);
         }
     }
@@ -219,6 +224,36 @@ pub(crate) fn hit(view: &PrismView, point: NSPoint) -> *mut NSView {
     }
     let me: &NSView = view;
     Retained::autorelease_return(objc2::Message::retain(me))
+}
+
+/// Whether `found` is text that takes no press (not editable, selectable
+/// or clickable, no link) with nothing that takes presses between it and
+/// `region`: a press on it belongs to `region`.
+fn passive_text(found: &NSView, region: &PrismView) -> bool {
+    let Some(field) = found.downcast_ref::<objc2_app_kit::NSTextField>() else {
+        return false;
+    };
+    if field.isEditable() || field.isSelectable() {
+        return false;
+    }
+    if let Some(label) = found.downcast_ref::<crate::label::PrismLabel>()
+        && label.interactive()
+    {
+        return false;
+    }
+    let mut up = unsafe { found.superview() };
+    while let Some(v) = up {
+        if &*v == region as &NSView {
+            return true;
+        }
+        if v.downcast_ref::<PrismView>()
+            .is_some_and(|p| p.takes_presses())
+        {
+            return false;
+        }
+        up = unsafe { v.superview() };
+    }
+    false
 }
 
 /// Whether `view` crops its children (`clip`, a picture): then nothing of

@@ -24,6 +24,8 @@
 #                          see it for PRISM_WINDOWS_HOST and the others)
 #   PRISM_SMOKE_PROFILE    cargo profile (default dev; release builds with --release)
 #   PRISM_SMOKE_NO_SYNC=1  run what the remote copy already has (and its build)
+#   PRISM_SMOKE_EXE        run this executable instead of building one (see
+#                          scripts/windows-smoke.sh)
 # The checks need python3.
 set -eu
 
@@ -44,11 +46,12 @@ case $profile in
   release) build="cargo build -p counter --release" exe=release ;;
   *) build="cargo build -p counter --profile $profile" exe=$profile ;;
 esac
+app=${PRISM_SMOKE_EXE:-target\\$exe\\counter.exe}
 mkdir -p "$out"
 
 if [ "${PRISM_SMOKE_NO_SYNC:-}" != 1 ]; then
   "$remote" sync
-  "$remote" run "$build"
+  [ -n "${PRISM_SMOKE_EXE:-}" ] || "$remote" run "$build"
 fi
 "$remote" run "if not exist target\\windows-a11y mkdir target\\windows-a11y"
 
@@ -79,7 +82,7 @@ while IFS="$tab" read -r name path click env press wait; do
   [ "$wait" = - ] && wait=
   rm -f "$out/$name.json" "$out/$name.err"
   {
-    printf '%s\r\n' "\$line = 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\windows\\a11y-dump.ps1 -Exe target\\$exe\\counter.exe -WorkingDirectory examples\\counter -Path $path -Out target\\windows-a11y\\$name.json -EnvBase64 $env'"
+    printf '%s\r\n' "\$line = 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\windows\\a11y-dump.ps1 -Exe $app -WorkingDirectory examples\\counter -Path $path -Out target\\windows-a11y\\$name.json -EnvBase64 $env'"
     [ -n "$click" ] && printf '%s\r\n' "\$line += ' -ClickBase64 $click'"
     [ -n "$press" ] && printf '%s\r\n' "\$line += ' -PressBase64 $press'"
     [ -n "$wait" ] && printf '%s\r\n' "\$line += ' -WaitFor $wait'"

@@ -166,10 +166,12 @@ pub(crate) fn refresh(
 }
 
 /// Places the bar buttons in a header `w` wide and `h` tall: leading ones
-/// after Back (when it shows), trailing ones from the trailing edge in.
-pub(crate) fn layout(bar: &Bar, back: &NSButton, w: f64, h: f64, rtl: bool) {
+/// after Back (when it shows), trailing ones from the trailing edge in,
+/// clear of the room (left, right) kept for the traffic lights.
+pub(crate) fn layout(bar: &Bar, back: &NSButton, w: f64, h: f64, rtl: bool, room: (f64, f64)) {
     const GAP: f64 = 8.;
-    let mut lead = GAP;
+    let (lead_room, trail_room) = if rtl { (room.1, room.0) } else { room };
+    let mut lead = GAP + lead_room;
     if !back.isHidden() {
         lead += back.fittingSize().width + GAP;
     }
@@ -180,7 +182,7 @@ pub(crate) fn layout(bar: &Bar, back: &NSButton, w: f64, h: f64, rtl: bool) {
         .filter(|(_, t)| *t)
         .map(|(b, _)| b.fittingSize().width + GAP)
         .sum();
-    let mut trail = w - trailing;
+    let mut trail = w - trail_room - trailing;
     for (b, is_trailing) in bar.iter() {
         let size = b.fittingSize();
         let x = if *is_trailing { &mut trail } else { &mut lead };

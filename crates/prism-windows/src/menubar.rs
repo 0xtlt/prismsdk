@@ -9,6 +9,8 @@
 //! rather than a strip of Mica between two solid surfaces. It stays a row
 //! under the title bar: the title bar keeps the system's caption buttons,
 //! drag and snap layouts, and narrow windows keep room for every menu.
+//! With a custom chrome (`titlebar.rs`) it is the window's top row: the
+//! caption buttons sit at its end and its empty part moves the window.
 //!
 //! Shortcuts are `KeyboardAccelerator`s of the bar itself, so they work
 //! with every menu closed, and items show their text (`Ctrl+N`). A hint
@@ -56,6 +58,26 @@ pub fn height() -> f32 {
     SHOWN.get()
 }
 
+/// The menu bar's row along the window's top edge, `width` DIPs wide,
+/// and its menus' frames (window DIPs), if it is shown.
+pub fn row(width: f32) -> Option<crate::chrome::TopBar> {
+    let bar = BAR.with(|b| b.borrow().clone())?;
+    let controls = bar
+        .Items()
+        .map(|items| {
+            items
+                .into_iter()
+                .filter_map(|i| i.cast::<UIElement>().ok())
+                .filter_map(|e| crate::titlebar::bounds(&e))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(crate::chrome::TopBar {
+        frame: crate::scene::Rect::new(0., 0., width, SHOWN.get()),
+        controls,
+    })
+}
+
 /// The window's width changed (DIPs).
 pub fn resize(width: f32) {
     BAR.with(|b| {
@@ -97,6 +119,9 @@ pub fn set(s: &mut State, menus: Vec<MenuSpec>) {
                 let placed = (|| -> Result<()> {
                     bar.SetBackground(&brush(w.palette.window)?)?;
                     bar.SetHeight(HEIGHT as f64)?;
+                    // Its empty part moves a custom chrome's window: where
+                    // its menus are follows them.
+                    crate::titlebar::watch(&bar.cast()?)?;
                     bar.SetWidth(w.size.0 as f64)?;
                     // Above the app, under its overlays.
                     w.root.Children()?.InsertAt(1, &bar)?;
@@ -131,6 +156,8 @@ pub fn set(s: &mut State, menus: Vec<MenuSpec>) {
     let k = w.scale();
     w.resize(client.right as f32 / k, client.bottom as f32 / k);
     crate::imp::relayout(s);
+    // The caption buttons are in its row now, or over the app's views.
+    crate::titlebar::report_controls(s);
 }
 
 fn build(menus: &[MenuSpec]) -> Result<MenuBar> {
@@ -140,6 +167,7 @@ fn build(menus: &[MenuSpec]) -> Result<MenuBar> {
     let mut keys: Vec<char> = Vec::new();
     for m in menus {
         let item = MenuBarItem::new()?;
+        crate::titlebar::watch(&item.cast()?)?;
         item.SetTitle(&h(&m.title))?;
         // Alt + the title's first free letter opens it.
         if let Some(c) = m
