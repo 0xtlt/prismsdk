@@ -8,6 +8,9 @@ App SDK in a plain Win32 window. Prism's controls are WinUI controls
 are `Border`s and Composition shadows, all laid out by prism-native's
 flexbox like on the other platforms.
 
+The Windows backend is a preview: it is published so you can try it, and
+its gaps are listed under [Not yet](#not-yet).
+
 The Windows App SDK is **self-contained**: nothing is installed on the
 user's machine. The build fetches it from nuget.org once and puts its
 runtime next to the executable (about 54 MB, x64); `prism_build::link_app()`

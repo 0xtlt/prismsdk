@@ -11,7 +11,7 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 
 Also tvOS, watchOS, visionOS, Linux (GTK 4), Windows, Wear OS, Android TV and car screens.
 
-**Status: 0.x preview.** The API may change between 0.x versions (a breaking change raises the middle number, as semver allows before 1.0); the [changelog](CHANGELOG.md) lists each one.
+**Status: 0.x preview.** The API may change between 0.x versions (a breaking change raises the middle number, as semver allows before 1.0); the [changelog](CHANGELOG.md) lists each one. Windows is the newest backend: it ships so you can try it, and what is not done or not yet seen working on a PC is listed under [Windows: Not yet](docs/src/platforms/windows.md#not-yet).
 
 **Documentation: the [Prism book](https://0xtlt.github.io/prismsdk/)** (sources in [`docs/`](docs/src/SUMMARY.md)), and the API reference on docs.rs. Each section below is a summary of a chapter.
 
@@ -200,13 +200,13 @@ An APK without Gradle; a small Java host shows real Android views. Phones, table
 
 ## Windows
 
-Real WinUI 3 controls (Windows App SDK, self-contained: its runtime goes next to the app) in a Win32 window, laid out by prism-native; UI Automation from WinUI; MSVC or MinGW. Notifications, tray, menu bar, secrets and Windows Hello; `prism build windows` makes a zip. → [Windows](docs/src/platforms/windows.md)
+Real WinUI 3 controls (Windows App SDK, self-contained: its runtime goes next to the app) in a Win32 window, laid out by prism-native; UI Automation from WinUI; MSVC or MinGW. Notifications, tray, menu bar, secrets and Windows Hello; `prism build windows` makes a zip. A preview to try: no installer or Store submission yet, and some system dialogs are not yet proven on screen ([Not yet](docs/src/platforms/windows.md#not-yet)). → [Windows](docs/src/platforms/windows.md)
 
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input` (secure, keyboards, submit), `text_area`, `toggle`, `slider`, `picker`, `date_picker`, `spinner`, `scroll`, `picture`, `shape`, `scene3d`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, remote push (APNs, FCM, Web Push, UnifiedPush) with a server-side sender, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, charts (also in widgets), async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
-Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV), Windows (first milestone: see [Windows](docs/src/platforms/windows.md#not-yet)).
+Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV), Windows (preview: see [Windows](docs/src/platforms/windows.md#not-yet)).
 
 ## License
 
