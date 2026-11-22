@@ -402,7 +402,7 @@ fn manifest(p: &Project, arch: &str, publisher: String) -> Result<msix::Manifest
         publisher_display_name: p.publisher.clone().unwrap_or_else(|| p.name.clone()),
         description: p.description.clone().unwrap_or_else(|| p.name.clone()),
         executable: format!("{}.exe", p.package),
-        languages: p.languages.clone(),
+        languages: msix::resource_languages(&p.languages),
         push_app_id: p.wns_app_id.clone(),
         device_capabilities: device_capabilities(p),
         publisher,

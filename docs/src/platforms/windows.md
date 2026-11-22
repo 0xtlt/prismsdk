@@ -645,7 +645,7 @@ The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
 | `Identity Version` | `[app] version`'s three numbers and 0 (`1.2.0.0`): the Store wants the fourth part to be 0, so `[app] build` stays in the executable's file version only. Each MSIX release needs a higher `[app] version`: Windows updates an installed package only to a higher version. A part that is not a number up to 65535 stops the build (in `[app] version`, or in `[app] build`, the packaged executable's fourth part), where it used to become 0 |
 | `ProcessorArchitecture` | the target (`x64`, `arm64`, `x86`) |
 | `DisplayName`, `PublisherDisplayName`, `Description` | `[app] name`, `[windows] publisher` (else the name), `[app] description` (else the name) |
-| `Resources` | the app's languages (else `en-us`) |
+| `Resources` | the app's languages, its `locales/*.json` catalogs' names with `_` written `-` (`pt_BR` → `pt-BR`; a name that is not a BCP-47 tag is left out with a warning), else `en-us` |
 | `PackageDependency` | `Microsoft.WindowsAppRuntime.2`, `MinVersion` 2.7.0.0: the Windows App SDK release Prism builds with |
 | `TargetDeviceFamily` | `Windows.Desktop`, Windows 10 1809 (`10.0.17763.0`) to `10.0.26100.0` (tested) |
 | `Application` | the executable, `Windows.FullTrustApplication`, and the `runFullTrust` capability |

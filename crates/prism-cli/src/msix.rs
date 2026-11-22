@@ -584,6 +584,49 @@ impl Manifest {
     }
 }
 
+/// A `locales/<name>.json` catalog's name as an MSIX `Resource Language`:
+/// `_` written `-` (`pt_BR` → `pt-BR`), then a BCP-47 tag's shape (a
+/// language of 2 or 3 letters, then subtags of 1 to 8 letters and digits,
+/// a one-character subtag followed by another); `None` for anything else.
+pub fn resource_language(name: &str) -> Option<String> {
+    let tag = name.replace('_', "-");
+    let mut parts = tag.split('-');
+    let language = parts.next()?;
+    if !(2..=3).contains(&language.len()) || !language.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    let rest: Vec<&str> = parts.collect();
+    for (i, p) in rest.iter().enumerate() {
+        if !(1..=8).contains(&p.len()) || !p.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return None;
+        }
+        if p.len() == 1 && i + 1 == rest.len() {
+            return None;
+        }
+    }
+    Some(tag)
+}
+
+/// The catalogs' names as the manifest's languages, without duplicates;
+/// names that are not language tags are left out with a warning.
+pub fn resource_languages(names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        match resource_language(name) {
+            Some(tag) => {
+                if !out.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+                    out.push(tag);
+                }
+            }
+            None => eprintln!(
+                "warning: locales/{name}.json: {name:?} is not a language tag (like `fr` or \
+                 `pt-BR`), so the MSIX does not list it as a language"
+            ),
+        }
+    }
+    out
+}
+
 /// The package name of a bundle id: 3 to 50 letters, digits, `.` and `-`
 /// (`_` written `-`).
 pub fn package_name(bundle_id: &str) -> Result<String, String> {
@@ -792,6 +835,32 @@ mod tests {
         } else {
             raw.to_vec()
         }
+    }
+
+    #[test]
+    fn resource_languages_are_tags() {
+        assert_eq!(resource_language("pt_BR").as_deref(), Some("pt-BR"));
+        assert_eq!(
+            resource_language("zh-Hant-TW").as_deref(),
+            Some("zh-Hant-TW")
+        );
+        assert_eq!(resource_language("fr").as_deref(), Some("fr"));
+        assert_eq!(resource_language("en-x-test").as_deref(), Some("en-x-test"));
+        for bad in [
+            "",
+            "f",
+            "english",
+            "fr-",
+            "fr--CA",
+            "fr-x",
+            "notes",
+            "fr.old",
+            "de-toolongtag",
+        ] {
+            assert_eq!(resource_language(bad), None, "{bad}");
+        }
+        let names = ["en", "fr", "pt_BR", "pt-br", "README", "zh_Hans"].map(String::from);
+        assert_eq!(resource_languages(&names), ["en", "fr", "pt-BR", "zh-Hans"]);
     }
 
     #[test]
