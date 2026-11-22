@@ -25,7 +25,7 @@ use crate::winui::xaml::Controls::{
 use crate::winui::xaml::Media::Brush;
 use crate::winui::xaml::{
     Application, HorizontalAlignment, RoutedEventHandler, Style as XamlStyle, TextTrimming,
-    VerticalAlignment,
+    UIElement, VerticalAlignment,
 };
 use crate::winui::{boxed, brush, h, thickness, uniform};
 
@@ -139,6 +139,11 @@ impl Header {
         trailing.SetPadding(thickness(0., 0., 8., 0.))?;
         grid.Children()?.Append(&left)?;
         grid.Children()?.Append(&trailing)?;
+        // Along the window's top edge, its empty part moves the window
+        // (`titlebar.rs`): where its buttons are follows them.
+        for e in [root.cast()?, left.cast()?, trailing.cast()?] {
+            crate::titlebar::watch(&e)?;
+        }
         Ok(Header {
             root,
             stack,
@@ -152,15 +157,19 @@ impl Header {
         })
     }
 
-    /// Shows the stack's top screen: Back (or Close), title, bar buttons.
+    /// Shows the stack's top screen: Back (or Close), title, bar buttons;
+    /// its trailing end keeps `inset` free (the caption buttons over it).
     pub fn update(
         &mut self,
         scene: &Scene,
         stack: NodeId,
         pal: &Palette,
         width: f32,
+        inset: f32,
     ) -> Result<()> {
         self.root.SetWidth(width.max(0.) as f64)?;
+        self.trailing
+            .SetPadding(thickness(0., 0., 8. + inset, 0.))?;
         self.root.SetHeight(HEADER as f64)?;
         self.root.SetBackground(&brush(pal.window)?)?;
         self.root.SetBorderBrush(&brush(pal.divider)?)?;
@@ -231,6 +240,17 @@ impl Header {
         }
         Ok(())
     }
+
+    /// What takes clicks in it: Back, the bar buttons.
+    pub fn controls(&self) -> Vec<UIElement> {
+        let mut out: Vec<UIElement> = self.back.cast().into_iter().collect();
+        for panel in [&self.leading, &self.trailing] {
+            if let Ok(children) = panel.Children() {
+                out.extend(children);
+            }
+        }
+        out
+    }
 }
 
 /// A bar button: its Fluent icon, else its title; no chrome until hovered;
@@ -287,6 +307,7 @@ impl TabBar {
         bar.SetVerticalAlignment(VerticalAlignment::Center)?;
         bar.SetMargin(thickness(4., 0., 4., 0.))?;
         root.SetChild(&bar)?;
+        crate::titlebar::watch(&root.cast()?)?;
         bar.SelectionChanged(&TypedEventHandler::<
             SelectorBar,
             SelectorBarSelectionChangedEventArgs,
@@ -309,8 +330,18 @@ impl TabBar {
         })
     }
 
-    pub fn update(&mut self, scene: &Scene, tabs: NodeId, pal: &Palette, width: f32) -> Result<()> {
+    /// Shows the tabs; its trailing end keeps `inset` free (the caption
+    /// buttons over it).
+    pub fn update(
+        &mut self,
+        scene: &Scene,
+        tabs: NodeId,
+        pal: &Palette,
+        width: f32,
+        inset: f32,
+    ) -> Result<()> {
         self.root.SetWidth(width.max(0.) as f64)?;
+        self.bar.SetMargin(thickness(4., 0., 4. + inset, 0.))?;
         self.root.SetHeight(TAB_BAR as f64)?;
         self.root.SetBackground(&brush(pal.window)?)?;
         self.root.SetBorderBrush(&brush(pal.divider)?)?;
@@ -340,6 +371,7 @@ impl TabBar {
                     fi.SetGlyph(&h(&g.to_string()))?;
                     item.SetIcon(&fi)?;
                 }
+                crate::titlebar::watch(&item.cast()?)?;
                 items.Append(&item)?;
             }
             self.shown = want;
@@ -353,6 +385,14 @@ impl TabBar {
             }
         }
         Ok(())
+    }
+
+    /// What takes clicks in it: its tabs.
+    pub fn controls(&self) -> Vec<UIElement> {
+        self.bar
+            .Items()
+            .map(|items| items.into_iter().filter_map(|i| i.cast().ok()).collect())
+            .unwrap_or_default()
     }
 }
 

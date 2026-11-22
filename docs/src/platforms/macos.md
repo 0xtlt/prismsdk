@@ -103,7 +103,13 @@ impl Render for Notes {
   keep their own clicks; text and plain containers inside move the window.
   On a clickable element itself the click wins: put it on the container.
 - Containers outside a `.window_drag()` region don't move the window, even in
-  the title bar strip.
+  the title bar strip. A tab bar or a navigation header along the window's
+  top edge is the exception, as Safari's and Finder's tab bars are: its
+  empty part moves the window and takes the double click, while its tabs,
+  Back and bar buttons keep their clicks. The same bars do so on Windows.
+  `PRISM_CLICK=dblclick:#window@x,y` (dev builds) double-clicks at that
+  point of the window, and the log gives the window's frame before and
+  after, zoomed or minimized.
 
 Windows has it too, with its caption buttons at the top right
 ([Windows › Custom window chrome](windows.md#custom-window-chrome)). Other

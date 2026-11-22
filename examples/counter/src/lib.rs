@@ -132,8 +132,10 @@ pub fn run() {
 }
 
 /// A screen with the theme's background and a scrollable body.
-/// `PRISM_CHROME=custom`: the window has no title bar (macOS, Windows);
-/// the home screen draws one (`custom_title_bar`).
+/// `PRISM_CHROME=custom`: the window has no title bar (macOS, Windows).
+/// On Windows the menu bar's row takes its place: the caption buttons sit
+/// at its end and its empty part moves the window. On macOS the home
+/// screen draws one (`custom_title_bar`).
 fn window_chrome() -> WindowChrome {
     match std::env::var("PRISM_CHROME").as_deref() {
         Ok("custom") => WindowChrome::Custom {
@@ -143,9 +145,11 @@ fn window_chrome() -> WindowChrome {
     }
 }
 
-/// The app's own title bar, with custom window chrome: it moves the
-/// window and keeps room for the window's buttons (at the left on macOS,
-/// the right on Windows); its button keeps its clicks.
+/// The app's own title bar, with custom window chrome, when the window's
+/// buttons are over the app's views (`window_controls()`: macOS; Windows
+/// without a menu bar, whose row holds them otherwise): it moves the
+/// window and keeps room for the buttons (at the left on macOS, the right
+/// on Windows); its button keeps its clicks.
 fn custom_title_bar(cx: &mut Context<Home>) -> Option<prism::Div> {
     let controls = cx.window_controls()?;
     let (left, right) = controls.insets(cx.window_size().0);

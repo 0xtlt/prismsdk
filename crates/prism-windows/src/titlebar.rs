@@ -3,17 +3,22 @@
 //! (`AppWindowTitleBar::ExtendsContentIntoTitleBar`); the system still
 //! draws the caption buttons, over the content's top right corner, on a
 //! transparent background and in the app's light or dark theme. The
-//! `.window_drag()` views are the window's caption regions and what keeps
-//! its presses inside them passthrough regions (`InputNonClientPointerSource`),
-//! set again after each layout and scroll; `cx.window_controls()` is the
-//! buttons' corner (`RightInset` or `LeftInset`, `Height`).
+//! window's top bar (the menu bar, else a tab bar or a navigation header
+//! along the top edge) and the `.window_drag()` views are its caption
+//! regions, and what keeps its presses inside them passthrough regions
+//! (`InputNonClientPointerSource`, `chrome.rs` has the rules), set again
+//! after each layout and scroll, and when a bar's menus, tabs or buttons
+//! move. `cx.window_controls()` is the buttons' corner (`RightInset` or
+//! `LeftInset`, `Height`) when they are over the app's views; with a menu
+//! bar they are in its row, and it is `None`.
 
 use core::ffi::c_void;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use prism_core::WindowControls;
+use prism_core::{NodeId, WindowControls};
 use windows::Foundation::IReference;
+use windows::Foundation::Point;
 use windows::Graphics::RectInt32;
 use windows::UI::Color;
 use windows::Win32::Foundation::{HWND, RECT};
@@ -23,8 +28,11 @@ use windows_core::{
     GUID, HRESULT, IInspectable, IInspectable_Vtbl, IUnknown, IUnknown_Vtbl, Interface, Result,
 };
 
-use crate::chrome;
+use crate::chrome::{self, TopBar};
 use crate::imp::State;
+use crate::scene::{HEADER, Rect, Scene, TAB_BAR};
+use crate::view::Bar as ViewBar;
+use crate::widgets::Win;
 use crate::win::log;
 use crate::winui::bindings::Microsoft::UI::Input::{
     InputNonClientPointerSource, NonClientRegionKind,
@@ -32,6 +40,7 @@ use crate::winui::bindings::Microsoft::UI::Input::{
 use crate::winui::bindings::Microsoft::UI::Windowing::{
     AppWindow, AppWindowTitleBar, TitleBarTheme,
 };
+use crate::winui::xaml::{FrameworkElement, SizeChangedEventHandler, UIElement, Visibility};
 
 /// Regions in pixels: captions, passthroughs.
 type Pixels = (Vec<[i32; 4]>, Vec<[i32; 4]>);
@@ -43,7 +52,9 @@ struct Bar {
     input: InputNonClientPointerSource,
     /// The regions set last (`None`: set them again).
     regions: Option<Pixels>,
-    /// The caption buttons' frame reported last.
+    /// The caption buttons' frame (DIPs from the window's top left).
+    buttons: Option<WindowControls>,
+    /// What `cx.window_controls()` was told last.
     reported: Option<Option<WindowControls>>,
 }
 
@@ -100,6 +111,7 @@ fn make(hwnd: HWND, dark: bool) -> Result<Option<Bar>> {
         title,
         input,
         regions: None,
+        buttons: None,
         reported: None,
     }))
 }
@@ -141,22 +153,39 @@ pub fn invalidate() {
     });
 }
 
-/// The drag regions follow the views (after a layout or a scroll).
+/// The caption buttons' frame, with a custom chrome.
+fn buttons() -> Option<WindowControls> {
+    BAR.with(|b| b.borrow().as_ref().and_then(|bar| bar.buttons))
+}
+
+/// The drag regions follow the views (after a layout or a scroll) and the
+/// window's top bar.
 pub fn update_regions(s: &State) {
     let Some((_, _, input)) = handles() else {
         return;
     };
     let w = &s.renderer.widgets;
     let k = w.scale();
-    let r = chrome::regions(&w.scene, |id, _| w.keeps_presses(id));
-    // The views start under the menu bar's row.
+    // The views start under the menu bar's row, which is then the top bar.
     let top = crate::menubar::height();
-    let px = |r: &crate::scene::Rect, grow| {
-        chrome::px(&crate::scene::Rect::new(r.x, r.y + top, r.w, r.h), k, grow)
-    };
+    let buttons = buttons();
+    let in_app = buttons.map(|b| WindowControls { y: b.y - top, ..b });
+    let mut r = chrome::regions(
+        &w.scene,
+        |id, _| w.keeps_presses(id),
+        |id, _| if top > 0. { None } else { bar_of(w, id) },
+        in_app.as_ref(),
+    )
+    .moved(top);
+    if let Some(row) = crate::menubar::row(w.size.0) {
+        r.extend(chrome::top_bar(&row, buttons.as_ref()));
+    }
     let pixels: Pixels = (
-        r.caption.iter().map(|r| px(r, false)).collect(),
-        r.passthrough.iter().map(|r| px(r, true)).collect(),
+        r.caption.iter().map(|r| chrome::px(r, k, false)).collect(),
+        r.passthrough
+            .iter()
+            .map(|r| chrome::px(r, k, true))
+            .collect(),
     );
     let same = BAR.with(|b| {
         b.borrow()
@@ -174,6 +203,77 @@ pub fn update_regions(s: &State) {
         }),
         Err(e) => log!("window drag regions: {e}"),
     }
+}
+
+/// The tab bar or navigation header view `id` shows at its top, and what
+/// takes clicks in it (window DIPs).
+fn bar_of(w: &Win, id: NodeId) -> Option<TopBar> {
+    let v = w.views.get(&id)?;
+    let (height, controls) = match &v.bar {
+        ViewBar::Tabs(t) => (TAB_BAR, t.controls()),
+        ViewBar::Header(hd) if w.scene.header_shown(id) => (HEADER, hd.controls()),
+        _ => return None,
+    };
+    let r = w.scene.window_rect(id);
+    Some(TopBar {
+        frame: Rect::new(r.x, r.y, r.w, height),
+        controls: controls.iter().filter_map(bounds).collect(),
+    })
+}
+
+/// The room a bar of view `id` (a tab bar, a navigation header) keeps at
+/// its trailing end for the caption buttons over it: along the window's
+/// top edge, without a menu bar.
+pub fn inset(scene: &Scene, id: NodeId) -> f32 {
+    if crate::menubar::height() > 0. {
+        return 0.;
+    }
+    let Some(b) = buttons() else {
+        return 0.;
+    };
+    let r = scene.window_rect(id);
+    if r.y.abs() >= 0.5 {
+        return 0.;
+    }
+    let (left, right) = chrome::overlap(&r, &b);
+    left + right
+}
+
+/// Where `e` is in the window (DIPs), if it is shown.
+pub fn bounds(e: &UIElement) -> Option<Rect> {
+    if e.Visibility().ok()? != Visibility::Visible {
+        return None;
+    }
+    let fe: FrameworkElement = e.cast().ok()?;
+    let (w, h) = (
+        fe.ActualWidth().ok()? as f32,
+        fe.ActualHeight().ok()? as f32,
+    );
+    if w <= 0. || h <= 0. {
+        return None;
+    }
+    // Both corners: a right-to-left element's origin is its right edge.
+    let t = e.TransformToVisual(None::<&UIElement>).ok()?;
+    let a = t.TransformPoint(Point { X: 0., Y: 0. }).ok()?;
+    let b = t.TransformPoint(Point { X: w, Y: h }).ok()?;
+    Some(Rect::new(
+        a.X.min(b.X),
+        a.Y.min(b.Y),
+        (a.X - b.X).abs(),
+        (a.Y - b.Y).abs(),
+    ))
+}
+
+/// The regions follow `e` (a bar, a menu, a tab) when its size changes:
+/// it was laid out, or what it shows changed.
+pub fn watch(e: &FrameworkElement) -> Result<()> {
+    e.SizeChanged(&SizeChangedEventHandler::new(|_, _| {
+        if handles().is_some() {
+            crate::imp::defer(Box::new(|s| update_regions(s)));
+        }
+        Ok(())
+    }))?;
+    Ok(())
 }
 
 fn set_regions(input: &InputNonClientPointerSource, (caption, pass): &Pixels) -> Result<()> {
@@ -213,21 +313,36 @@ pub fn report_controls(s: &mut State) {
         // Minimized: they stay where they were.
         return;
     }
-    let controls = chrome::controls(
+    let buttons = chrome::controls(
         r.right,
         title.LeftInset().unwrap_or(0),
         title.RightInset().unwrap_or(0),
         title.Height().unwrap_or(0),
         s.renderer.widgets.scale(),
     );
-    let changed = BAR.with(|b| {
+    // With a menu bar they are in its row: the app's views, under it,
+    // need no room for them.
+    let report = buttons.filter(|_| crate::menubar::height() <= 0.);
+    let (moved, changed) = BAR.with(|b| {
         let mut b = b.borrow_mut();
-        let bar = b.as_mut()?;
-        (bar.reported != Some(controls)).then(|| bar.reported = Some(controls))
+        let Some(bar) = b.as_mut() else {
+            return (false, false);
+        };
+        let moved = bar.buttons != buttons;
+        let changed = bar.reported != Some(report);
+        bar.buttons = buttons;
+        bar.reported = Some(report);
+        (moved, changed)
     });
-    if changed.is_some() {
-        let patches = s.runtime.set_window_chrome(false, controls);
+    if moved {
+        // The bars under them make room again.
+        s.renderer.widgets.restyle_bars();
+    }
+    if changed {
+        let patches = s.runtime.set_window_chrome(false, report);
         crate::imp::commit(s, patches);
+    } else if moved {
+        crate::imp::relayout(s);
     }
 }
 

@@ -431,19 +431,46 @@ window's `AppWindow`:
   them: `traffic_lights` is ignored. `cx.window_controls()` is their frame
   (`RightInset` and the title bar's `Height`, 32 px); `is_fullscreen()`
   stays `false`;
-- `.window_drag()` views are the window's caption regions
-  (`InputNonClientPointerSource`): a press moves the window, a double click
-  maximizes or restores it, a right click opens the window menu. Buttons,
-  controls, `on_click`, draggable views and context menus inside are
-  passthrough regions and keep their clicks; the rest of the top strip is
-  the app's. The regions follow layouts and scrolls, and there are none
-  while a dialog, sheet or popover is open. The system takes the pointer
-  over a drag region: hover refinements inside it don't apply;
-- with a menu bar, its row is the window's top edge, under the caption
-  buttons, and the app's views start under it.
+- the window's top bar moves it, as a Windows 11 title bar with menus or
+  tabs does: its empty part is a caption region
+  (`InputNonClientPointerSource`), so a press moves the window, a double
+  click maximizes or restores it, a right click opens the window menu.
+  The top bar is the menu bar's row when the app has menus
+  (`set_app_menu`): the caption buttons sit at its end, and
+  `cx.window_controls()` is `None`, since the app's views, under that
+  row, need no room for them. Without menus, it is a tab bar or a
+  navigation header along the window's top edge (each pane's, in a split
+  view): the buttons sit over its end, which it keeps free. Menus, tabs,
+  Back and bar buttons keep their clicks. The app's own content moves the
+  window only through `.window_drag()`, as on macOS: Prism cannot tell
+  which of its views are empty, and a caption region would take the
+  presses of fields, scroll views and drag gestures;
+- `.window_drag()` views are caption regions too. Buttons, controls,
+  `on_click`, draggable views and context menus inside are passthrough
+  regions and keep their clicks. The regions follow layouts, scrolls,
+  resizes, DPI changes and the bars' menus, tabs and buttons, and there
+  are none in the app's views while a dialog, sheet or popover is open
+  (the menu row stays a title bar). The system takes the pointer over a
+  drag region: hover refinements inside it don't apply.
 
-`PRISM_CHROME=custom cargo run -p counter` shows it: the home screen draws a
-title bar that moves the window, with a button that keeps its clicks.
+macOS draws its menus in the screen's menu bar, not in the window, so its
+custom chrome has no menu row: there, only `.window_drag()` regions move
+the window.
+
+`PRISM_CHROME=custom cargo run -p counter` shows it: the menu row is the
+title bar (drag it, double-click it, File and View still open), and the
+tabs, the header and the home screen sit under it as with the standard
+chrome. On macOS the home screen draws its own title bar instead.
+`PRISM_CLICK` steps prove it with real input (`#window` aims at the
+window's client area, `PRISM_TRACE_INPUT=1` logs the window's frame and
+whether it is maximized). On a Windows 11 PC, in the counter's 460-DIP
+window: `drag:#window@250,20=-200,120` moved it by (-200, 120);
+`dblclick:#window@250,20` maximized it, and a second one, on the
+maximized row, restored it; `click:#window@30,20` opened File;
+`rclick:#window@250,20` opened the window menu (Restore, Move, Size,
+Minimize, Maximize, Close). With the menus left out, the tab bar was the
+top row: a drag over its empty part moved the window, a double click
+maximized it, and a click on a tab still switched tabs.
 
 ## The Windows App SDK
 
@@ -652,7 +679,7 @@ The same as the other backends, in a desktop session:
 | Variable | |
 |---|---|
 | `PRISM_PATH` | the first route |
-| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `dblclick:Label` (a double click), `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`). The window is made the active one before the steps (a popover closes when another window takes the activation) |
+| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `dblclick:Label` (a double click), `rclick:Label` (the right button), `#window` for the window's client area itself (`click:#window@20,20`: the menu row, caption regions), `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`). The window is made the active one before the steps (a popover closes when another window takes the activation); with `PRISM_TRACE_INPUT`, each step and the end of the steps log the window's frame and whether it is maximized |
 | `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app, and its clicks (position, keys held, count) and keys (caret edges, releases) |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, and what the screen shows there, the windows above it included (a tooltip), as `<name>-screen.png`, then quits |

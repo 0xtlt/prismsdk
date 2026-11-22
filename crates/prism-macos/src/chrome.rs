@@ -1,6 +1,7 @@
 //! Custom window chrome (#67): no title bar, the content from the window's
 //! top edge, the traffic lights where the app wants them, and the app's own
-//! title bar (`.window_drag()`) moving and zooming the window.
+//! title bar (`.window_drag()`) moving and zooming the window, as does the
+//! empty part of a tab bar or navigation header along the top edge.
 //!
 //! AppKit lays the title bar out again on resizes, full screen and
 //! appearance changes, putting the buttons back in their place: the window
@@ -144,6 +145,32 @@ pub(crate) fn controls(window: &NSWindow) -> Option<WindowControls> {
         width: r.size.width as f32,
         height: r.size.height as f32,
     })
+}
+
+/// Whether `view` (a tab bar's or a navigation header's bar) runs along
+/// the top edge of a window with a custom chrome: its empty part then moves
+/// the window, as Windows' top bar does (Safari's and Finder's tab bars
+/// too). Its segments and buttons keep their clicks.
+pub(crate) fn along_top(view: &NSView) -> bool {
+    if !chrome().is_custom() || is_fullscreen() {
+        return false;
+    }
+    let Some(window) = view.window() else {
+        return false;
+    };
+    // The main window's (sheets keep their title bar).
+    if !window
+        .styleMask()
+        .contains(NSWindowStyleMask::FullSizeContentView)
+    {
+        return false;
+    }
+    let Some(content) = window.contentView() else {
+        return false;
+    };
+    // Window coordinates grow upwards.
+    let r = view.convertRect_toView(view.bounds(), None::<&NSView>);
+    (r.origin.y + r.size.height - content.frame().size.height).abs() < 0.5
 }
 
 /// A double click on a `.window_drag()` region: what System Settings ›

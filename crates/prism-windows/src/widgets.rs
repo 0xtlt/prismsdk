@@ -253,6 +253,17 @@ impl Win {
         }
     }
 
+    /// Every bar again (the caption buttons moved), at the next flush.
+    pub fn restyle_bars(&mut self) {
+        let ids: Vec<NodeId> = self
+            .views
+            .iter()
+            .filter(|(_, v)| !matches!(v.bar, Bar::None))
+            .map(|(id, _)| *id)
+            .collect();
+        self.bars.extend(ids);
+    }
+
     /// After a commit: bars, the pages shown, overlays, sticky views.
     pub fn flush(&mut self) {
         let _t = crate::perf::span(crate::perf::Cost::Flush);
@@ -266,6 +277,8 @@ impl Win {
                 continue;
             };
             let width = n.frame.w;
+            // The caption buttons over a bar along the window's top edge.
+            let inset = crate::titlebar::inset(&self.scene, id);
             let r = match &mut v.bar {
                 Bar::Header(hd) => {
                     let shown = self.scene.header_shown(id);
@@ -274,9 +287,9 @@ impl Win {
                     } else {
                         Visibility::Collapsed
                     });
-                    hd.update(&self.scene, id, &self.palette, width)
+                    hd.update(&self.scene, id, &self.palette, width, inset)
                 }
-                Bar::Tabs(t) => t.update(&self.scene, id, &self.palette, width),
+                Bar::Tabs(t) => t.update(&self.scene, id, &self.palette, width, inset),
                 Bar::None => Ok(()),
             };
             if let Err(e) = r {

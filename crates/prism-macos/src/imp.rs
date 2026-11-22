@@ -634,6 +634,9 @@ pub struct ViewIvars {
     // --- Custom window chrome (#67) ---
     /// `.window_drag()`: a press moves the window, a double click zooms it.
     window_drag: Cell<bool>,
+    /// A tab bar's or a navigation header's bar: along the window's top
+    /// edge, with a custom chrome, it moves the window like a title bar.
+    top_bar: Cell<bool>,
     // --- Drop targets (#111) ---
     /// The file types it accepts dropped (`None`: not a drop target).
     drop_types: RefCell<Option<Vec<String>>>,
@@ -1193,7 +1196,8 @@ define_class!(
             // `.window_drag()` (#67): presses that clickable descendants
             // did not take move the window; a double click zooms it.
             let iv = self.ivars();
-            if iv.window_drag.get()
+            let top_bar = iv.top_bar.get() && crate::chrome::along_top(self);
+            if (iv.window_drag.get() || top_bar)
                 && !iv.clickable.get()
                 && iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG == 0
                 && let Some(window) = self.window()
@@ -3175,6 +3179,7 @@ impl AppKit {
         let mtm = self.mtm;
         let header = PrismView::new(mtm, 0);
         *header.ivars().background.borrow_mut() = Some(NSColor::windowBackgroundColor());
+        header.ivars().top_bar.set(true);
         let separator = PrismView::new(mtm, 0);
         *separator.ivars().background.borrow_mut() = Some(NSColor::separatorColor());
         let target: &AnyObject = &self.target;
@@ -3211,6 +3216,7 @@ impl AppKit {
         let mtm = self.mtm;
         let bar = PrismView::new(mtm, 0);
         *bar.ivars().background.borrow_mut() = Some(NSColor::windowBackgroundColor());
+        bar.ivars().top_bar.set(true);
         let separator = PrismView::new(mtm, 0);
         *separator.ivars().background.borrow_mut() = Some(NSColor::separatorColor());
         let segments = NSSegmentedControl::new(mtm);
@@ -5924,6 +5930,78 @@ fn post_click(window: &NSWindow, view: &NSView) {
     }
 }
 
+/// `PRISM_CLICK=dblclick:#window@x,y`: a double click sent through
+/// `window` at (`x`, `y`) points from its content's top-left corner, as the
+/// mouse sends it (the view under the point gets it); logs the window's
+/// frame before and a second after (zoomed or minimized, as System
+/// Settings › Desktop & Dock › « Double-click a window's title bar » says).
+fn window_double_click(window: &NSWindow, at: &str) {
+    use objc2_app_kit::{NSEventModifierFlags, NSEventType};
+    let Some((x, y)) = at
+        .split_once(',')
+        .and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?)))
+    else {
+        eprintln!("prism-macos: PRISM_CLICK: dblclick:#window@{at}: not x,y");
+        return;
+    };
+    let Some(content) = window.contentView() else {
+        return;
+    };
+    let log = |w: &NSWindow, when: &str| {
+        let f = w.frame();
+        println!(
+            "prism-macos: PRISM_CLICK: window {when}: ({}, {}), {} x {}{}{}",
+            f.origin.x,
+            f.origin.y,
+            f.size.width,
+            f.size.height,
+            if w.isZoomed() { ", zoomed" } else { "" },
+            if w.isMiniaturized() {
+                ", minimized"
+            } else {
+                ""
+            }
+        );
+    };
+    log(window, "before");
+    // Window coordinates grow upwards.
+    let point = NSPoint::new(x, content.frame().size.height - y);
+    // The frame view (the title bar's container is above the content).
+    let frame = unsafe { content.superview() }.unwrap_or_else(|| content.clone());
+    let hit = frame
+        .hitTest(point)
+        .map(|v| v.class().name().to_str().unwrap_or("?").to_string());
+    println!("prism-macos: PRISM_CLICK: ({x}, {y}) hits {hit:?}");
+    let app = NSApplication::sharedApplication(window.mtm());
+    let now = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+    // The second click's press (a click count of 2) and its release,
+    // queued first: a single press would start the system's window drag.
+    let event = |kind| {
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            point,
+            NSEventModifierFlags::empty(),
+            now,
+            window.windowNumber(),
+            None,
+            0,
+            2,
+            1.,
+        )
+    };
+    if let (Some(down), Some(up)) = (
+        event(NSEventType::LeftMouseDown),
+        event(NSEventType::LeftMouseUp),
+    ) {
+        app.postEvent_atStart(&up, false);
+        window.sendEvent(&down);
+    }
+    let window = objc2::Message::retain(window);
+    on_main_after(std::time::Duration::from_secs(1), move || {
+        log(&window, "after");
+    });
+}
+
 /// A mouse drag from a third of the way into `from` to a third of the way
 /// into `to` (`PRISM_DRAG_TO`, #231), in a few steps, as the mouse sends it.
 fn post_drag(window: &NSWindow, from: &NSView, to: &NSView) {
@@ -6147,6 +6225,14 @@ fn run_automation(mtm: MainThreadMarker) {
         && !CLICKED.with(|c| c.replace(true))
     {
         for title in clicks.split('|').filter(|t| !t.is_empty()) {
+            // `dblclick:#window@x,y`: a double click at that point (from
+            // the window's top-left corner), through the window.
+            if let Some(at) = title.strip_prefix("dblclick:#window@") {
+                if let Some(window) = root.window() {
+                    window_double_click(&window, at);
+                }
+                continue;
+            }
             // Sheets first: they are in front.
             let found = sheet_roots()
                 .iter()
