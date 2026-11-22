@@ -624,7 +624,15 @@ builds on Windows and cross-compiles from macOS and Linux like the zip.
   Mac and on Windows, and `makeappx pack` of their unpacked files, which
   validates the manifest against the schemas, succeeds.
 - **The package is signed** after packing ([Signing](#signing)). Windows
-  installs only signed packages.
+  installs only signed packages for a standard user: Microsoft's unsigned
+  packages (a publisher ending with
+  `OID.2.25.311729368913984317654407730594956997722=1`, installed with
+  `Add-AppxPackage -AllowUnsigned`) may not contain an application. Per
+  user, Windows 11 25H2 refuses such a package with `0x80073D2B` (« an
+  unsigned package cannot contain executable activations »); Microsoft
+  says one with executable content must be installed for all users, by an
+  administrator. So Prism makes no unsigned test package: test with a
+  certificate the PC trusts.
 
 The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
 
@@ -667,8 +675,11 @@ expected) with the test certificate as signer; the manifest's publisher
 equals the signer's subject; both packages unpack and repack with
 `makeappx`. `Add-AppxPackage` (per user) refuses them, because the PC does
 not trust the test root, and trusting it would change the PC's
-certificate stores: so the packaged app has not been run (start, the
-framework's classes, fonts, notifications and push in a package).
+certificate stores. The unsigned route was tried too: the counter's MSIX
+with the OID publisher, `Add-AppxPackage -AllowUnsigned` for the standard
+user, refused with `0x80073D2B` (see above). So the packaged app has not
+been run (start, the framework's classes, fonts, notifications and push in
+a package).
 
 ### Signing
 
