@@ -374,7 +374,7 @@ setTimeout(function () {
     Say ("browser windows before: {0}" -f @($winsBefore | Where-Object { $bpids -contains $_.Pid }).Count)
     $vars = @{
       PRISM_PATH = '/components/media'; PRISM_WEB_URL = 'file:///' + $page.Replace('\', '/')
-      PRISM_DELAY = '9'; PRISM_AFTER = '5'; PRISM_TRACE_INPUT = '1'
+      PRISM_DELAY = '9'; PRISM_AFTER = '5'; PRISM_TRACE_INPUT = '1'; PRISM_TRACE = '1'
     }
     if ($Case -ne 's41-none') { $vars.PRISM_CLICK = "click:A web page@$At" }
     $profileDir = Join-Path $env:TEMP 'prism-onscreen-browser'

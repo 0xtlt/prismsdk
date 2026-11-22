@@ -175,9 +175,10 @@ kinds and services come next (see [Not yet](#not-yet)).
   window when the sandbox allows popups, open in the default browser, but
   only after a click or a key from the user: WebView2 has no popup
   blocker, so a script's `window.open` without a gesture opens nothing
-  (S41). Only web, mail and phone links leave the app, and each one is
-  logged (`web view N: a new window for … opens in the browser (user
-  gesture)`, `… not opened: no user gesture`). Seen on screen
+  (S41). Only web, mail and phone links leave the app. A refusal is
+  logged (`web view N: a new window for … not opened: no user gesture`),
+  and with `PRISM_TRACE` each hand-off too (`… opens in the browser (user
+  gesture)`). Seen on screen
   (`scripts/windows/onscreen.ps1`): a page's `window.open` without a
   gesture returned `null` and started no process and no window; a real
   click on its `target=_blank` link went to the https handler, and with

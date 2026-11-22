@@ -365,7 +365,9 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
         let web = matches!(uri.split(':').next(), Some("http" | "https"));
         if a.IsUserInitiated()? && web && !state.borrow().allows(page_origin(&uri).as_deref()) {
             a.SetCancel(true)?;
-            log!("web view {id}: a link to {uri} opens in the browser (another origin)");
+            if crate::perf::on() {
+                log!("web view {id}: a link to {uri} opens in the browser (another origin)");
+            }
             open_externally(&uri);
             return Ok(());
         }
@@ -438,7 +440,11 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
         let uri = a.Uri()?.to_string();
         match links::new_window(&uri, popups, a.IsUserInitiated()?) {
             Ok(()) => {
-                log!("web view {id}: a new window for {uri} opens in the browser (user gesture)");
+                if crate::perf::on() {
+                    log!(
+                        "web view {id}: a new window for {uri} opens in the browser (user gesture)"
+                    );
+                }
                 open_externally(&uri);
             }
             Err(why) => log!(
