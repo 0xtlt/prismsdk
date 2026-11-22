@@ -10,10 +10,7 @@ use std::collections::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{
-    NSAccessibility, NSButton, NSColor, NSImage, NSImageSymbolConfiguration, NSSegmentedControl,
-    NSView,
-};
+use objc2_app_kit::{NSAccessibility, NSButton, NSColor, NSImage, NSSegmentedControl, NSView};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use prism_core::navbar::ScreenConfig;
 use prism_core::{NodeId, UiEvent};
@@ -75,41 +72,12 @@ pub(crate) fn set_stack_tint(id: NodeId, back: &NSButton, tint: Option<Retained<
     });
 }
 
-/// The selected segment of a tab bar: its bezel (where the appearance
-/// draws one) and its symbol.
-pub(crate) fn tint_tabs(
-    id: NodeId,
-    segments: &NSSegmentedControl,
-    tint: Option<Retained<NSColor>>,
-) {
+/// The selected segment of a tab bar: its bezel. Its symbol and title are
+/// drawn over it as AppKit draws a selected segment's (white on the tint,
+/// gray in a window that is not key); a symbol drawn in the tint itself
+/// vanished into the bezel.
+pub(crate) fn tint_tabs(segments: &NSSegmentedControl, tint: Option<Retained<NSColor>>) {
     segments.setSelectedSegmentBezelColor(tint.as_deref());
-    TINTS.with(|m| match tint {
-        Some(t) => m.borrow_mut().insert(id, t),
-        None => m.borrow_mut().remove(&id),
-    });
-}
-
-/// Draws the selected segment's symbol in the tab bar's tint (call after
-/// the segments' images are set).
-pub(crate) fn tint_selected_segment(
-    id: NodeId,
-    segments: &NSSegmentedControl,
-    selected: usize,
-    icon: Option<&String>,
-) {
-    let Some(tint) = TINTS.with(|m| m.borrow().get(&id).cloned()) else {
-        return;
-    };
-    let Some(image) = icon.and_then(|icon| {
-        NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(icon), None)
-    }) else {
-        return;
-    };
-    let config = NSImageSymbolConfiguration::configurationWithHierarchicalColor(&tint);
-    if let Some(tinted) = image.imageWithSymbolConfiguration(&config) {
-        tinted.setTemplate(false);
-        segments.setImage_forSegment(Some(&tinted), selected as isize);
-    }
 }
 
 /// Puts the buttons of screen `top` in `header` (replacing the old ones).

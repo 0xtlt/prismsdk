@@ -206,7 +206,7 @@ Router::new().tint(rgb(0xFF9500)) // wins over the accent color
 | | Tab bar | Header bars |
 |---|---|---|
 | **iOS, iPadOS, tvOS, visionOS** | `UITabBar.tintColor` | `UINavigationBar.tintColor` (Back; bar buttons where the system tints them) |
-| **macOS** | the selected segment's symbol (and its bezel where the appearance draws one) | Back's and the bar buttons' `contentTintColor` |
+| **macOS** | the selected segment's bezel (`selectedSegmentBezelColor`), its symbol and title drawn over it as AppKit draws a selected segment's | Back's and the bar buttons' `contentTintColor` |
 | **Web** | `--prism-tint` on `.prism-tabs`: the selected tab's color | `--prism-tint` on `.prism-stack`: Back and the bar buttons |
 | **Linux** | CSS: the checked tab button | CSS: the header's buttons |
 | **Windows** | the selected tab's pill (`SelectorBarItemPillFill`) | Back and the bar buttons (their foreground, pointer-over and pressed brushes); a contrast theme's highlight wins |
