@@ -14,8 +14,9 @@ prints what the command wrote (stdout and stderr) and deletes the task.
 
 The command is a cmd.exe command line, written to a batch file (a literal %
 is %%). It starts in -WorkingDirectory (the current directory by default),
-in a hidden console: console programs show no window, GUI programs show
-theirs. Its output is printed once it exits.
+in a console that is never shown (conhost.exe --headless, so Windows
+Terminal opens no window either): console programs show no window, GUI
+programs show theirs. Its output is printed once it exits.
 
 The user must be signed in on the PC (at the console, through Remote
 Desktop or switched away from with fast user switching). Nothing runs
@@ -121,8 +122,20 @@ $definition.Settings.DisallowStartIfOnBatteries = $false
 $definition.Settings.StopIfGoingOnBatteries = $false
 $definition.Settings.ExecutionTimeLimit = 'PT{0}S' -f [int]($TimeoutSeconds + 120)
 $action = $definition.Actions.Create(0)      # TASK_ACTION_EXEC
-$action.Path = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$action.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Inside "{1}" -TimeoutSeconds {2}' -f $PSCommandPath, $dir, $TimeoutSeconds
+# A console program started in the session gets the default terminal's
+# window: Windows Terminal (Windows 11's default) shows one for as long as
+# the command runs, -WindowStyle Hidden or not. conhost.exe --headless
+# gives it a console that is never shown, and never hands it to a terminal.
+$powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Inside "{1}" -TimeoutSeconds {2}' -f $PSCommandPath, $dir, $TimeoutSeconds
+$conhost = "$env:SystemRoot\System32\conhost.exe"
+if (Test-Path -LiteralPath $conhost) {
+    $action.Path = $conhost
+    $action.Arguments = "--headless `"$powershell`" $arguments"
+} else {
+    $action.Path = $powershell
+    $action.Arguments = $arguments
+}
 
 $exitCode = 125
 try {
