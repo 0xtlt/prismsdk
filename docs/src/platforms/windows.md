@@ -16,7 +16,8 @@ Builds with the GNU (MinGW) and the MSVC toolchains, and cross-compiles
 from macOS and Linux. `prism run windows` and `prism dev windows` run the
 app; `prism build windows` ships it as a zip, or with `--msix` as an MSIX
 package that leaves the runtime to the Windows App Runtime framework
-package ([Running and shipping](#running-and-shipping)).
+package, both signed with the developer's certificate ([Running and
+shipping](#running-and-shipping)).
 
 The milestone: the `counter` example runs on every tab, its smoke test
 passes in a desktop session, and UI Automation presses its buttons. Some
@@ -534,7 +535,9 @@ debug build or set `PRISM_WINDOWS_SUBSYSTEM=console`.
    App SDK runtime (207 files, `resources.pri` among them) and the app's
    `assets/` (the folder the app declares, `PRISM_DESCRIBE=assets`), and
    nothing else: no debug symbols, no build files.
-3. Zips it: `target/windows/<package>-<version>-windows-<arch>.zip`. The
+3. Signs the executable when `PRISM_WINDOWS_CERTIFICATE` is set
+   ([Signing](#signing)).
+4. Zips it: `target/windows/<package>-<version>-windows-<arch>.zip`. The
    counter's is 26.6 MB, 67.5 MB unzipped (its 10.4 MB executable, the
    runtime and two assets), built on Windows or cross-compiled from a Mac.
 
@@ -619,16 +622,15 @@ builds on Windows and cross-compiles from macOS and Linux like the zip.
   The Windows SDK's `makeappx unpack` opens the packages Prism writes on a
   Mac and on Windows, and `makeappx pack` of their unpacked files, which
   validates the manifest against the schemas, succeeds.
-- **Signing** is not done by `prism build` yet, and Windows installs only
-  signed packages: sign it with `signtool sign /fd SHA256` and a
-  certificate whose subject is the manifest's publisher.
+- **The package is signed** after packing ([Signing](#signing)). Windows
+  installs only signed packages.
 
 The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
 
 | Manifest | From |
 |---|---|
 | `Identity Name` | `[app] bundle_id`, `_` written `-` (3 to 50 letters, digits, `.` and `-`) |
-| `Identity Publisher` | `[windows] package_publisher`, the subject of the certificate that will sign the package as Windows writes it (`CN=Example Ltd, O=Example Ltd, C=FR`), else `CN=<[windows] publisher or [app] name>` |
+| `Identity Publisher` | the signing certificate's subject as Windows writes it (`CN=Example Ltd, O=Example Ltd, C=FR`), read back from the signed executable; `[windows] package_publisher` must then be equal or unset. Unsigned: `[windows] package_publisher`, else `CN=<[windows] publisher or [app] name>` |
 | `Identity Version` | `[app] version` and `[app] build` (`1.2.0.7`) |
 | `ProcessorArchitecture` | the target (`x64`, `arm64`, `x86`) |
 | `DisplayName`, `PublisherDisplayName`, `Description` | `[app] name`, `[windows] publisher` (else the name), `[app] description` (else the name) |
@@ -653,9 +655,25 @@ Windows trusts, or the Store's signature, avoids it. The Store also wants
 the version's fourth part to be 0, which Prism fills with `[app] build`.
 There is no `prism publish windows` yet.
 
-The zip needs no signing, but a downloaded unsigned executable gets a
-SmartScreen warning on its first run; sign it with `signtool` and a
-code-signing certificate before zipping to avoid it.
+### Signing
+
+`prism build windows` signs the executable (zip and MSIX) and the MSIX
+itself with the developer's certificate, when
+`PRISM_WINDOWS_CERTIFICATE` names its `.pfx`:
+
+| Variable | |
+|---|---|
+| `PRISM_WINDOWS_CERTIFICATE` | the certificate and its private key, a PKCS #12 (`.pfx`) file |
+| `PRISM_WINDOWS_CERTIFICATE_PASS` | its password (never in `Prism.toml`) |
+| `PRISM_WINDOWS_TIMESTAMP_URL` | optional: an RFC 3161 time-stamping server, so the signature outlives the certificate |
+
+On Windows `signtool` signs (`PRISM_SIGNTOOL`, else on `PATH`, else the
+Windows SDK's); elsewhere `osslsigncode` (`PRISM_OSSLSIGNCODE`, else on
+`PATH`; `brew install osslsigncode` or `apt install osslsigncode`), which
+reads the password from a file only the user can read. The signature is
+SHA-256 Authenticode. Without the variable nothing is signed: the zip
+still runs (a downloaded unsigned executable gets a SmartScreen warning on
+its first run), the MSIX does not install.
 
 ## Desktop session
 
@@ -835,8 +853,8 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
   `scripts/windows-device-apis.sh` checks everything up to them, without a
   prompt; motion and haptics are untested on a PC with the sensors or a
   vibration device.
-- **Packaging:** the MSIX is built and checked but not installed on a PC
-  yet, so the packaged app has not run; code signing; no `prism publish windows` (Store
+- **Packaging:** the MSIX is built, signed and checked but not installed
+  on a PC yet, so the packaged app has not run; no `prism publish windows` (Store
   submission); URL schemes; an installer for the zip (Start menu shortcut,
   file associations, uninstall entry): the zip is a portable app; MSVC,
   arm64 and x86 builds not run on a PC yet ([Architectures and

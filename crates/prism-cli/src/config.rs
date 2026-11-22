@@ -21,8 +21,8 @@
 //!
 //! [windows]
 //! publisher = "Example Ltd"     # the executable's CompanyName
-//! package_publisher = "CN=Example Ltd, O=Example Ltd, C=FR"  # MSIX Publisher (default:
-//!                               # CN=<publisher>): the signing certificate's subject
+//! package_publisher = "CN=Example Ltd, O=Example Ltd, C=FR"  # MSIX Publisher (default: the
+//!                               # signing certificate's subject, else CN=<publisher>)
 //!
 //! [permissions]               # why the app asks (shown by the system)
 //! location = "Shows todos near you."

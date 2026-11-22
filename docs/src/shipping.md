@@ -10,7 +10,7 @@ symbols).
 | `ios`, `tvos`, `watchos`, `visionos` | an `.app` | real devices: `--device`, your team and a provisioning profile |
 | `android` | a signed APK, aligned for 16 KB pages | release key: `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS`, `PRISM_ANDROID_KEY_ALIAS` (default: the SDK's debug key) |
 | `linux` | a `.deb` | see [Linux](#linux) |
-| `windows` | a `.zip` of the app's folder, or an `.msix` (`--msix`) | see [Windows](#windows) |
+| `windows` | a `.zip` of the app's folder, or an `.msix` (`--msix`) | signed with `PRISM_WINDOWS_CERTIFICATE` (a `.pfx`) and `PRISM_WINDOWS_CERTIFICATE_PASS`; see [Windows](#windows) |
 
 ## Web servers
 
@@ -118,12 +118,17 @@ counter): the executable and assets only, with a manifest made from
 which the user's PC must have (its redistributable installer, or the
 Store). The package is packed in plain Rust, on any OS.
 
-Neither is signed yet: Windows installs only signed packages (sign the
-MSIX with `signtool`), and a downloaded unsigned executable gets a
-SmartScreen warning on its first run.
+Both are signed when `PRISM_WINDOWS_CERTIFICATE` names your code-signing
+certificate (a `.pfx`), with its password in `PRISM_WINDOWS_CERTIFICATE_PASS`
+(never in `Prism.toml`) and an optional `PRISM_WINDOWS_TIMESTAMP_URL`:
+the executable before zipping or packing, then the package. `signtool`
+signs on Windows, `osslsigncode` elsewhere. The MSIX's publisher is the
+certificate's subject. Windows installs only signed packages whose
+certificate it trusts; an unsigned zip runs, with a SmartScreen warning on
+its first run once downloaded.
 
 It builds on Windows, and from macOS or Linux with MinGW-w64 or in Docker.
-Not yet: code signing, Store submission, an installer for the zip. See [Windows ›
+Not yet: Store submission, an installer for the zip. See [Windows ›
 Running and shipping](platforms/windows.md#running-and-shipping) and
 [MSIX](platforms/windows.md#msix).
 

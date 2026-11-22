@@ -32,6 +32,7 @@ mod signing_tests;
 mod temp_dir;
 mod watch;
 mod windows;
+mod winsign;
 mod zip;
 
 use std::path::{Path, PathBuf};
@@ -67,7 +68,9 @@ OPTIONS:
     --direct                macOS: Developer ID, hardened runtime, a .dmg
     --docker                Web: the production Docker image
     --msix                  Windows: an MSIX package instead of a zip (it needs the
-                            Windows App Runtime framework package)
+                            Windows App Runtime framework package). Both are signed
+                            with PRISM_WINDOWS_CERTIFICATE (.pfx) and
+                            PRISM_WINDOWS_CERTIFICATE_PASS (PRISM_WINDOWS_TIMESTAMP_URL)
     --target <triple>       Windows: the Rust target (default: this PC's; elsewhere
                             x86_64-pc-windows-gnu, with MinGW-w64 or in Docker)
 

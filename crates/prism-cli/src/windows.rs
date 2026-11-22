@@ -7,6 +7,9 @@
 //! `--msix`: an MSIX package instead (`msix.rs`), its executable without the
 //! runtime's class registrations, which the Windows App Runtime framework
 //! package it depends on provides.
+//!
+//! With `PRISM_WINDOWS_CERTIFICATE` (`winsign.rs`), the executable is
+//! signed (Authenticode), and so is the MSIX.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,6 +19,7 @@ use prism_build::winappsdk;
 use crate::Options;
 use crate::config::Project;
 use crate::msix;
+use crate::winsign::{self, Certificate};
 use crate::zip::ZipWriter;
 
 const CROSS_IMAGE: &str = "prism-windows-cross";
@@ -116,6 +120,7 @@ fn plan(
 /// Builds and packages the app; returns the zip's (or the MSIX's) path.
 pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
     let (triple, toolchain) = plan(o.target.as_deref(), cfg!(windows), runs)?;
+    let certificate = Certificate::from_env()?;
     // Before the build: what Prism.toml says must fit an MSIX.
     if o.msix {
         msix::package_name(&p.bundle_id)?;
@@ -182,8 +187,8 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
         p.version,
         arch_name(arch)
     );
-    // The files as they ship, in a folder of their own: `<app name>` for
-    // the zip, `<base>-msix` for the package.
+    // The files as they ship (the executable signed), in a folder of their
+    // own: `<app name>` for the zip, `<base>-msix` for the package.
     let folder = if o.msix {
         format!("{base}-msix")
     } else {
@@ -199,12 +204,21 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
         }
         std::fs::copy(src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
     }
+    let staged_exe = stage.join(&exe_name);
+    if let Some(cert) = &certificate {
+        cert.sign(&staged_exe)?;
+    }
+    let signed = if certificate.is_some() {
+        ", signed"
+    } else {
+        ""
+    };
     if o.msix {
         let path = out.join(format!("{base}.msix"));
-        let count = build_msix(p, arch, &stage, &files, &path)?;
+        let count = build_msix(p, arch, &stage, &files, certificate.as_ref(), &path)?;
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         println!(
-            "Built {} ({:.1} MB, {count} files: {exe_name}, logos{}; needs the \
+            "Built {} ({:.1} MB, {count} files: {exe_name}, logos{}{signed}; needs the \
              {} {} framework package)",
             path.display(),
             size as f64 / 1e6,
@@ -212,6 +226,13 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
             winappsdk::FRAMEWORK_PACKAGE,
             winappsdk::FRAMEWORK_MIN_VERSION,
         );
+        if certificate.is_none() {
+            println!(
+                "Unsigned: Windows installs signed packages only. Set {} and {} to sign it.",
+                winsign::CERTIFICATE_VAR,
+                winsign::PASSWORD_VAR
+            );
+        }
         return Ok(path);
     }
     let zip_path = out.join(format!("{base}.zip"));
@@ -233,7 +254,7 @@ pub fn build(p: &Project, o: &Options) -> Result<PathBuf, String> {
         .map_err(|e| format!("{}: {e}", zip_path.display()))?;
     let size = std::fs::metadata(&zip_path).map(|m| m.len()).unwrap_or(0);
     println!(
-        "Built {} ({:.1} MB, {} files: {exe_name}, the Windows App SDK runtime{})",
+        "Built {} ({:.1} MB, {} files: {exe_name}{signed}, the Windows App SDK runtime{})",
         zip_path.display(),
         size as f64 / 1e6,
         files.len(),
@@ -255,13 +276,21 @@ fn build_env(p: &Project, msix: bool) -> Vec<(&'static str, String)> {
     env
 }
 
-/// The MSIX's `Publisher`: `[windows] package_publisher`, else
-/// `CN=<publisher or name>`; the certificate that signs the package must
-/// have it as its subject.
-fn package_publisher(p: &Project) -> String {
-    match &p.package_publisher {
-        Some(set) => set.clone(),
-        None => msix::default_publisher(p.publisher.as_deref().unwrap_or(&p.name)),
+/// The MSIX's `Publisher`: the signing certificate's subject (read back
+/// from the signed executable), which `[windows] package_publisher` must
+/// then equal; else `package_publisher`, else `CN=<publisher or name>`.
+fn package_publisher(p: &Project, signer: Option<&str>) -> Result<String, String> {
+    match (signer, &p.package_publisher) {
+        (Some(subject), Some(set)) if subject != set => Err(format!(
+            "Prism.toml [windows] package_publisher is {set:?}, but the certificate's subject \
+             is {subject:?}: an MSIX's publisher must be its signer (remove the setting or \
+             make it equal)"
+        )),
+        (Some(subject), _) => Ok(subject.to_string()),
+        (None, Some(set)) => Ok(set.clone()),
+        (None, None) => Ok(msix::default_publisher(
+            p.publisher.as_deref().unwrap_or(&p.name),
+        )),
     }
 }
 
@@ -306,16 +335,25 @@ fn manifest(p: &Project, arch: &str, publisher: String) -> Result<msix::Manifest
     })
 }
 
-/// Packs the staged files, the logos and the manifest into `path`;
-/// returns how many files it holds.
+/// Packs the staged files, the logos and the manifest into `path`, and
+/// signs it; returns how many files it holds.
 fn build_msix(
     p: &Project,
     arch: &str,
     stage: &Path,
     files: &[(PathBuf, PathBuf)],
+    certificate: Option<&Certificate>,
     path: &Path,
 ) -> Result<usize, String> {
-    let publisher = package_publisher(p);
+    let exe = stage.join(&files[0].0);
+    let signer = match certificate {
+        Some(_) => {
+            let data = std::fs::read(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
+            Some(winsign::signer_subject(&data)?)
+        }
+        None => None,
+    };
+    let publisher = package_publisher(p, signer.as_deref())?;
     msix::check_publisher(&publisher)?;
     let manifest = manifest(p, arch, publisher)?.xml();
     let icon = match &p.icon {
@@ -337,6 +375,9 @@ fn build_msix(
     pack.finish(&manifest)
         .and_then(|mut w| std::io::Write::flush(&mut w))
         .map_err(err)?;
+    if let Some(cert) = certificate {
+        cert.sign(path)?;
+    }
     Ok(files.len() + msix::LOGOS.len() + 1)
 }
 
@@ -562,12 +603,22 @@ mod tests {
     #[test]
     fn msix_publishers_and_capabilities() {
         let mut p = crate::linux::tests::project();
-        assert_eq!(package_publisher(&p), "CN=My App");
+        assert_eq!(package_publisher(&p, None).unwrap(), "CN=My App");
         p.publisher = Some("Example, Inc.".into());
-        assert_eq!(package_publisher(&p), "CN=\"Example, Inc.\"");
+        assert_eq!(package_publisher(&p, None).unwrap(), "CN=\"Example, Inc.\"");
         p.package_publisher = Some("CN=Example, O=Example, C=FR".into());
-        assert_eq!(package_publisher(&p), "CN=Example, O=Example, C=FR");
+        assert_eq!(
+            package_publisher(&p, None).unwrap(),
+            "CN=Example, O=Example, C=FR"
+        );
+        assert_eq!(
+            package_publisher(&p, Some("CN=Example, O=Example, C=FR")).unwrap(),
+            "CN=Example, O=Example, C=FR"
+        );
+        let err = package_publisher(&p, Some("CN=Other")).unwrap_err();
+        assert!(err.contains("must be its signer"), "{err}");
         p.package_publisher = None;
+        assert_eq!(package_publisher(&p, Some("CN=Other")).unwrap(), "CN=Other");
 
         p.permissions = [
             "camera",
