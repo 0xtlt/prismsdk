@@ -7,8 +7,12 @@
 //!
 //! - At startup, `PushReceived` is handled and the manager registered (the
 //!   package's manifest names the COM server WNS starts the app with,
-//!   `----WindowsAppRuntimePushServer:`); a push that started the app
-//!   (`ExtendedActivationKind::Push`) is delivered once it runs.
+//!   `----WindowsAppRuntimePushServer:`).
+//! - A push that started the app (`ExtendedActivationKind::Push`: the app
+//!   was closed) is handled without a window: the window stays hidden, a
+//!   deferral keeps the process alive while the push is delivered
+//!   (`on_background_push` for a silent one, a notification for a visible
+//!   one), then the deferral completes and the app quits.
 //! - `register_for_push` creates a channel for the remote id (the Entra app
 //!   registration's object id): its URI is the token (`PushService::Wns`).
 //!   A channel lasts 30 days: the app asks again at each start, and a day
@@ -18,7 +22,7 @@
 //!   (`prism_push::wns`): visible ones become notifications while the app
 //!   is in the background; silent ones run `on_background_push`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use prism_core::{DeviceError, PushEvent, PushMessage, PushService, PushSubscription};
 use windows::Foundation::TypedEventHandler;
@@ -35,6 +39,7 @@ use crate::winui::bindings::Microsoft::Windows::PushNotifications::{
     PushNotificationCreateChannelStatus, PushNotificationManager,
     PushNotificationReceivedEventArgs,
 };
+use windows::ApplicationModel::Background::BackgroundTaskDeferral;
 
 /// `[push] wns_remote_id`, compiled in by `prism build windows --msix`.
 const REMOTE_ID: Option<&str> = option_env!("PRISM_WNS_REMOTE_ID");
@@ -44,6 +49,8 @@ thread_local! {
     static CHANNEL: RefCell<Option<PushNotificationChannel>> = const { RefCell::new(None) };
     /// The manager registered at startup (unregistered at quit).
     static REGISTERED: RefCell<bool> = const { RefCell::new(false) };
+    /// WNS started the process for a push: no window, quit once handled.
+    static BACKGROUND: Cell<bool> = const { Cell::new(false) };
     /// The timer that renews the channel before it expires.
     static RENEWAL: RefCell<Option<usize>> = const { RefCell::new(None) };
 }
@@ -123,6 +130,12 @@ pub fn service() -> Option<PushService> {
     missing().is_none().then_some(PushService::Wns)
 }
 
+/// Whether this process was started by a push, to handle it hidden: the
+/// window is not shown, and the app quits once the push is handled.
+pub fn background_launch() -> bool {
+    BACKGROUND.get()
+}
+
 /// Whether WNS started this process to deliver a push.
 fn launched_by_push() -> bool {
     std::env::args().any(|a| a.starts_with("----WindowsAppRuntimePushServer:"))
@@ -152,7 +165,20 @@ pub fn start() {
         let args = AppInstance::GetCurrent()?.GetActivatedEventArgs()?;
         if args.Kind()? == ExtendedActivationKind::Push {
             let push = args.Data()?.cast::<PushNotificationReceivedEventArgs>()?;
-            received(&push, PushEvent::Received);
+            BACKGROUND.set(true);
+            // Keeps the process alive until the push is handled.
+            let deferral = push.GetDeferral()?;
+            let payload = push.Payload()?.to_vec();
+            match message(&payload, PushEvent::Received) {
+                Some(m) => deliver(m, Some(deferral)),
+                None => {
+                    log!(
+                        "push: a payload Prism does not read ({} bytes)",
+                        payload.len()
+                    );
+                    shell::timer(1, move || finish_launch(deferral, None, 0));
+                }
+            }
         }
         Ok(())
     })();
@@ -177,7 +203,7 @@ fn received(args: &PushNotificationReceivedEventArgs, event: PushEvent) {
         );
         return;
     };
-    shell::on_ui(move || deliver(message));
+    shell::on_ui(move || deliver(message, None));
 }
 
 /// The Prism payload (`prism_push::wns`, UTF-8 JSON) as a message.
@@ -188,16 +214,51 @@ fn message(payload: &[u8], event: PushEvent) -> Option<PushMessage> {
     Some(m)
 }
 
-fn deliver(message: PushMessage) {
+/// Hands the push to the app; `launch`, the deferral of the push that
+/// started the process, completes once it is handled.
+fn deliver(message: PushMessage, launch: Option<BackgroundTaskDeferral>) {
     crate::imp::defer(Box::new(move |s| {
-        let patches = if message.event == PushEvent::Background {
-            s.runtime.run_background_push(message);
-            s.runtime.poll()
+        let (task, patches) = if message.event == PushEvent::Background {
+            let task = s.runtime.run_background_push(message);
+            (task, s.runtime.poll())
         } else {
-            s.runtime.push_received(message, true)
+            (None, s.runtime.push_received(message, true))
         };
         crate::imp::commit(s, patches);
+        if let Some(deferral) = launch {
+            // Checked from the message loop, the state free again.
+            shell::timer(1, move || finish_launch(deferral, task, 0));
+        }
     }));
+}
+
+/// How long a push that started the app may run (Windows stops a
+/// background activation after about 30 seconds).
+const LAUNCH_BUDGET_MS: u32 = 25_000;
+const LAUNCH_POLL_MS: u32 = 250;
+
+/// The push that started the app was handled (its `on_background_push`
+/// job finished, or ran out of time): the deferral completes, and the
+/// app, still hidden, quits.
+fn finish_launch(deferral: BackgroundTaskDeferral, task: Option<u64>, waited: u32) {
+    let running = task.is_some_and(|id| {
+        crate::imp::with_state(|s| s.runtime.is_task_running(id)).unwrap_or(true)
+    });
+    if running && waited < LAUNCH_BUDGET_MS {
+        shell::timer(LAUNCH_POLL_MS, move || {
+            finish_launch(deferral, task, waited + LAUNCH_POLL_MS)
+        });
+        return;
+    }
+    if running {
+        log!("push: on_background_push still runs after {waited} ms: stopping");
+    }
+    if let Err(e) = deferral.Complete() {
+        log!("push: {e}");
+    }
+    if BACKGROUND.get() {
+        crate::imp::quit_hidden();
+    }
 }
 
 /// `cx.register_for_push()`: a channel for the remote id; its URI goes to

@@ -129,10 +129,14 @@ In the app, `register_for_push` asks for a channel (`CreateChannelAsync`)
 and gives its URI as the token (`PushService::Wns`); a channel lasts 30
 days, so ask at each start. While the app runs, Prism asks again a day
 before the channel's `ExpirationTime` and gives the new URI to
-`on_push_token` (send it to your server each time). A push that arrives while the app runs is
-`PushReceived`; one that starts the app comes through its activation
-arguments. Visible pushes become notifications when the app is in the
-background; silent ones run `on_background_push`.
+`on_push_token` (send it to your server each time). A push that arrives
+while the app runs is `PushReceived`. A push that starts a closed app
+comes through its activation arguments: the window stays hidden, a
+deferral keeps the process alive while the push is handled (a
+notification for a visible one, `on_background_push` for a silent one,
+for at most 25 seconds), then the app quits. Visible pushes become
+notifications when the app is in the background; silent ones run
+`on_background_push`.
 
 **Not proven.** No Entra registration or Microsoft mapping exists for
 Prism's tests, so no channel has been created and no push delivered or
