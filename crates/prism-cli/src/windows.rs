@@ -255,6 +255,25 @@ fn describe_assets(exe: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(dir)).filter(|d| out.status.success() && d.is_dir())
 }
 
+/// The rustflags that link LLVM's unwinder into a `*-gnullvm` app
+/// (`+crt-static`), unless the caller set its own (`has(var)`): linked
+/// dynamically, the app needs llvm-mingw's `libunwind.dll`, which no PC
+/// has, and does not start (0xC0000135). The C runtime stays the system's
+/// UCRT.
+fn static_unwind(triple: &str, has: impl Fn(&str) -> bool) -> Option<(String, String)> {
+    if !triple.ends_with("-gnullvm") {
+        return None;
+    }
+    let var = format!(
+        "CARGO_TARGET_{}_RUSTFLAGS",
+        triple.to_uppercase().replace('-', "_")
+    );
+    if has("RUSTFLAGS") || has("CARGO_ENCODED_RUSTFLAGS") || has(&var) {
+        return None;
+    }
+    Some((var, "-C target-feature=+crt-static".into()))
+}
+
 /// `cargo build --release` here (on Windows, or with MinGW-w64).
 fn cargo_build(p: &Project, triple: Option<&str>) -> Result<(), String> {
     let mut cmd = Command::new("cargo");
@@ -262,6 +281,9 @@ fn cargo_build(p: &Project, triple: Option<&str>) -> Result<(), String> {
         .args(["build", "--release", "-p", &p.package]);
     if let Some(t) = triple {
         cmd.args(["--target", t]);
+        if let Some((k, v)) = static_unwind(t, |k| std::env::var_os(k).is_some()) {
+            cmd.env(k, v);
+        }
     }
     for (k, v) in app_env(p) {
         cmd.env(k, v);
@@ -391,6 +413,25 @@ mod tests {
             Ok((Some("aarch64-pc-windows-gnullvm".into()), Toolchain::Cross))
         );
         assert!(plan(Some("aarch64-pc-windows-gnullvm"), false, none).is_err());
+    }
+
+    #[test]
+    fn llvm_builds_carry_their_unwinder() {
+        let none = |_: &str| false;
+        assert_eq!(
+            static_unwind("i686-pc-windows-gnullvm", none),
+            Some((
+                "CARGO_TARGET_I686_PC_WINDOWS_GNULLVM_RUSTFLAGS".into(),
+                "-C target-feature=+crt-static".into()
+            ))
+        );
+        assert!(static_unwind("aarch64-pc-windows-gnullvm", none).is_some());
+        assert_eq!(static_unwind("x86_64-pc-windows-gnu", none), None);
+        // The caller's flags win.
+        assert_eq!(
+            static_unwind("i686-pc-windows-gnullvm", |k| k == "RUSTFLAGS"),
+            None
+        );
     }
 
     #[test]

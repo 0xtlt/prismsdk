@@ -19,24 +19,32 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+#[cfg(target_arch = "x86_64")]
 use windows::Win32::Foundation::{
     CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HMODULE,
 };
+#[cfg(target_arch = "x86_64")]
 use windows::Win32::System::Diagnostics::Debug::{
     CONTEXT, CONTEXT_FULL_AMD64, GetThreadContext, RtlLookupFunctionEntry, RtlVirtualUnwind,
     UNW_FLAG_NHANDLER,
 };
+#[cfg(target_arch = "x86_64")]
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+#[cfg(target_arch = "x86_64")]
 use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleInformation, MODULEINFO};
+#[cfg(target_arch = "x86_64")]
 use windows::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, GetCurrentProcess,
     GetCurrentThread, INFINITE, ResumeThread, SetWaitableTimer, SuspendThread, TIMER_ALL_ACCESS,
     WaitForSingleObject,
 };
 
+#[cfg(target_arch = "x86_64")]
 use crate::win::{env, log};
 
+#[cfg(target_arch = "x86_64")]
 const DEPTH: usize = 48;
+#[cfg(target_arch = "x86_64")]
 const MAX_SAMPLES: usize = 60_000;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);

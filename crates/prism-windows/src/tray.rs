@@ -102,9 +102,12 @@ fn data(icon: &Icon) -> NOTIFYICONDATAW {
         .clone()
         .or_else(|| s.title.clone())
         .unwrap_or_default();
-    for (d, c) in nid.szTip.iter_mut().zip(tip.encode_utf16().take(127)) {
+    // Copied whole: the struct is packed on x86 (no reference to a field).
+    let mut text = [0u16; 128];
+    for (d, c) in text.iter_mut().zip(tip.encode_utf16().take(127)) {
         *d = c;
     }
+    nid.szTip = text;
     nid
 }
 

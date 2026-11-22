@@ -24,6 +24,12 @@
 #   PRISM_SMOKE_NO_SYNC=1  run what the remote copy already has
 #   PRISM_SMOKE_A11Y=1     then check the UI Automation trees too
 #                          (scripts/windows-a11y.sh, into <out-dir>/a11y)
+#   PRISM_SMOKE_EXE        run this executable instead of building one, relative
+#                          to the remote checkout, with backslashes; its folder
+#                          holds the Windows App SDK runtime. A build for another
+#                          architecture (target\windows\Counter\counter.exe after
+#                          `prism build windows --target i686-pc-windows-gnullvm`
+#                          in examples/counter)
 # The PNG checks need python3.
 set -eu
 
@@ -57,16 +63,18 @@ case $profile in
   release) build="cargo build -p counter --release" exe=release ;;
   *) build="cargo build -p counter --profile $profile" exe=$profile ;;
 esac
+app=${PRISM_SMOKE_EXE:-target\\$exe\\counter.exe}
+app_dir=${app%\\*}
 mkdir -p "$out"
 rm -f "$out"/*.png "$out"/*.log
 
 [ "${PRISM_SMOKE_NO_SYNC:-}" = 1 ] || "$remote" sync
-"$remote" run "$build"
+[ -n "${PRISM_SMOKE_EXE:-}" ] || "$remote" run "$build"
 "$remote" run "(if exist target\\windows-smoke rmdir /s /q target\\windows-smoke) & mkdir target\\windows-smoke"
 
 session=${PRISM_WINDOWS_SESSION:-}
 if [ -z "$session" ]; then
-  if "$remote" run "if exist target\\$exe\\Microsoft.UI.Xaml.Controls.dll (exit 0) else (exit 1)" 2>/dev/null; then
+  if "$remote" run "if exist $app_dir\\Microsoft.UI.Xaml.Controls.dll (exit 0) else (exit 1)" 2>/dev/null; then
     session=desktop
   else
     session=ssh
@@ -96,7 +104,7 @@ run() {
     printf '%s\r\n' "set \"PRISM_SNAPSHOT=%~dp0$name.png\""
     printf '%s\r\n' "set PRISM_DELAY=1.5"
     printf '%s\r\n' "cd /d \"%~dp0..\\..\\examples\\counter\""
-    printf '%s\r\n' "start \"\" /wait /b ..\\..\\target\\$exe\\counter.exe > \"%~dp0$name.log\" 2>&1"
+    printf '%s\r\n' "start \"\" /wait /b ..\\..\\$app > \"%~dp0$name.log\" 2>&1"
     # The run's storage goes with it: nothing is left in %TEMP%.
     printf '%s\r\n' "set \"code=%errorlevel%\""
     printf '%s\r\n' "rmdir /s /q \"%TEMP%\\prism-smoke-$name\" 2>nul"
@@ -148,5 +156,5 @@ fi
 
 # Roles, names and states for screen readers, on the same build.
 if [ "${PRISM_SMOKE_A11Y:-}" = 1 ]; then
-  PRISM_SMOKE_NO_SYNC=1 PRISM_SMOKE_PROFILE=$profile scripts/windows-a11y.sh "$out/a11y"
+  PRISM_SMOKE_NO_SYNC=1 PRISM_SMOKE_PROFILE=$profile PRISM_SMOKE_EXE=$app scripts/windows-a11y.sh "$out/a11y"
 fi

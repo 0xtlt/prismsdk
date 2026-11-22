@@ -582,7 +582,25 @@ only on Windows.
   and `AR_aarch64_pc_windows_gnullvm` to its `llvm-ar.exe`; do not put it on
   `PATH` beside another MinGW, whose x64 build scripts its
   `x86_64-w64-mingw32-gcc` would then link. `aarch64-pc-windows-msvc` needs
-  MSVC's ARM64 tools. Not run on an arm64 PC yet; x86 is untested.
+  MSVC's ARM64 tools. Not run on an arm64 PC yet.
+- **x86:** built on the x64 PC with `prism build windows --target
+  i686-pc-windows-gnullvm` and run there (WOW64): the smoke's twelve
+  screens and the accessibility check pass, the first frame comes after
+  about a second. With llvm-mingw unpacked in a user folder and `rustup
+  target add i686-pc-windows-gnullvm`, set
+  `CARGO_TARGET_I686_PC_WINDOWS_GNULLVM_LINKER` and
+  `CC_i686_pc_windows_gnullvm` to its `i686-w64-mingw32-clang.exe` and
+  `AR_i686_pc_windows_gnullvm` to its `llvm-ar.exe`; the runtime comes
+  from `runtimes-framework/win-x86`, the zip is `-x86`. `prism build`
+  links the C runtime and the unwinder statically for `*-gnullvm` targets
+  (`CARGO_TARGET_<TRIPLE>_RUSTFLAGS="-C target-feature=+crt-static"`,
+  unless `RUSTFLAGS` or that variable is set): otherwise the executable
+  needs llvm-mingw's `libunwind.dll` and stops at launch with
+  `0xC0000135` (a DLL not found). A plain `cargo build` for those targets
+  needs that flag too. `windows-smoke.sh` and `windows-a11y.sh` run such a
+  build with `PRISM_SMOKE_EXE=target\windows\App\app.exe` (relative to
+  the remote checkout): they skip their own build. `i686-pc-windows-gnu`
+  (MinGW GCC with DWARF unwinding) is not tried.
 - **MSVC:** the same `.res`, `/MANIFEST:NO`, `/SUBSYSTEM:WINDOWS` and
   `/ENTRY:mainCRTStartup`, as documented for `link.exe`; the CI's `windows`
   job (MSVC) builds the counter with WinUI and runs `prism build windows`,
@@ -800,7 +818,7 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 - **Packaging:** an MSIX with the Windows App Runtime as a framework
   dependency ([MSIX](#msix)); an installer (Start menu shortcut, file
   associations, uninstall entry): the zip is a portable app; code signing;
-  MSVC, arm64 and x86 builds not run on a PC yet ([Architectures and
+  MSVC and arm64 builds not run on a PC yet ([Architectures and
   MSVC](#architectures-and-msvc)).
 - **Accessibility:** checked through UI Automation (`windows-a11y.sh`),
   not with Narrator listening (it speaks aloud); `PRISM_HIGH_CONTRAST`
