@@ -53,6 +53,7 @@
 //! | `drops` | files dragged from Explorer onto `on_drop_files` targets |
 //! | `stream` | a remote video read by HTTP ranges with the app's headers |
 //! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
+//! | `links` | what a web view may open outside the app: popups, links (S41) |
 //! | `scene3d`, `dxgl` | 3D scenes: prism-native's OpenGL renderer, in WGL, to a swap chain |
 //! | `keyboard` | key presses for Prism's key listeners |
 //! | `keyview` | views listening to keys take the keyboard focus |
@@ -81,7 +82,7 @@
 //! | `fonts`, `faces` | bundled and run-time fonts, a family's files |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `passkey`, `device`, `clicks`, `lifecycle`, `cursors`, `chrome`, `dates`, `inputs`, `monitor`, `faces`, `underline` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `passkey`, `device`, `clicks`, `lifecycle`, `cursors`, `chrome`, `dates`, `inputs`, `monitor`, `faces`, `underline`, `links` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -170,6 +171,8 @@ mod lifecycle;
 mod cursors;
 // Custom window chrome's drag regions: no Win32, tested everywhere.
 mod chrome;
+// What a web view opens outside the app: no Win32, tested everywhere.
+mod links;
 #[cfg(target_os = "windows")]
 mod location;
 #[cfg(target_os = "windows")]
