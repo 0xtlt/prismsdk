@@ -264,6 +264,14 @@ pub(crate) fn mouse_down(tv: &PrismTextView, event: &NSEvent) -> bool {
             | NSEventModifierFlags::Control
             | NSEventModifierFlags::Shift,
     );
+    // A click on a chip with `on_click` is the chip's (#115).
+    if plain
+        && let Some(link) =
+            crate::rich::chip_link_at(tv, tv.convertPoint_fromView(event.locationInWindow(), None))
+    {
+        crate::imp::dispatch_or_defer(UiEvent::MenuSelect(link));
+        return true;
+    }
     let group = (plain && event.clickCount() == 1)
         .then(|| group_of(tv))
         .flatten();

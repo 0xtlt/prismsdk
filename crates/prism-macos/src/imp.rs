@@ -2324,20 +2324,6 @@ define_class!(
             }
             objc2::runtime::Bool::NO
         }
-
-        /// A click on a chip with `on_click` (#115).
-        #[unsafe(method(textView:clickedOnCell:inRect:atIndex:))]
-        fn text_view_clicked_on_cell(
-            &self,
-            text_view: &NSTextView,
-            _cell: &AnyObject,
-            _rect: NSRect,
-            index: usize,
-        ) {
-            if let Some(link) = crate::rich::link_at(text_view, index) {
-                dispatch(UiEvent::MenuSelect(link));
-            }
-        }
     }
 
     unsafe impl NSPopoverDelegate for Target {

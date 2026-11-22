@@ -407,6 +407,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- macOS: a click on a rich input's chip runs its `on_click`. AppKit reports clicks on an attachment's cell to the text view's delegate, and a chip's image attachment has none: the text view now finds the chip under the click itself.
 - macOS: a text area or rich input is as tall as its text lays out. An unstyled field was measured 2 pt wider than its bezel leaves its text, and sometimes empty, so a line that wrapped there (the counter's rich note, its chip on the second line) was cut off.
 - A chip's `doc.text` icon (and `doc`), the guide's example, draws as a document (📄) where Prism maps SF Symbols to glyphs (Android, the web); it was the unknown symbol's bullet.
 - The selected tab follows the route. `navigate()` and `replace()` to a path under another tab's root (`/components/table` while Settings shows) open it in that tab and select it; they pushed it on the selected tab, whose button stayed lit, so the tab bar and Back disagreed with the screen. A path under no tab's root but `/` (a screen several tabs show) still opens in the selected tab. A link opened while the app runs picks its tab as a deep link at launch does: the longest tab root it starts with, `/` included.
