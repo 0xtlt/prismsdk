@@ -216,7 +216,8 @@ impl Store {
                 .collect(),
             None => vec![Todo {
                 id: 1,
-                title: "Try Prism on the web".into(),
+                // A first todo, in the app's language (then kept as typed).
+                title: strings::todos_sample(cx),
                 done: true,
             }],
         };
@@ -869,7 +870,7 @@ impl Render for Gallery {
         screen.child(
             body.child(self.decor)
             .child(self.forms)
-            .child(report::card())
+            .child(report::card(cx))
             .child(timetable::card(cx))
             .child(self.typography)
             .child(self.scene)

@@ -31,7 +31,8 @@
     "add_todo": "Add todo",
     "hint_mobile": "Swipe left on a todo to delete it, or touch and hold it for more.",
     "hint_desktop": "Right-click a todo for more actions.",
-    "hint_hold": "Press and hold a task for more actions."
+    "hint_hold": "Press and hold a task for more actions.",
+    "sample": "Try Prism on the web"
   },
   "todo": {
     "done": "Done",
@@ -189,7 +190,11 @@
     "open": {
       "one": "{count} open",
       "other": "{count} open"
-    }
+    },
+    "todos_name": "Todos",
+    "todos_description": "Your open todos at a glance.",
+    "todo_name": "Todo",
+    "todo_description": "One todo of your choice."
   },
   "list": {
     "row": "Row number {row} of {total}"
@@ -213,7 +218,8 @@
     "copied": "Copied “Prism ♥ Rust”",
     "paste": "Paste",
     "empty": "(clipboard empty)",
-    "share": "Share"
+    "share": "Share",
+    "share_text": "Prism: one Rust UI for the web, macOS and iOS"
   },
   "about": {
     "title": "About this device",
@@ -354,14 +360,26 @@
     "shared": "Shared draft",
     "shared_text": "Camille and Noor are editing this paragraph with you: their carets stay put while you type.",
     "note": "Rich note",
-    "note_placeholder": "Select words for the toolbar, ⌘-click a word",
+    "note_placeholder": "Select words for the toolbar",
     "note_bold": "Bold",
     "note_copied": "Copied {count} characters with Markdown",
     "note_pasted": "Pasted, the clipboard had {count} types",
-    "note_clicked": "⌘-clicked span {count}",
+    "note_clicked": "Modifier-clicked span {count}",
+    "note_chip": "Opened {page}",
+    "note_text": "Select {words}, or {click} {link}. See {page}.",
+    "note_text_touch": "Select {words}, or tap {page}.",
+    "note_click_mac": "⌘-click",
+    "note_click": "Ctrl-click",
+    "note_click_web": "⌘- or Ctrl-click",
+    "note_words": "these words",
+    "note_link": "a link",
+    "note_page": "Roadmap",
     "blocks": "Blocks: select across paragraphs with ⇧↓ or a drag",
     "blocks_selected": "Selected across {count} blocks",
     "blocks_select_all": "Select all blocks",
+    "block_first": "Select from the middle of this paragraph,",
+    "block_second": "through this one,",
+    "block_third": "into the last one. Then type, or copy.",
     "block_label": "Paragraph {count}",
     "syncing": "Syncing…",
     "keyboard_clear": "Clear",
@@ -394,7 +412,8 @@
     "off_peak": "OFF-PEAK HOURS",
     "peak": "PEAK HOURS",
     "avatars": "Ada,Bo,Cy",
-    "avatars_note": "Overlapping avatars, the first drawn on top (z_index): still read and tabbed through first."
+    "avatars_note": "Overlapping avatars, the first drawn on top (z_index): still read and tabbed through first.",
+    "unit": "kg"
   },
   "typography": {
     "title": "Typography",
@@ -512,7 +531,12 @@
     "drop_heading": "Files from the file manager",
     "drop_hint": "Drop files here",
     "drop_images_hint": "Pictures only",
-    "dropped": "Dropped: {names}"
+    "dropped": "Dropped: {names}",
+    "page_heading": "Hello from a web page",
+    "page_send": "Send to the app",
+    "page_none": "No message from the app yet",
+    "page_from": "From the app: {message}",
+    "page_engine": "Engine: {name}"
   },
   "scene3d": {
     "title": "3D scene",
@@ -541,5 +565,35 @@
     "riverside": "Riverside",
     "north": "North Station",
     "open": "Open the timetable"
+  },
+  "report": {
+    "heading": "Navigation",
+    "intro": "Filters live in the URL; the report has its own header.",
+    "open": "Open the report",
+    "save_open": "Save and open",
+    "saved": "Saved ✓ — shown once, handed over by navigate_with",
+    "back": "‹ Back",
+    "title": "Report",
+    "screen": "Report · {period}",
+    "compare": "Compare with 90 days",
+    "rooms": "Rooms",
+    "selected": "Selected rooms (fits its two lines):",
+    "none": "None yet: tap rooms above.",
+    "url": "URL: {url}",
+    "visits": "Visits, last {period}",
+    "days": {
+      "one": "{count}d",
+      "other": "{count}d"
+    },
+    "room": {
+      "lobby": "Lobby",
+      "studio": "Studio",
+      "atelier": "Atelier",
+      "library": "Library",
+      "kitchen": "Kitchen",
+      "garden": "Garden",
+      "loft": "Loft",
+      "cellar": "Cellar"
+    }
   }
 }

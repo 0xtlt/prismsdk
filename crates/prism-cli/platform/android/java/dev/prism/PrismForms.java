@@ -954,6 +954,8 @@ final class PrismForms {
             case "text_area": {
                 EditText e = (EditText) textArea(new PrismHost.Node());
                 inset(e);
+                // Its minimum lines come as lines of text (#235): one for a rich input.
+                e.setMinLines(1);
                 e.setText(text);
                 e.setTextSize(TypedValue.COMPLEX_UNIT_PX, size > 0 ? size : 17 * PrismHost.density);
                 e.setTypeface(Typeface.create(Typeface.DEFAULT, Math.max(100, Math.min(900, weight)), false));

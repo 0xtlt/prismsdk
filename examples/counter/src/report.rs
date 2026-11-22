@@ -14,6 +14,8 @@ use prism::prelude::*;
 use prism::ui::{self, Theme};
 use prism::{Div, encode_query};
 
+use crate::strings;
+
 /// Handed to the report by the card's "Save and open" (`navigate_with`).
 pub struct Saved(pub String);
 
@@ -22,10 +24,30 @@ pub struct Saved(pub String);
 #[derive(Default)]
 struct RefreshCount(u64);
 
+/// The periods in the URL (`period=30d`); shown as [`period_label`].
 const PERIODS: [&str; 3] = ["7d", "30d", "90d"];
-const ROOMS: [&str; 8] = [
-    "Lobby", "Studio", "Atelier", "Library", "Kitchen", "Garden", "Loft", "Cellar",
-];
+/// The rooms in the URL are indices (`room=2`); shown as [`room_name`].
+const ROOMS: usize = 8;
+
+/// A room's name in the app's language.
+fn room_name(cx: &App, i: usize) -> String {
+    match i {
+        0 => strings::report_room_lobby(cx),
+        1 => strings::report_room_studio(cx),
+        2 => strings::report_room_atelier(cx),
+        3 => strings::report_room_library(cx),
+        4 => strings::report_room_kitchen(cx),
+        5 => strings::report_room_garden(cx),
+        6 => strings::report_room_loft(cx),
+        _ => strings::report_room_cellar(cx),
+    }
+}
+
+/// `30d` as the app's language writes it (« 30 j »).
+fn period_label(cx: &App, period: &str) -> String {
+    let days = period.trim_end_matches('d').parse().unwrap_or(7);
+    strings::report_days(cx, days)
+}
 
 pub struct Report {
     period: String,
@@ -46,7 +68,7 @@ impl Report {
             .query_all("room")
             .iter()
             .filter_map(|r| r.parse().ok())
-            .filter(|r| *r < ROOMS.len())
+            .filter(|r| *r < ROOMS)
             .collect();
         let mut report = Report {
             period,
@@ -68,7 +90,7 @@ impl Report {
                 .background(move || {
                     // Stands for a request to the server.
                     std::thread::sleep(Duration::from_millis(300));
-                    (0..ROOMS.len() as u32)
+                    (0..ROOMS as u32)
                         .map(|i| days * (3 + i * 7 % 11))
                         .collect::<Vec<_>>()
                 })
@@ -99,21 +121,25 @@ impl Report {
             .bg(t.surface)
             .border(1.)
             .border_color(t.border)
-            .child(ui::button("‹ Back").ghost().on_click(go_back()))
             .child(
-                text("Report")
+                ui::button(strings::report_back(cx))
+                    .ghost()
+                    .on_click(go_back()),
+            )
+            .child(
+                text(strings::report_title(cx))
                     .text_size(20.)
                     .bold()
                     .text_color(t.text)
                     .flex_1()
                     .accessibility_role(Role::Heading(1)),
             )
-            .child(ui::badge(self.period.clone()))
+            .child(ui::badge(period_label(cx, &self.period)))
     }
 
     fn periods(&self, cx: &mut Context<Self>) -> Div {
         div().flex_row().gap(8.).children(PERIODS.iter().map(|p| {
-            let b = ui::button(*p).on_click(cx.listener(move |this, _, cx| {
+            let b = ui::button(period_label(cx, p)).on_click(cx.listener(move |this, _, cx| {
                 if this.period != *p {
                     this.period = p.to_string();
                     // Same screen, new URL: a reload or a shared link opens it.
@@ -129,16 +155,16 @@ impl Report {
     fn rooms(&self, cx: &mut Context<Self>) -> ui::Card {
         let t = Theme::of(cx);
         ui::card()
-            .child(ui::heading("Rooms"))
+            .child(ui::heading(strings::report_rooms(cx)))
             .child(
                 scroll()
                     .fit()
                     .max_h(px(150.))
                     .rounded(8.)
                     .bg(t.surface_alt)
-                    .children(ROOMS.iter().enumerate().map(|(i, name)| {
+                    .children((0..ROOMS).map(|i| {
                         let on = self.rooms.contains(&i);
-                        ui::list_row(*name)
+                        ui::list_row(room_name(cx, i))
                             .detail(if on { "✓" } else { "" })
                             .on_click(cx.listener(move |this, _, cx| {
                                 if let Some(at) = this.rooms.iter().position(|r| *r == i) {
@@ -151,7 +177,7 @@ impl Report {
                     })),
             )
             .child(
-                text("Selected rooms (fits its two lines):")
+                text(strings::report_selected(cx))
                     .text_size(13.)
                     .text_color(t.muted),
             )
@@ -160,18 +186,18 @@ impl Report {
                     .fit()
                     .max_h(px(150.))
                     .child(text(if self.rooms.is_empty() {
-                        "None yet: tap rooms above.".to_string()
+                        strings::report_none(cx)
                     } else {
                         self.rooms
                             .iter()
-                            .map(|r| ROOMS[*r])
+                            .map(|r| room_name(cx, *r))
                             .collect::<Vec<_>>()
                             .join(", ")
                     }))
                     .child(
-                        text(format!(
-                            "URL: /components/report?{}",
-                            encode_query(self.query())
+                        text(strings::report_url(
+                            cx,
+                            format!("/components/report?{}", encode_query(self.query())),
                         ))
                         .text_size(12.)
                         .text_color(t.muted),
@@ -193,16 +219,14 @@ impl Render for Report {
         });
         let visits = match &self.visits {
             None => div().items_center().p(20.).child(spinner()),
-            Some(v) => div().gap(4.).children(
-                ROOMS
-                    .iter()
-                    .zip(v)
-                    .map(|(name, n)| ui::list_row(*name).detail(cx.format_number(*n as f64, 0))),
-            ),
+            Some(v) => div().gap(4.).children(v.iter().enumerate().map(|(i, n)| {
+                ui::list_row(room_name(cx, i)).detail(cx.format_number(*n as f64, 0))
+            })),
         };
         // A bare screen: no stack header (this one draws its own). The
         // header stays put; only the body scrolls (`scroll().flex_1()`).
-        screen(format!("Report · {}", self.period))
+        let period = period_label(cx, &self.period);
+        screen(strings::report_screen(cx, &period))
             .bare()
             .bg(t.background)
             .child(self.header(cx))
@@ -214,7 +238,7 @@ impl Render for Report {
                     .when_some(notice, |s, n| s.child(n))
                     .child(self.periods(cx))
                     .child(
-                        ui::button("Compare with 90 days")
+                        ui::button(strings::report_compare(cx))
                             .secondary()
                             // Another query is another screen: Back returns here.
                             .on_click(navigate_to("/components/report?period=90d")),
@@ -222,7 +246,7 @@ impl Render for Report {
                     .child(self.rooms(cx))
                     .child(
                         ui::card()
-                            .child(ui::heading(format!("Visits, last {}", self.period)))
+                            .child(ui::heading(strings::report_visits(cx, period)))
                             .child(visits),
                     ),
             )
@@ -230,27 +254,25 @@ impl Render for Report {
 }
 
 /// The Navigation card of the Components tab: opens the report.
-pub fn card() -> ui::Card {
+pub fn card(cx: &App) -> ui::Card {
     ui::card()
-        .child(ui::heading("Navigation"))
-        .child(text("Filters live in the URL; the report has its own header.").text_size(13.))
+        .child(ui::heading(strings::report_heading(cx)))
+        .child(text(strings::report_intro(cx)).text_size(13.))
         .child(
             div()
                 .flex_row()
                 .flex_wrap()
                 .gap(8.)
                 .child(
-                    ui::button("Open the report")
+                    ui::button(strings::report_open(cx))
                         .on_click(navigate_to("/components/report?period=30d&room=1")),
                 )
                 .child(
-                    ui::button("Save and open")
+                    ui::button(strings::report_save_open(cx))
                         .secondary()
                         .on_click(std::rc::Rc::new(|_: &ClickEvent, cx: &mut App| {
-                            cx.navigate_with(
-                                "/components/report?period=7d",
-                                Saved("Saved ✓ — shown once, handed over by navigate_with".into()),
-                            )
+                            let saved = Saved(strings::report_saved(cx));
+                            cx.navigate_with("/components/report?period=7d", saved)
                         })),
                 ),
         )

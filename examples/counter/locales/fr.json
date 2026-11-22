@@ -31,7 +31,8 @@
     "add_todo": "Ajouter la tâche",
     "hint_mobile": "Balaie une tâche vers la gauche pour la supprimer, ou appuie longuement pour plus d'options.",
     "hint_desktop": "Clic droit sur une tâche pour plus d'actions.",
-    "hint_hold": "Appuie longuement sur une tâche pour plus d'actions."
+    "hint_hold": "Appuie longuement sur une tâche pour plus d'actions.",
+    "sample": "Essayer Prism sur le web"
   },
   "todo": {
     "done": "Terminée",
@@ -189,7 +190,11 @@
     "open": {
       "one": "{count} ouverte",
       "other": "{count} ouvertes"
-    }
+    },
+    "todos_name": "Tâches",
+    "todos_description": "Vos tâches ouvertes en un coup d’œil.",
+    "todo_name": "Tâche",
+    "todo_description": "Une tâche de votre choix."
   },
   "list": {
     "row": "Ligne {row} sur {total}"
@@ -213,7 +218,8 @@
     "copied": "« Prism ♥ Rust » copié",
     "paste": "Coller",
     "empty": "(presse-papiers vide)",
-    "share": "Partager"
+    "share": "Partager",
+    "share_text": "Prism : une seule UI en Rust pour le web, macOS et iOS"
   },
   "about": {
     "title": "À propos de cet appareil",
@@ -354,14 +360,26 @@
     "shared": "Brouillon partagé",
     "shared_text": "Camille et Noor modifient ce paragraphe avec vous : leurs curseurs restent en place pendant que vous tapez.",
     "note": "Note riche",
-    "note_placeholder": "Sélectionnez des mots pour la barre, ⌘-clic sur un mot",
+    "note_placeholder": "Sélectionnez des mots pour la barre",
     "note_bold": "Gras",
     "note_copied": "{count} caractères copiés avec du Markdown",
     "note_pasted": "Collé, le presse-papiers avait {count} types",
-    "note_clicked": "⌘-clic sur le segment {count}",
+    "note_clicked": "Clic avec une touche sur le segment {count}",
+    "note_chip": "Ouvert : {page}",
+    "note_text": "Sélectionnez {words}, ou {click} {link}. Voir {page}.",
+    "note_text_touch": "Sélectionnez {words}, ou touchez {page}.",
+    "note_click_mac": "⌘-cliquez sur",
+    "note_click": "Ctrl-cliquez sur",
+    "note_click_web": "⌘- ou Ctrl-cliquez sur",
+    "note_words": "ces mots",
+    "note_link": "un lien",
+    "note_page": "Feuille de route",
     "blocks": "Blocs : sélectionnez sur plusieurs paragraphes avec ⇧↓ ou en glissant",
     "blocks_selected": "Sélection sur {count} blocs",
     "blocks_select_all": "Tout sélectionner",
+    "block_first": "Sélectionnez à partir du milieu de ce paragraphe,",
+    "block_second": "à travers celui-ci,",
+    "block_third": "jusque dans le dernier. Puis écrivez, ou copiez.",
     "block_label": "Paragraphe {count}",
     "syncing": "Synchronisation…",
     "keyboard_clear": "Effacer",
@@ -394,7 +412,8 @@
     "off_peak": "HEURES CREUSES",
     "peak": "HEURES PLEINES",
     "avatars": "Ada,Bo,Cy",
-    "avatars_note": "Des avatars qui se chevauchent, le premier dessiné au-dessus (z_index) : toujours lu et atteint au clavier en premier."
+    "avatars_note": "Des avatars qui se chevauchent, le premier dessiné au-dessus (z_index) : toujours lu et atteint au clavier en premier.",
+    "unit": "kg"
   },
   "typography": {
     "title": "Typographie",
@@ -512,7 +531,12 @@
     "drop_heading": "Des fichiers du gestionnaire de fichiers",
     "drop_hint": "Déposez des fichiers ici",
     "drop_images_hint": "Images uniquement",
-    "dropped": "Déposés : {names}"
+    "dropped": "Déposés : {names}",
+    "page_heading": "Bonjour depuis une page web",
+    "page_send": "Envoyer à l’app",
+    "page_none": "Pas encore de message de l’app",
+    "page_from": "De l’app : {message}",
+    "page_engine": "Moteur : {name}"
   },
   "scene3d": {
     "title": "Scène 3D",
@@ -541,5 +565,35 @@
     "riverside": "Bord de rivière",
     "north": "Gare du Nord",
     "open": "Ouvrir les horaires"
+  },
+  "report": {
+    "heading": "Navigation",
+    "intro": "Les filtres sont dans l’URL ; le rapport a son propre en-tête.",
+    "open": "Ouvrir le rapport",
+    "save_open": "Enregistrer et ouvrir",
+    "saved": "Enregistré ✓ — affiché une fois, transmis par navigate_with",
+    "back": "‹ Retour",
+    "title": "Rapport",
+    "screen": "Rapport · {period}",
+    "compare": "Comparer sur 90 jours",
+    "rooms": "Salles",
+    "selected": "Salles choisies (tient sur ses deux lignes) :",
+    "none": "Aucune pour l’instant : touchez des salles ci-dessus.",
+    "url": "URL : {url}",
+    "visits": "Visites sur {period}",
+    "days": {
+      "one": "{count} j",
+      "other": "{count} j"
+    },
+    "room": {
+      "lobby": "Hall",
+      "studio": "Studio",
+      "atelier": "Atelier",
+      "library": "Bibliothèque",
+      "kitchen": "Cuisine",
+      "garden": "Jardin",
+      "loft": "Loft",
+      "cellar": "Cave"
+    }
   }
 }

@@ -19,7 +19,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{AnyThread, DefinedClass, msg_send};
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSFont, NSImage, NSMutableParagraphStyle, NSTextAttachment, NSTextView,
+    NSBezierPath, NSColor, NSFont, NSImage, NSLayoutManager, NSMutableParagraphStyle,
+    NSTextAttachment, NSTextContainer, NSTextView,
 };
 use objc2_foundation::{
     NSAttributedString, NSAttributedStringKey, NSDictionary, NSMutableAttributedString, NSNumber,
@@ -346,6 +347,32 @@ pub(crate) fn link_at(tv: &NSTextView, index: usize) -> Option<u64> {
     chip_link(&decode_runs(&tv.ivars().runs.borrow()), index)
 }
 
+/// The link id of the clickable chip drawn under `p` (in `tv`'s
+/// coordinates) in rich input `tv` (#115). The click is the text view's to
+/// read: AppKit tells the delegate of clicks on an attachment's cell
+/// (`textView:clickedOnCell:…`), and an image attachment has none.
+pub(crate) fn chip_link_at(tv: &PrismTextView, p: NSPoint) -> Option<u64> {
+    if !tv.ivars().rich.get() {
+        return None;
+    }
+    let (lm, tc) = unsafe { (tv.layoutManager()?, tv.textContainer()?) };
+    let origin = tv.textContainerOrigin();
+    let local = NSPoint::new(p.x - origin.x, p.y - origin.y);
+    char_drawn_at(&lm, &tc, local).and_then(|index| link_at(tv, index))
+}
+
+/// The UTF-16 offset of the character drawn under `local` (in container
+/// `tc`'s coordinates): none between lines or past their end.
+fn char_drawn_at(lm: &NSLayoutManager, tc: &NSTextContainer, local: NSPoint) -> Option<usize> {
+    let glyph = lm.glyphIndexForPoint_inTextContainer(local, tc);
+    let r = lm.boundingRectForGlyphRange_inTextContainer(NSRange::new(glyph, 1), tc);
+    let inside = local.x >= r.origin.x
+        && local.x < r.origin.x + r.size.width
+        && local.y >= r.origin.y
+        && local.y < r.origin.y + r.size.height;
+    inside.then(|| lm.characterIndexForGlyphAtIndex(glyph))
+}
+
 /// The link id of the clickable chip (or icon) at UTF-16 offset `index`
 /// of `runs` (one unit each, its attachment character).
 fn chip_link(runs: &[TextRun], index: usize) -> Option<u64> {
@@ -430,5 +457,61 @@ mod tests {
             [0, 3, 4, 5]
         );
         assert_eq!(runs_text(&runs).encode_utf16().count(), 6);
+    }
+
+    /// A click on a chip reaches its `on_click`: the text view finds the
+    /// chip drawn under the point (an image attachment has no cell, so
+    /// AppKit's `textView:clickedOnCell:…` never came), then its link
+    /// (`chip_link`).
+    #[test]
+    fn a_click_finds_the_chip_drawn_under_it() {
+        use objc2_app_kit::{NSAttachmentAttributeName, NSTextStorage};
+        let storage = NSTextStorage::new();
+        storage.setAttributedString(&NSAttributedString::from_nsstring(&NSString::from_str(
+            "See \u{fffc}.",
+        )));
+        let chip = NSTextAttachment::new();
+        let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(80., 18.));
+        chip.setImage(Some(&image));
+        chip.setBounds(NSRect::new(NSPoint::new(0., -4.), NSSize::new(80., 18.)));
+        unsafe {
+            storage.addAttribute_value_range(NSAttachmentAttributeName, &chip, NSRange::new(4, 1))
+        };
+        let lm = NSLayoutManager::new();
+        storage.addLayoutManager(&lm);
+        let tc = NSTextContainer::initWithSize(NSTextContainer::alloc(), NSSize::new(400., 1e6));
+        lm.addTextContainer(&tc);
+        lm.ensureLayoutForTextContainer(&tc);
+        // One glyph a character here (the chip's attachment too).
+        let rect = |i: usize| lm.boundingRectForGlyphRange_inTextContainer(NSRange::new(i, 1), &tc);
+        let middle = |r: NSRect| {
+            NSPoint::new(
+                r.origin.x + r.size.width / 2.,
+                r.origin.y + r.size.height / 2.,
+            )
+        };
+        let chip_rect = rect(4);
+        assert!(
+            chip_rect.size.width >= 80.,
+            "the chip's width: {chip_rect:?}"
+        );
+        assert_eq!(
+            char_drawn_at(&lm, &tc, middle(chip_rect)),
+            Some(4),
+            "the chip"
+        );
+        assert_eq!(
+            char_drawn_at(&lm, &tc, middle(rect(1))),
+            Some(1),
+            "a letter"
+        );
+        let past = NSPoint::new(300., middle(chip_rect).y);
+        assert_eq!(
+            char_drawn_at(&lm, &tc, past),
+            None,
+            "past the end of the line"
+        );
+        let below = NSPoint::new(middle(chip_rect).x, 200.);
+        assert_eq!(char_drawn_at(&lm, &tc, below), None, "under the line");
     }
 }

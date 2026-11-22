@@ -53,6 +53,9 @@ pub const GLYPHS: &[(&str, &str)] = &[
     ("ellipsis", "…"),
     ("ellipsis.circle", "…"),
     ("square.and.arrow.up", "⇪"),
+    // Documents, as in a page's chip (`chip(..).chip_icon("doc.text")`).
+    ("doc", "📄"),
+    ("doc.text", "📄"),
 ];
 
 /// The glyph for an SF Symbol name, `•` if unknown.
@@ -76,4 +79,24 @@ pub fn js_table() -> String {
         })
         .collect();
     format!("{{{}}}", entries.join(","))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_chip_has_a_document_glyph() {
+        // The icon of the docs' chip example, drawn from this table on
+        // Android and the web: not the unknown symbol's bullet.
+        assert_eq!(glyph("doc.text"), "📄");
+        assert_eq!(glyph("no.such.symbol"), "•");
+    }
+
+    #[test]
+    fn each_symbol_is_listed_once() {
+        for (i, (name, _)) in GLYPHS.iter().enumerate() {
+            assert!(GLYPHS[..i].iter().all(|(n, _)| n != name), "{name} twice");
+        }
+    }
 }

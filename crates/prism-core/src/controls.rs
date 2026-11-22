@@ -277,7 +277,8 @@ pub struct InputConfig {
     pub autocorrect: bool,
     /// The most characters the field accepts (`None`: no limit).
     pub max_length: Option<u32>,
-    /// A text area's minimum number of lines (#235); `None`: three.
+    /// A text area's minimum number of lines (#235); `None`: three. A
+    /// rich input's is one.
     pub rows: Option<u32>,
 }
 

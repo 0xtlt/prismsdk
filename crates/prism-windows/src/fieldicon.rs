@@ -29,10 +29,10 @@ pub fn has_icon(n: &Node) -> bool {
 pub fn leading(n: &Node) -> f32 {
     let s = &n.style;
     let own = s.own_field_look();
-    let padding = match (own, s.has_padding()) {
-        (true, true) => s.padding.left,
-        (true, false) => 0.,
-        (false, _) => crate::fluent::metrics::FIELD_PADDING.0,
+    let padding = if own {
+        crate::controls::own_insets(n).0
+    } else {
+        crate::fluent::metrics::FIELD_PADDING.0
     };
     match (has_icon(n), own) {
         (false, _) => padding,

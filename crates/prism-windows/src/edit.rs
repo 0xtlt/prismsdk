@@ -31,9 +31,7 @@ use windows_core::{HSTRING, Interface, Result};
 use crate::imp::{dispatch, main_hwnd};
 use crate::win::{env, log};
 use crate::winui::bindings::Microsoft::UI::Dispatching::{DispatcherQueue, DispatcherQueueHandler};
-use crate::winui::bindings::Microsoft::UI::Text::{
-    ITextRange, PointOptions, RichEditTextDocument, TextGetOptions,
-};
+use crate::winui::bindings::Microsoft::UI::Text::{ITextRange, PointOptions, RichEditTextDocument};
 use crate::winui::xaml::Controls::{
     RichEditBox, TextControlCopyingToClipboardEventArgs, TextControlCuttingToClipboardEventArgs,
 };
@@ -89,9 +87,7 @@ fn trace(e: &UiEvent) {
 /// The document's plain text (`\n` between paragraphs, without the last
 /// paragraph mark), as `rich.rs` reports it.
 fn text_of(doc: &RichEditTextDocument) -> Result<String> {
-    let mut s = HSTRING::new();
-    doc.GetText(TextGetOptions::UseLf, &mut s)?;
-    Ok(s.to_string().replace('\u{b}', "\n"))
+    crate::rich::text(doc)
 }
 
 /// The selection in characters, and the text.

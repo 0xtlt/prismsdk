@@ -1546,8 +1546,8 @@ text_entry!(RichInput);
 /// }
 /// ```
 ///
-/// It wraps like a paragraph and grows with its content (cap it with
-/// `max_h`). Enter calls [`on_submit`](RichInput::on_submit) and inserts
+/// It wraps like a paragraph and grows with its content: one line of text
+/// tall when it holds one (cap it with `max_h`). Enter calls [`on_submit`](RichInput::on_submit) and inserts
 /// nothing (a block editor splits the block there, with
 /// [`split_spans`](crate::split_spans) at [`KeyEvent::selection`](crate::KeyEvent::selection));
 /// Shift+Enter inserts a line break (`'\n'`). Selections
@@ -1558,12 +1558,17 @@ text_entry!(RichInput);
 ///
 /// Styles come from the app: the field has no formatting commands of its
 /// own (⌘B is yours, with [`restyle_spans`](crate::restyle_spans)), and
-/// pasted text arrives plain. Rich editing runs on the web, macOS and
-/// Windows; iOS, GTK, Android and watchOS show a plain multi-line field of the
-/// value instead (styles not drawn, a chip shown as `U+FFFC`), whose edits
-/// still come back as spans that keep the styles of the text around them.
+/// pasted text arrives plain. Rich editing runs on the web, macOS,
+/// Windows, iOS, iPadOS, visionOS, Linux and Android; tvOS and watchOS show
+/// a plain multi-line field of the value instead (styles not drawn, a chip
+/// shown as `U+FFFC`), whose edits still come back as spans that keep the
+/// styles of the text around them.
 pub fn rich_input(spans: impl IntoIterator<Item = crate::spans::Span>) -> RichInput {
-    RichInput(VNode::new(NodeKind::RichInput)).spans(spans)
+    // A paragraph: one line at least, where backends show it as a text
+    // area (whose minimum is three lines, #235).
+    RichInput(VNode::new(NodeKind::RichInput))
+        .input_config(|c| c.rows = Some(1))
+        .spans(spans)
 }
 
 impl RichInput {

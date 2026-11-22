@@ -35,7 +35,8 @@
     "add_todo": "إضافة المهمة",
     "hint_mobile": "اسحب مهمة إلى اليسار لحذفها، أو اضغط عليها مطولًا لمزيد من الخيارات.",
     "hint_desktop": "انقر بزر الفأرة الأيمن على مهمة لمزيد من الإجراءات.",
-    "hint_hold": "اضغط مطولًا على مهمة لمزيد من الإجراءات."
+    "hint_hold": "اضغط مطولًا على مهمة لمزيد من الإجراءات.",
+    "sample": "جرّب Prism على الويب"
   },
   "todo": {
     "done": "منجزة",
@@ -213,7 +214,11 @@
       "few": "{count} مفتوحة",
       "many": "{count} مفتوحة",
       "other": "{count} مفتوحة"
-    }
+    },
+    "todos_name": "المهام",
+    "todos_description": "مهامك المفتوحة في لمحة.",
+    "todo_name": "مهمة",
+    "todo_description": "مهمة من اختيارك."
   },
   "list": {
     "row": "الصف {row} من {total}"
@@ -237,7 +242,8 @@
     "copied": "تم نسخ «Prism ♥ Rust»",
     "paste": "لصق",
     "empty": "(الحافظة فارغة)",
-    "share": "مشاركة"
+    "share": "مشاركة",
+    "share_text": "Prism: واجهة واحدة بلغة Rust للويب وmacOS وiOS"
   },
   "about": {
     "title": "حول هذا الجهاز",
@@ -378,14 +384,26 @@
     "shared": "مسودة مشتركة",
     "shared_text": "تحرّر كاميل ونور هذه الفقرة معك: تبقى مؤشراتهما في مكانها أثناء كتابتك.",
     "note": "ملاحظة منسقة",
-    "note_placeholder": "حدد كلمات لشريط الأدوات، ⌘-انقر على كلمة",
+    "note_placeholder": "حدد كلمات لشريط الأدوات",
     "note_bold": "عريض",
     "note_copied": "نُسخ {count} حرفًا مع Markdown",
     "note_pasted": "لُصق، كان في الحافظة {count} أنواع",
-    "note_clicked": "⌘-نقر على المقطع {count}",
+    "note_clicked": "نقر مع مفتاح على المقطع {count}",
+    "note_chip": "فُتح {page}",
+    "note_text": "حدّد {words}، أو {click} {link}. انظر {page}.",
+    "note_text_touch": "حدّد {words}، أو المس {page}.",
+    "note_click_mac": "انقر مع ⌘ على",
+    "note_click": "انقر مع Ctrl على",
+    "note_click_web": "انقر مع ⌘ أو Ctrl على",
+    "note_words": "هذه الكلمات",
+    "note_link": "رابط",
+    "note_page": "خارطة الطريق",
     "blocks": "كتل: حدّد عبر الفقرات باستخدام ⇧↓ أو بالسحب",
     "blocks_selected": "تحديد عبر {count} كتل",
     "blocks_select_all": "تحديد كل الكتل",
+    "block_first": "حدّد من منتصف هذه الفقرة،",
+    "block_second": "مرورًا بهذه،",
+    "block_third": "حتى الأخيرة. ثم اكتب، أو انسخ.",
     "block_label": "الفقرة {count}",
     "syncing": "جارٍ المزامنة…",
     "keyboard_clear": "مسح",
@@ -418,7 +436,8 @@
     "off_peak": "ساعات خارج الذروة",
     "peak": "ساعات الذروة",
     "avatars": "Ada,Bo,Cy",
-    "avatars_note": "صور رمزية متداخلة، الأولى مرسومة في الأعلى (z_index): تُقرأ ويُنتقل إليها بالمفتاح Tab أولًا دائمًا."
+    "avatars_note": "صور رمزية متداخلة، الأولى مرسومة في الأعلى (z_index): تُقرأ ويُنتقل إليها بالمفتاح Tab أولًا دائمًا.",
+    "unit": "كغ"
   },
   "typography": {
     "title": "الطباعة",
@@ -544,7 +563,12 @@
     "drop_heading": "ملفات من مدير الملفات",
     "drop_hint": "أفلت الملفات هنا",
     "drop_images_hint": "الصور فقط",
-    "dropped": "أُفلتت: {names}"
+    "dropped": "أُفلتت: {names}",
+    "page_heading": "مرحبًا من صفحة ويب",
+    "page_send": "أرسل إلى التطبيق",
+    "page_none": "لا رسالة من التطبيق بعد",
+    "page_from": "من التطبيق: {message}",
+    "page_engine": "المحرك: {name}"
   },
   "scene3d": {
     "title": "مشهد ثلاثي الأبعاد",
@@ -573,5 +597,39 @@
     "riverside": "ضفة النهر",
     "north": "المحطة الشمالية",
     "open": "افتح جدول المواعيد"
+  },
+  "report": {
+    "heading": "التنقل",
+    "intro": "المرشحات في عنوان URL، وللتقرير ترويسته الخاصة.",
+    "open": "افتح التقرير",
+    "save_open": "احفظ وافتح",
+    "saved": "تم الحفظ ✓ — يظهر مرة واحدة، مُمرَّر عبر navigate_with",
+    "back": "‹ رجوع",
+    "title": "تقرير",
+    "screen": "تقرير · {period}",
+    "compare": "قارن على 90 يومًا",
+    "rooms": "الغرف",
+    "selected": "الغرف المختارة (تتسع لسطرين):",
+    "none": "لا شيء بعد: المس الغرف أعلاه.",
+    "url": "عنوان URL: {url}",
+    "visits": "الزيارات، آخر {period}",
+    "days": {
+      "zero": "{count} يوم",
+      "one": "يوم واحد",
+      "two": "يومان",
+      "few": "{count} أيام",
+      "many": "{count} يومًا",
+      "other": "{count} يوم"
+    },
+    "room": {
+      "lobby": "الردهة",
+      "studio": "الاستوديو",
+      "atelier": "الورشة",
+      "library": "المكتبة",
+      "kitchen": "المطبخ",
+      "garden": "الحديقة",
+      "loft": "العلية",
+      "cellar": "القبو"
+    }
   }
 }

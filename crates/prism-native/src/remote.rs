@@ -729,7 +729,7 @@ impl RemoteWidgets {
     /// A button, text input or text area with padding: its content alone,
     /// measured as text (the padding replaces the control's own insets, and
     /// the layout adds it). An input is one line of text 10 em wide (as wide
-    /// as it may be), a text area at least three lines, 17.5 em wide.
+    /// as it may be), a text area at least its minimum lines, 17.5 em wide.
     fn measure_padded(
         &mut self,
         id: &NodeId,
@@ -737,33 +737,56 @@ impl RemoteWidgets {
         style: &Style,
         max_width: Option<f32>,
     ) -> (f32, f32) {
-        let value = self.texts.get(id).cloned().unwrap_or_default();
-        // A text area's minimum lines (#235).
-        let rows = prism_core::controls::InputConfig::decode(
-            self.configs.get(id).map(String::as_str).unwrap_or(""),
-        )
-        .min_rows() as usize;
-        let text = match kind {
-            NodeKind::TextInput => "Ag".to_string(),
-            NodeKind::TextArea if value.lines().count() < rows => vec!["Ag"; rows].join("\n"),
-            _ => value,
-        };
         let spec = Value::Object(typography(style)).to_string();
+        let spec = if spec == "{}" { "" } else { &spec };
         let em = style.font_size;
         let width = match kind {
             NodeKind::TextInput => Some(max_width.unwrap_or(10. * em)),
             NodeKind::TextArea => Some(max_width.unwrap_or(17.5 * em)),
             _ => None,
         };
-        let (w, h) = (self.measure)(&MeasureRequest {
-            kind: "text",
-            text: &text,
-            font_size: style.font_size,
-            weight: weight(style.font_weight),
-            max_width: width.or(max_width),
-            spec: if spec == "{}" { "" } else { &spec },
-        });
+        let measure = self.measure;
+        let at = |text: &str, max_width| {
+            measure(&MeasureRequest {
+                kind: "text",
+                text,
+                font_size: style.font_size,
+                weight: weight(style.font_weight),
+                max_width,
+                spec,
+            })
+        };
+        let (w, h) = match kind {
+            NodeKind::TextInput => at("Ag", width),
+            NodeKind::TextArea => self.measure_rows(id, width, at),
+            _ => at(
+                self.texts.get(id).map(String::as_str).unwrap_or(""),
+                width.or(max_width),
+            ),
+        };
         (width.unwrap_or(w), h)
+    }
+
+    /// A text area: its text, at least its minimum lines tall (#235; one
+    /// for a rich input). Both are measured: a long line wraps to more.
+    fn measure_rows(
+        &self,
+        id: &NodeId,
+        max_width: Option<f32>,
+        at: impl Fn(&str, Option<f32>) -> (f32, f32),
+    ) -> (f32, f32) {
+        let value = self.texts.get(id).map(String::as_str).unwrap_or("");
+        let rows = prism_core::controls::InputConfig::decode(
+            self.configs.get(id).map(String::as_str).unwrap_or(""),
+        )
+        .min_rows() as usize;
+        let (w, h) = at(value, max_width);
+        if value.split('\n').count() >= rows {
+            return (w, h);
+        }
+        let lines = vec!["Ag"; rows].join("\n");
+        let (_, min) = at(&lines, max_width);
+        (w, h.max(min))
     }
 }
 
@@ -905,6 +928,19 @@ impl Widgets for RemoteWidgets {
         let style = self.styles.get(id).cloned().unwrap_or_default();
         if style.has_padding() && kind != NodeKind::Text && kind != NodeKind::Timer {
             return self.measure_padded(id, kind, &style, max_width);
+        }
+        if kind == NodeKind::TextArea {
+            let measure = self.measure;
+            return self.measure_rows(id, max_width, |text, max_width| {
+                measure(&MeasureRequest {
+                    kind: kind.name(),
+                    text,
+                    font_size: style.font_size,
+                    weight: weight(style.font_weight),
+                    max_width,
+                    spec: "",
+                })
+            });
         }
         let text = match kind {
             // As wide as its digits, or its `after` text when wider (#281).

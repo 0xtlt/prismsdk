@@ -144,6 +144,11 @@ impl Rich {
             .SetRange(start as i32, end as i32)
     }
 
+    /// The runs shown (`set_rich_value`'s, encoded).
+    pub fn runs(&self) -> String {
+        self.runs.borrow().clone()
+    }
+
     /// Shows `runs` (`set_rich_value`) in `style`, its colors from `pal`,
     /// its chips drawn at `scale` (pixels per DIP).
     pub fn set_runs(&self, runs: &str, style: &Style, pal: &Palette, scale: f32) -> Result<()> {
@@ -268,12 +273,16 @@ impl Rich {
 }
 
 /// The document's plain text, `\n` between paragraphs, without RichEdit's
-/// final paragraph mark.
-fn text(doc: &RichEditTextDocument) -> Result<String> {
+/// final paragraph mark. A chip's picture is U+FFFC (`OBJECT_CHAR`), as in
+/// the runs: `UseLf` turns it into a space, which the core took for an
+/// edit, so the app's runs lost the chip as soon as it was drawn.
+pub(crate) fn text(doc: &RichEditTextDocument) -> Result<String> {
     let mut s = HSTRING::new();
-    doc.GetText(TextGetOptions::UseLf, &mut s)?;
-    // Shift+Return's soft line break is a line break too.
-    Ok(s.to_string().replace('\u{b}', "\n"))
+    doc.GetText(TextGetOptions::None, &mut s)?;
+    let s = s.to_string();
+    let s = s.strip_suffix('\r').unwrap_or(&s);
+    // Paragraph marks, and Shift+Return's soft line break, are line breaks.
+    Ok(s.replace(['\r', '\u{b}'], "\n"))
 }
 
 /// Applies each run's character format to its range, without a redraw

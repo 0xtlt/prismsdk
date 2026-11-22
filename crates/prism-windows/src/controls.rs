@@ -149,6 +149,63 @@ pub fn is_field(k: NodeKind) -> bool {
     )
 }
 
+/// A rich input's runs as its measure lays them out: its bold or larger
+/// words, and each chip (one character in the field) as wide as its
+/// picture (`chips.rs`): its label, 0.35 em of padding on each side and,
+/// with a symbol, the symbol (1 em) and a 0.25 em gap. Em and en spaces
+/// stand for those, joined to the label so they never break from it.
+fn rich_label(runs: &str, s: &Style) -> StyledText {
+    const JOIN: char = '\u{2060}';
+    let mut runs = prism_core::decode_runs(runs);
+    for r in &mut runs {
+        if r.chip.is_none() {
+            continue;
+        }
+        let label = r
+            .chip_label
+            .as_deref()
+            .unwrap_or_default()
+            .replace(' ', "\u{a0}");
+        let room = if r.chip_icon.is_some() {
+            format!("\u{2003}{JOIN}\u{2003}")
+        } else {
+            format!("\u{2002}{JOIN}\u{2009}")
+        };
+        r.text = format!("{JOIN}{room}{JOIN}{label}{JOIN}");
+        r.icon = None;
+    }
+    let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+    // The value is edited as typed: no case transform.
+    let style = Style {
+        text_transform: prism_core::TextTransform::None,
+        ..s.clone()
+    };
+    let mut st = StyledText::from_runs(&text, &runs, &style);
+    st.align = prism_core::TextAlign::Left;
+    st.max_lines = None;
+    st
+}
+
+/// A text area's or rich input's text insets (left, top, right, bottom)
+/// when it draws its own look without a padding: macOS's
+/// `textContainerInset` and GTK's margins.
+const AREA_INSET: (f32, f32, f32, f32) = (10., 8., 10., 8.);
+
+/// The insets of a field that draws its own look: its padding, an explicit
+/// zero included (#69); without one, [`AREA_INSET`] for a text area or a
+/// rich input, none for a one-line field.
+pub fn own_insets(n: &Node) -> (f32, f32, f32, f32) {
+    let s = &n.style;
+    if s.has_padding() {
+        let p = s.padding;
+        (p.left, p.top, p.right, p.bottom)
+    } else if n.kind == NodeKind::TextInput {
+        (0., 0., 0., 0.)
+    } else {
+        AREA_INSET
+    }
+}
+
 /// The content for a new node of `kind`, its events wired to `id`.
 pub fn create(id: NodeId, kind: NodeKind) -> Result<Content> {
     Ok(match kind {
@@ -518,14 +575,10 @@ fn field_look(c: Control, n: &Node, color: Color) -> Result<()> {
             override_brushes(&res, &FIELD_CHROME, &transparent()?.cast()?)?;
         }
         c.SetBorderThickness(uniform(0.))?;
-        let p = s.padding;
         // A leading icon (`fieldicon.rs`) takes the start of the field.
         let lead = crate::fieldicon::leading(n);
-        c.SetPadding(if s.has_padding() {
-            thickness(lead, p.top, p.right, p.bottom)
-        } else {
-            thickness(lead, 0., 0., 0.)
-        })?;
+        let (_, t, r, b) = own_insets(n);
+        c.SetPadding(thickness(lead, t, r, b))?;
     } else {
         let (_, t, r, b) = FIELD_PADDING;
         c.SetPadding(thickness(crate::fieldicon::leading(n), t, r, b))?;
@@ -861,6 +914,7 @@ pub fn measure(
     id: NodeId,
     max_width: Option<f32>,
     locale: &prism_core::Locale,
+    rich: Option<&str>,
 ) -> (f32, f32) {
     let s = &n.style;
     let text_size = |m: &Measurer, text: &str| m.measure(&label(text, s), None);
@@ -884,15 +938,26 @@ pub fn measure(
         }
         k if is_field(k) => {
             let lh = line_height(m, s);
-            let rows = InputConfig::decode(&n.config).rows.unwrap_or(1).max(1) as f32;
+            // Its minimum lines (#235): three unless set, one for a rich input.
+            let rows = InputConfig::decode(&n.config).min_rows().max(1) as f32;
             let own = s.own_field_look();
             let (l, t, r, b) = if own { (0., 0., 0., 0.) } else { FIELD_PADDING };
+            // Its own look: no template border, and a padding is taffy's,
+            // around this size; a text area without one has its insets.
+            let inset = own && !s.has_padding() && k != NodeKind::TextInput;
+            let (il, it, ir, ib) = if inset { AREA_INSET } else { (0., 0., 0., 0.) };
             let content_h = if k == NodeKind::TextInput {
                 lh
             } else {
                 // Grows with its text (then scrolls, capped by max_h).
-                let w = max_width.map(|w| (w - l - r - 2.).max(10.));
-                let mut st = label(&n.text, s);
+                let frame = if own { il + ir } else { l + r + 2. };
+                let w = max_width.map(|w| (w - frame).max(10.));
+                let mut st = match rich {
+                    Some(runs) if k == NodeKind::RichInput && !runs.is_empty() => {
+                        rich_label(runs, s)
+                    }
+                    _ => label(&n.text, s),
+                };
                 st.no_wrap = false;
                 let text_h = if n.text.is_empty() {
                     lh
@@ -918,7 +983,7 @@ pub fn measure(
             };
             let w = max_width.map_or(natural, |m| m.min(natural));
             if own || s.has_padding() {
-                (w, content_h)
+                (w, content_h + it + ib)
             } else {
                 (w + l + r + 2., (content_h + t + b + 2.).max(CONTROL_HEIGHT))
             }
@@ -1037,7 +1102,7 @@ pub fn baseline(m: &Measurer, n: &Node, width: f32, height: f32) -> Option<f32> 
             let top = if k == NodeKind::TextInput {
                 (height - h) / 2.
             } else if s.own_field_look() {
-                s.padding.top
+                own_insets(n).1
             } else {
                 FIELD_PADDING.1 + 1.
             };
