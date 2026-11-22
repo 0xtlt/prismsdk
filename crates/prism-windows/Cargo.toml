@@ -44,6 +44,8 @@ windows-collections = "0.3"
 windows-future = "0.3"
 windows = { version = "0.62", features = [
   "ApplicationModel",
+  # Push (push.rs): a received push's deferral.
+  "ApplicationModel_Background",
   "ApplicationModel_Core",
   "ApplicationModel_DataTransfer",
   "ApplicationModel_DataTransfer_DragDrop",

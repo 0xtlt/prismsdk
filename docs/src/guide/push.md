@@ -14,7 +14,7 @@ cx.on_background_push(|push, cx| async move { sync(&cx).await });  // the system
 
 cx.spawn(async move |_, cx| {
     let sub = cx.register_for_push().await?;   // asks to show notifications first
-    // sub.service: Apns / Fcm / WebPush / UnifiedPush
+    // sub.service: Apns / Fcm / WebPush / UnifiedPush / Wns
 });
 
 // Live Activities updated from the server (iOS): their tokens.
@@ -25,12 +25,13 @@ cx.on_activity_push_token(|t, app| { /* t.activity (None: push-to-start), t.kind
 On the server (Axum, a worker…):
 
 ```rust
-use prism_push::{Push, Sender, Subscription, apns::ApnsKey, fcm::ServiceAccount, webpush::VapidKey};
+use prism_push::{Push, Sender, Subscription, apns::ApnsKey, fcm::ServiceAccount, webpush::VapidKey, wns::WnsCredentials};
 
 let sender = Sender::new()
     .apns(ApnsKey::from_p8(&p8, "KEYID12345", "TEAMID1234")?)   // token-based .p8 key, HTTP/2
     .fcm(ServiceAccount::from_json(&service_account_json)?)     // FCM HTTP v1, OAuth (RS256)
-    .vapid(VapidKey::from_base64(&vapid_private)?, "mailto:ops@example.com");
+    .vapid(VapidKey::from_base64(&vapid_private)?, "mailto:ops@example.com")
+    .wns(WnsCredentials::new(tenant_id, client_id, client_secret)?);  // Microsoft Entra app
 let sub = Subscription::from_json(&json_from_the_app)?;
 match sender.send(&sub, &Push::new().title("Order shipped").body("Tomorrow").link("/orders/42")).await {
     Err(prism_push::PushError::Gone) => forget(sub),   // uninstalled, token changed
@@ -57,7 +58,8 @@ Prism registers the activities it did not start in this run: ones started by a p
 | Android | FCM (opt-in) or UnifiedPush | `FirebaseMessagingService` / UnifiedPush connector (AND_3) | data messages | Firebase bundled without Gradle and initialized on the emulator; UnifiedPush built (its decryption is Linux's, verified) |
 | Web | Web Push | service worker `<base>/prism-sw.js`, `pushManager.subscribe` with VAPID | – (browsers always show one) | service worker, session events, click → focus/open |
 | Linux | UnifiedPush over D-Bus | `org.unifiedpush.Connector2` on the session bus | yes, while the app runs | end to end with a local distributor |
-| Windows | — (WNS needs package identity: an MSIX or a sparse package) | `register_for_push` fails with `Unavailable` | — | — |
+| Windows (MSIX) | WNS | Windows App SDK `PushNotificationManager` ([below](#windows-wns)) | raw notifications → `on_background_push` | built and unit-tested; no channel yet (needs an Entra registration Microsoft maps to the package) |
+| Windows (zip) | — (WNS needs package identity) | `register_for_push` fails with `Unavailable` | — | « unavailable » checked on a PC |
 
 `cx.capabilities().push` says which service `register_for_push` will use (`None`: unavailable, and the call fails with `Unavailable`).
 
@@ -69,6 +71,8 @@ enabled = true
 apns_environment = "development"            # "production" for TestFlight / App Store
 google_services = "google-services.json"    # Android: FCM (otherwise UnifiedPush only)
 vapid_public_key = "BKv…"                   # Web Push (or PRISM_VAPID_PUBLIC_KEY), and UnifiedPush's VAPID
+wns_remote_id = "…"                         # Windows (MSIX): the Entra app's object id (a GUID)
+wns_app_id = "…"                            # Windows (MSIX): the Entra app's application (client) id
 ```
 
 - **Apple:** `prism` adds the `aps-environment` entitlement (`com.apple.developer.aps-environment` on macOS), the `remote-notification` background mode and `PrismApsEnvironment` (the token's sandbox flag). Devices need the Push Notifications capability on the App ID (the profile's value wins). In the simulator the entitlement lives in the binary's entitlement sections only: the simulator refuses to launch an ad hoc signature that claims it. macOS restricts it: it needs `PRISM_MAC_PROFILE`, otherwise `capabilities().push` is `None`. Slimmed simulators keep the push daemons (`simslim … --except store`).
@@ -82,3 +86,47 @@ vapid_public_key = "BKv…"                   # Web Push (or PRISM_VAPID_PUBLIC_
 `prism-push` is plain Rust on RustCrypto (`p256`, AES-GCM, HKDF) and ring (RS256 for Google's OAuth), with an HTTP/2 `reqwest` client (rustls). It is tested against RFC 8291's example (intermediate values, encryption and decryption), RFC 8292's VAPID token, and RFC 7515's ES256 and RS256 signatures. Every service also builds plain `HttpRequest`s for servers with another HTTP client. Without its `send` feature it is pure Rust: the Android and Linux receivers use it to decrypt.
 
 **Endpoints chosen by subscribers.** A Web Push or UnifiedPush endpoint comes from whoever subscribed, so `Sender` posts only to public HTTPS servers on port 443: it checks every address a name resolves to before connecting (a name with any private, loopback, link-local or reserved address is refused, IPv4 written as IPv6 included), never follows redirects, ignores `HTTPS_PROXY` and similar variables, and reads at most 16 KiB of an answer. `Subscription::from_json` refuses endpoints that are not HTTP(S) URLs or carry credentials. A self-hosted UnifiedPush distributor on your network needs `Sender::new().trust_origin("http://ntfy.internal:8080")?` (exactly that scheme, host and port); an egress proxy needs `.proxy("http://proxy:3128")?`, and then the proxy must refuse private destinations itself. `webpush::request`, for your own HTTP client, refuses non-public endpoints too; your client must also check resolved addresses and not follow redirects.
+
+## Windows (WNS)
+
+Windows Push Notification Services delivers to apps with package
+identity: `prism build windows --msix` ([MSIX](../platforms/windows.md#msix)).
+The zip build is unpackaged, and `register_for_push` answers `Unavailable`
+there.
+
+1. Register an app in Microsoft Entra ID (the Azure portal's App
+   registrations): note its directory (tenant) id, its application
+   (client) id and its object id, and create a client secret for the
+   server.
+2. Ask Microsoft to map the package's family name (the MSIX's identity
+   name and publisher) to that application id, as the Windows App SDK's
+   push documentation describes. Until then WNS gives no channel.
+3. In `Prism.toml`, `[push] wns_remote_id` is the object id, compiled into
+   the app (`PRISM_WNS_REMOTE_ID`) for `CreateChannelAsync`, and
+   `[push] wns_app_id` the application id, the COM class the manifest
+   declares so WNS can start a closed app (`----WindowsAppRuntimePushServer:`).
+   Neither is a secret.
+4. The server sends with `Sender::wns(WnsCredentials::new(tenant, client,
+   secret)?)`: an access token from the tenant
+   (`login.microsoftonline.com`, client credentials, scope
+   `https://wns.windows.com/.default`, cached until it expires), then a
+   `POST` of the payload to the channel URI as a raw notification
+   (`X-WNS-Type: wns/raw`, 5,120 bytes at most; `ttl`, `collapse_id` and
+   `urgency` become `X-WNS-TTL`, `X-WNS-Tag` and `X-WNS-Priority`). The
+   sender posts only to `https://*.notify.windows.com` channels, so the
+   token never goes elsewhere; 404 and 410 are `PushError::Gone`.
+
+In the app, `register_for_push` asks for a channel (`CreateChannelAsync`)
+and gives its URI as the token (`PushService::Wns`); a channel lasts 30
+days, so ask at each start. A push that arrives while the app runs is
+`PushReceived`; one that starts the app comes through its activation
+arguments. Visible pushes become notifications when the app is in the
+background; silent ones run `on_background_push`.
+
+**Not proven.** No Entra registration or Microsoft mapping exists for
+Prism's tests, so no channel has been created and no push delivered or
+sent to WNS. What is checked: the requests `prism-push` builds (token,
+headers, payload limit, channel hosts), the payload the app reads, the
+manifest entries (validated by `makeappx`), and « unavailable » in an
+unpackaged process on a PC. The MSIX itself has not been installed on a
+PC yet (see [MSIX](../platforms/windows.md#msix)).

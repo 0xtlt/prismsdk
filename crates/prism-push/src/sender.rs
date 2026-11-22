@@ -17,6 +17,7 @@ use crate::apns::ApnsKey;
 use crate::endpoint::{Endpoint, Host};
 use crate::fcm::ServiceAccount;
 use crate::webpush::VapidKey;
+use crate::wns::WnsCredentials;
 use crate::{HttpRequest, Push, PushError, Service, Subscription};
 
 /// The most of an answer the sender reads (push services answer in a few
@@ -40,6 +41,8 @@ pub struct Sender {
     fcm: Option<ServiceAccount>,
     fcm_token: Mutex<Option<(String, Instant)>>,
     vapid: Option<(VapidKey, String)>,
+    wns: Option<WnsCredentials>,
+    wns_token: Mutex<Option<(String, Instant)>>,
     /// Origins of private distributors ([`Sender::trust_origin`]).
     trusted: Vec<(bool, String, u16)>,
     proxy: Option<String>,
@@ -69,6 +72,8 @@ impl Sender {
             fcm: None,
             fcm_token: Mutex::new(None),
             vapid: None,
+            wns: None,
+            wns_token: Mutex::new(None),
             trusted: Vec::new(),
             proxy: None,
             lookup,
@@ -128,6 +133,13 @@ impl Sender {
         self
     }
 
+    /// WNS (Windows apps shipped as an MSIX): the Entra app registration
+    /// that sends.
+    pub fn wns(mut self, credentials: WnsCredentials) -> Self {
+        self.wns = Some(credentials);
+        self
+    }
+
     /// Sends `push` to `sub`. [`PushError::Gone`] means the subscription
     /// is dead: remove it.
     pub async fn send(&self, sub: &Subscription, push: &Push) -> Result<(), PushError> {
@@ -156,6 +168,22 @@ impl Sender {
                 let (status, body) = self.execute(req).await?;
                 check(status, &body, crate::fcm::error)
             }
+            Service::Wns => {
+                let credentials = self
+                    .wns
+                    .as_ref()
+                    .ok_or_else(|| PushError::Config("no WNS credentials (Sender::wns)".into()))?;
+                // The channel and the payload, checked before asking for a token.
+                crate::wns::request(&sub.token, push, "")?;
+                let access = self.wns_access_token(credentials).await?;
+                let req = crate::wns::request(&sub.token, push, &access)?;
+                let (status, body) = self.execute(req).await?;
+                if status == 401 {
+                    // The token expired early: the next send asks again.
+                    *self.wns_token.lock().unwrap() = None;
+                }
+                check(status, &body, crate::wns::error)
+            }
             Service::WebPush | Service::UnifiedPush => {
                 self.check_endpoint(&sub.token)?;
                 let vapid = self.vapid.as_ref().map(|(k, s)| (k, s.as_str()));
@@ -170,6 +198,33 @@ impl Sender {
                 })
             }
         }
+    }
+
+    async fn wns_access_token(&self, credentials: &WnsCredentials) -> Result<String, PushError> {
+        if let Some((t, until)) = &*self.wns_token.lock().unwrap()
+            && *until > Instant::now()
+        {
+            return Ok(t.clone());
+        }
+        let (status, body) = self.execute(credentials.token_request()).await?;
+        if status != 200 {
+            return Err(PushError::Rejected {
+                status,
+                reason: reason(&body, ""),
+            });
+        }
+        let v: serde_json::Value =
+            serde_json::from_slice(&body).map_err(|e| PushError::Http(e.to_string()))?;
+        let token = v["access_token"]
+            .as_str()
+            .ok_or_else(|| PushError::Http("no access_token".into()))?
+            .to_string();
+        let lifetime = v["expires_in"].as_u64().unwrap_or(3600).saturating_sub(300);
+        *self.wns_token.lock().unwrap() = Some((
+            token.clone(),
+            Instant::now() + Duration::from_secs(lifetime),
+        ));
+        Ok(token)
     }
 
     async fn fcm_access_token(&self, account: &ServiceAccount) -> Result<String, PushError> {

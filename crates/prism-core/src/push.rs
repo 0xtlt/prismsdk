@@ -24,7 +24,8 @@
 //! | Android | FCM (opt-in, `[push] fcm_*` in Prism.toml) or UnifiedPush | registration token / endpoint | data messages |
 //! | Web | Web Push (VAPID) | endpoint + keys | – (browsers always show) |
 //! | Linux | UnifiedPush over D-Bus, when a distributor runs | endpoint + keys | yes |
-//! | Windows | none: WNS needs package identity (`Unavailable`) | – | – |
+//! | Windows (MSIX) | WNS, raw notifications (`[push] wns_remote_id`) | channel URI | yes |
+//! | Windows (zip) | none: WNS needs package identity (`Unavailable`) | – | – |
 //!
 //! Payloads sent with `prism-push` use the same keys everywhere: `title`,
 //! `subtitle`, `body`, `link` (a deep link opened on tap), and custom `data`.
@@ -52,16 +53,20 @@ pub enum PushService {
     /// An open standard with user-chosen distributors (ntfy, NextPush,
     /// KUnifiedPush…); messages are Web Push messages.
     UnifiedPush,
+    /// Windows Push Notification Services (an app shipped as an MSIX):
+    /// raw notifications to a channel URI.
+    Wns,
 }
 
 impl PushService {
-    /// The lowercase identifier used in the subscription JSON (`apns`, `fcm`, `webpush`, `unifiedpush`).
+    /// The lowercase identifier used in the subscription JSON (`apns`, `fcm`, `webpush`, `unifiedpush`, `wns`).
     pub fn name(self) -> &'static str {
         match self {
             PushService::Apns => "apns",
             PushService::Fcm => "fcm",
             PushService::WebPush => "webpush",
             PushService::UnifiedPush => "unifiedpush",
+            PushService::Wns => "wns",
         }
     }
 
@@ -72,6 +77,7 @@ impl PushService {
             PushService::Fcm,
             PushService::WebPush,
             PushService::UnifiedPush,
+            PushService::Wns,
         ]
         .into_iter()
         .find(|s| s.name() == name)
@@ -85,7 +91,7 @@ pub struct PushSubscription {
     /// The push service the token belongs to.
     pub service: PushService,
     /// APNs: the device token (hex). FCM: the registration token. Web Push
-    /// and UnifiedPush: the endpoint URL.
+    /// and UnifiedPush: the endpoint URL. WNS: the channel URI.
     pub token: String,
     /// Web Push and UnifiedPush: the device's P-256 public key (base64url,
     /// uncompressed), for RFC 8291 encryption.
@@ -859,6 +865,15 @@ mod tests {
         apns.topic = Some("dev.prism.counter".into());
         apns.sandbox = true;
         assert_eq!(PushSubscription::from_json(&apns.to_json()), Some(apns));
+        let wns = PushSubscription::new(
+            PushService::Wns,
+            "https://wns2-par02p.notify.windows.com/w/?token=AwYAAAB",
+        );
+        assert_eq!(
+            wns.to_json(),
+            r#"{"service":"wns","token":"https://wns2-par02p.notify.windows.com/w/?token=AwYAAAB"}"#
+        );
+        assert_eq!(PushSubscription::from_json(&wns.to_json()), Some(wns));
     }
 
     #[test]

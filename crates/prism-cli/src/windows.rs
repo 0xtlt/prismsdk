@@ -30,7 +30,9 @@ const DEFAULT_CROSS: &str = "x86_64-pc-windows-gnu";
 
 /// What `prism_build::link_app()` writes into the executable, from
 /// Prism.toml: `PRISM_APP_NAME`, `PRISM_VERSION`, `PRISM_BUILD`,
-/// `PRISM_BUNDLE_ID`, `PRISM_PUBLISHER`, `PRISM_DESCRIPTION`, `PRISM_ICON`.
+/// `PRISM_BUNDLE_ID`, `PRISM_PUBLISHER`, `PRISM_DESCRIPTION`, `PRISM_ICON`;
+/// and `PRISM_WNS_REMOTE_ID` (`[push] wns_remote_id`), which the Windows
+/// backend reads.
 pub fn app_env(p: &Project) -> Vec<(&'static str, String)> {
     let mut env = vec![
         ("PRISM_APP_NAME", p.name.clone()),
@@ -48,6 +50,10 @@ pub fn app_env(p: &Project) -> Vec<(&'static str, String)> {
     }
     if let Some(icon) = &p.icon {
         env.push(("PRISM_ICON", icon.display().to_string()));
+    }
+    // Push (WNS) in an MSIX: the channel's remote id (`prism-windows`).
+    if let Some(id) = &p.wns_remote_id {
+        env.push(("PRISM_WNS_REMOTE_ID", id.clone()));
     }
     env
 }
@@ -330,6 +336,7 @@ fn manifest(p: &Project, arch: &str, publisher: String) -> Result<msix::Manifest
         description: p.description.clone().unwrap_or_else(|| p.name.clone()),
         executable: format!("{}.exe", p.package),
         languages: p.languages.clone(),
+        push_app_id: p.wns_app_id.clone(),
         device_capabilities: device_capabilities(p),
         publisher,
     })
@@ -634,6 +641,7 @@ mod tests {
             ["webcam", "location", "microphone"]
         );
 
+        p.wns_app_id = Some("7edfab6c-25ae-4678-b406-d1848f97919a".into());
         let m = manifest(&p, "win-arm64", "CN=Example".into()).unwrap();
         assert_eq!(m.name, "com.example.app");
         assert_eq!(m.version, "1.2.0.7");
@@ -641,6 +649,7 @@ mod tests {
         assert_eq!(m.executable, "my_app.exe");
         assert_eq!(m.publisher_display_name, "Example, Inc.");
         assert_eq!(m.toast_clsid, msix::class_id("com.example.app|CN=Example"));
+        assert!(m.xml().contains("WindowsAppRuntimePushServer"));
     }
 
     #[test]

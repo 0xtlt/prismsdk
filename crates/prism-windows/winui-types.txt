@@ -280,6 +280,11 @@ Microsoft.Windows.AppLifecycle.AppInstance
 Microsoft.Windows.AppLifecycle.AppActivationArguments
 Microsoft.Windows.AppLifecycle.ExtendedActivationKind
 Microsoft.Windows.PushNotifications.PushNotificationManager
+Microsoft.Windows.PushNotifications.PushNotificationChannel
+Microsoft.Windows.PushNotifications.PushNotificationChannelStatus
+Microsoft.Windows.PushNotifications.PushNotificationCreateChannelResult
+Microsoft.Windows.PushNotifications.PushNotificationCreateChannelStatus
+Microsoft.Windows.PushNotifications.PushNotificationReceivedEventArgs
 Microsoft.UI.Xaml.Controls.MenuBar
 Microsoft.UI.Xaml.Controls.MenuBarItem
 Microsoft.UI.Xaml.Input.KeyboardAccelerator

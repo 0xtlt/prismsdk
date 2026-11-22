@@ -26,6 +26,7 @@
 //! | APNs (iOS, iPadOS, macOS, tvOS, visionOS, watchOS) | `api.push.apple.com` (HTTP/2) | `.p8` key → ES256 JWT | [`apns`] |
 //! | FCM (Android) | `fcm.googleapis.com/v1` | service account → RS256 assertion → OAuth token | [`fcm`] |
 //! | Web Push (browsers) and UnifiedPush (Android, Linux) | the subscription's endpoint | VAPID (RFC 8292), payload encrypted with RFC 8291 | [`webpush`] |
+//! | WNS (Windows, apps shipped as an MSIX) | the channel URI (`*.notify.windows.com`) | Microsoft Entra client credentials → OAuth token | [`wns`] |
 //!
 //! Every module also builds plain [`HttpRequest`]s, for servers that have
 //! their own HTTP client. Without the default `send` feature the crate is
@@ -45,6 +46,7 @@ pub mod secret_file;
 #[cfg(test)]
 mod temp_dir;
 pub mod webpush;
+pub mod wns;
 
 #[cfg(feature = "send")]
 mod sender;
@@ -94,6 +96,8 @@ pub enum Service {
     WebPush,
     #[serde(rename = "unifiedpush")]
     UnifiedPush,
+    /// Windows Push Notification Services: `token` is the channel URI.
+    Wns,
 }
 
 /// The Web Push keys of a subscription (base64url). `Debug` hides `auth`.
@@ -163,12 +167,16 @@ impl std::fmt::Debug for Hidden {
 impl Subscription {
     /// Parses what the app reported. A Web Push or UnifiedPush endpoint
     /// must be an HTTP(S) URL without credentials; where it may point is
-    /// checked again when sending (see `Sender::trust_origin`).
+    /// checked again when sending (see `Sender::trust_origin`). A WNS
+    /// channel must be a `https://*.notify.windows.com` URL.
     pub fn from_json(json: &str) -> Result<Self, PushError> {
         let sub: Self = serde_json::from_str(json)
             .map_err(|e| PushError::Config(format!("subscription: {e}")))?;
         if matches!(sub.service, Service::WebPush | Service::UnifiedPush) {
             endpoint::Endpoint::parse(&sub.token)?;
+        }
+        if sub.service == Service::Wns {
+            wns::check_channel(&sub.token)?;
         }
         Ok(sub)
     }

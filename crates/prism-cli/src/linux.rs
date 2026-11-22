@@ -233,6 +233,8 @@ pub(crate) mod tests {
             push: None,
             google_services: None,
             vapid_public_key: None,
+            wns_remote_id: None,
+            wns_app_id: None,
             target_dir: "/w/target".into(),
             workspace_root: "/w".into(),
             deployment_targets: vec![],

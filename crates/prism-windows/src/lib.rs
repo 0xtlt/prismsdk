@@ -188,8 +188,11 @@ mod outer;
 mod overlay;
 #[cfg(target_os = "windows")]
 mod package;
+// Remote push (WNS) for MSIX packages.
 #[cfg(target_os = "windows")]
 mod peers;
+#[cfg(target_os = "windows")]
+mod push;
 // Conic gradient pixels, per-side border outlines: no Win32, tested everywhere.
 mod paint;
 // Passkeys' WebAuthn JSON, client data and errors: no Win32, tested everywhere.

@@ -471,6 +471,9 @@ pub struct Manifest {
     /// The COM class a click on a notification starts
     /// (`ToastActivatorCLSID`).
     pub toast_clsid: String,
+    /// WNS: the app's Microsoft Entra application (client) id, the COM
+    /// class a push starts.
+    pub push_app_id: Option<String>,
     /// `DeviceCapability` names (`location`, `webcam`, `microphone`).
     pub device_capabilities: Vec<String>,
 }
@@ -515,6 +518,16 @@ impl Manifest {
               <com:Class Id="{clsid}" />
             </com:ExeServer>"#
         );
+        if let Some(id) = &self.push_app_id {
+            let _ = write!(
+                extensions,
+                r#"
+            <com:ExeServer Executable="{exe}" DisplayName="{display}" Arguments="----WindowsAppRuntimePushServer:">
+              <com:Class Id="{}" DisplayName="Windows App SDK Push" />
+            </com:ExeServer>"#,
+                e(id)
+            );
+        }
         extensions.push_str(
             r#"
           </com:ComServer>
@@ -616,6 +629,16 @@ pub fn class_id(seed: &str) -> String {
         b[14],
         b[15]
     )
+}
+
+/// Whether `id` is a GUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+pub fn is_guid(id: &str) -> bool {
+    let parts: Vec<&str> = id.split('-').collect();
+    parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(p, n)| p.len() == n && p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// A package's `Publisher`: a distinguished name in Windows' form
@@ -918,9 +941,12 @@ mod tests {
         assert!(package_name("ab").is_err());
         assert!(package_name(&format!("com.{}", "x".repeat(50))).is_err());
         let id = class_id("com.example.app|CN=Example");
+        assert!(is_guid(&id), "{id}");
         assert_eq!(id, class_id("com.example.app|CN=Example"));
         assert_ne!(id, class_id("com.example.app|CN=Other"));
         assert_eq!(&id[14..15], "8");
+        assert!(!is_guid("not-a-guid"));
+        assert!(is_guid("7edfab6c-25ae-4678-b406-d1848f97919a"));
     }
 
     #[test]
@@ -954,6 +980,7 @@ mod tests {
             executable: "counter.exe".into(),
             languages: vec!["en".into(), "fr".into()],
             toast_clsid: class_id("x"),
+            push_app_id: Some("7edfab6c-25ae-4678-b406-d1848f97919a".into()),
             device_capabilities: vec!["location".into()],
         };
         let x = m.xml();
@@ -966,6 +993,8 @@ mod tests {
             r#"<Resource Language="en" />"#,
             r#"<Resource Language="fr" />"#,
             r#"Arguments="----AppNotificationActivated:""#,
+            r#"Arguments="----WindowsAppRuntimePushServer:""#,
+            r#"<com:Class Id="7edfab6c-25ae-4678-b406-d1848f97919a" DisplayName="Windows App SDK Push" />"#,
             r#"<rescap:Capability Name="runFullTrust" />"#,
             r#"<DeviceCapability Name="location" />"#,
         ] {

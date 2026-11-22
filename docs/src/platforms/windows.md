@@ -344,7 +344,7 @@ kinds and services come next (see [Not yet](#not-yet)).
 | Share sheet | Windows' Share dialog for the window (`IDataTransferManagerInterop::GetForWindow`, `ShowShareUIForWindow`): the window's title, the text, a link (`SetWebLink`, and after the text, on its own line, for targets that read only text, as on Android) and files (read-only `StorageFile`s; a file that cannot be read is left out, and the text, the link and the other files still go). As on Apple platforms, it answers nothing |
 | Passkeys | `webauthn.dll` (Windows 10 1903 and later), the API browsers use: `WebAuthNAuthenticatorMakeCredential` and `GetAssertion` with the relying party, the user, the challenge, the algorithms, `excludeCredentials` and `allowCredentials` with their transports, user verification, the attachment, resident keys, attestation and the timeout of the WebAuthn JSON. The client data is a browser's (`origin` `https://<rpId>`), so a server checks it as it checks a browser's. Windows' own dialog, owned by the window: Windows Hello, security keys, phones. A new ceremony cancels the open one (`WebAuthNCancelCurrentOperation`: `Cancelled`) and starts once that one has returned (Windows runs one at a time; 5 s at most), and only the newest waits; errors carry the web's names as on the web and Android (`WebAuthNGetErrorName`: `NotAllowedError` is `Cancelled`; `InvalidStateError` for an excluded credential, `ConstraintError` and `NotSupportedError`, a request Windows refuses, stay `Platform` errors with that name; none is `Unavailable`). `capabilities().passkeys` when the DLL loads; `webauthn_autofill` answers `Unavailable` (no conditional mediation for apps) |
 | Haptics | the PC's vibration device (`VibrationDevice`, its `SimpleHapticsController`): click, press, success and error waveforms, with intensity and repeats. Most PCs have none: `capabilities().haptics` is false and `haptic` does nothing. A pen's haptics (only while it touches the screen, and `haptic` names no pointer) and haptic touchpads (Windows plays their feedback, apps have no API) are not used |
-| Push | « unavailable »: Windows push notifications (WNS) need package identity (an MSIX or a sparse package), so an unpackaged app gets no channel |
+| Push | Windows Push Notification Services through the Windows App SDK's `PushNotificationManager`, in an MSIX only (`PushService::Wns`): the channel URI for `[push] wns_remote_id` is the token, pushes are raw notifications carrying Prism's payload, shown by the app when it is in the background or run by `on_background_push` when silent; a push starts a closed app (the manifest's push COM server). The zip build answers « unavailable » (WNS needs package identity), and so does an MSIX built without `wns_remote_id`. Not run end to end: see [Remote push notifications](../guide/push.md#windows-wns) |
 
 **Notification registration.** `AppNotificationManager::Register` gives the
 unpackaged app an identity for notifications, per user: its display name and
@@ -375,7 +375,8 @@ above works so. What needs a package, and what Prism does instead:
   Capturing frames with `MediaCapture` would need a camera UI of Prism's
   own. A PC without the Camera app (Windows N editions, or the app
   removed) has no `take_photo`.
-- **Push.** WNS gives no channel to an unpackaged app (see Services).
+- **Push.** WNS gives no channel to an unpackaged app: push needs the MSIX
+  build ([MSIX](#msix)).
 - **Prompts.** Windows asks no one for the camera, motion, sharing or
   haptics; the Camera app asks for the camera itself. Location is one
   switch for all desktop apps (« Let desktop apps access your location »),
@@ -640,6 +641,7 @@ The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
 | `Application` | the executable, `Windows.FullTrustApplication`, and the `runFullTrust` capability |
 | Logos | `StoreLogo` (50 px), `Square44x44Logo`, `Square150x150Logo`, scaled from `[app] icon` (a PNG, or the largest PNG in an `.ico`; a grey square without an icon) |
 | Notifications | `ToastNotificationActivation` and the COM server a click starts (`----AppNotificationActivated:`), its CLSID derived from the name and publisher |
+| Push | with `[push] wns_app_id`: the COM server WNS starts the app with (`----WindowsAppRuntimePushServer:`), see [Remote push notifications](../guide/push.md#windows-wns) |
 | `DeviceCapability` | `[permissions]`: `location` and `location_always` give `location`, `camera` gives `webcam`, `microphone` gives `microphone` |
 
 Not in the manifest: URL schemes and app URI handlers (`Prism.toml`
@@ -665,7 +667,7 @@ equals the signer's subject; both packages unpack and repack with
 `makeappx`. `Add-AppxPackage` (per user) refuses them, because the PC does
 not trust the test root, and trusting it would change the PC's
 certificate stores: so the packaged app has not been run (start, the
-framework's classes, fonts and notifications in a package).
+framework's classes, fonts, notifications and push in a package).
 
 ### Signing
 
@@ -856,8 +858,11 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 - **Embedded content and input:** a precision touchpad's
   pinch is only handled as the Ctrl + wheel Windows sends apps (touchpads
   cannot be injected).
-- **Services:** push answers « unavailable » (WNS needs package
-  identity); notification banners and the Hello prompt are untested on
+- **Services:** push (WNS) is built and checked up to the channel
+  request, which needs a Microsoft Entra app registration mapped to the
+  package by Microsoft: no channel, push or push-started app has been
+  seen ([Remote push notifications](../guide/push.md#windows-wns));
+  notification banners and the Hello prompt are untested on
   screen (the test PC shows no banners from any app and has no Hello
   device: delivery, clicks and the « unavailable » answer are tested). The
   device APIs' dialogs (the Share dialog, the Camera app's capture UI,
