@@ -258,7 +258,7 @@ jobs:
           node --check crates/prism-web/src/client.js
           node --check scripts/web-e2e.mjs
       - name: Client tests
-        run: node --test crates/prism-web/tests/js/
+        run: node --test 'crates/prism-web/tests/js/*.test.mjs'
 
   # The counter's web server in headless Chrome (DevTools protocol over
   # Node's WebSocket): every tab loads and connects, +1 updates the count

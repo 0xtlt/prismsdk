@@ -108,7 +108,7 @@ crates.io names.
 - docs.rs builds every crate within minutes (<https://docs.rs/crate/prismsdk/latest/builds>).
   The Apple, Android and Windows backends are documented on docs.rs' Linux target (see
   their `[package.metadata.docs.rs]`).
-- The book and the `main` API docs are deployed by `.github/workflows/docs.yml`
-  on every push to `main`.
+- `.github/workflows/docs.yml` only checks the book and the API docs; it
+  deploys nothing (the site will be hosted on prismsdk.dev).
 - A broken release can't be deleted, only yanked: `cargo yank --version
   0.2.0 <crate>`, then publish a fixed patch.
