@@ -695,11 +695,17 @@ itself with the developer's certificate, when
 | `PRISM_WINDOWS_CERTIFICATE_PASS` | its password (never in `Prism.toml`) |
 | `PRISM_WINDOWS_TIMESTAMP_URL` | optional: an RFC 3161 time-stamping server, so the signature outlives the certificate |
 
-On Windows `signtool` signs (`PRISM_SIGNTOOL`, else on `PATH`, else the
-Windows SDK's); elsewhere `osslsigncode` (`PRISM_OSSLSIGNCODE`, else on
-`PATH`; `brew install osslsigncode` or `apt install osslsigncode`), which
-reads the password from a file only the user can read. The signature is
-SHA-256 Authenticode. Without the variable nothing is signed: the zip
+The password goes on no command line, where the user's other processes
+and process-creation logs could read it. What each tool sees:
+
+| Tool | Chosen | What it exposes |
+|---|---|---|
+| `osslsigncode` | first, on every OS: `PRISM_OSSLSIGNCODE`, else on `PATH` (`brew install osslsigncode`, `apt install osslsigncode`) | the password is in a file in a new temporary folder only the user can open (0700; on Windows its inherited permissions replaced by the user's alone), deleted after signing |
+| `signtool` | on Windows without osslsigncode: `PRISM_SIGNTOOL`, else on `PATH`, else the Windows SDK's | signtool takes a password only on its command line (`/p`), so Prism gives it none: Windows PowerShell opens the `.pfx` with the password from its standard input, keeps the key in memory (no certificate store), and writes a copy without a password into such a private folder; signtool reads that copy, which is deleted right after. signtool leaves the key it imported in the user's key folders (`%APPDATA%\Microsoft\Crypto\Keys`, `…\Crypto\RSA`): the files that appeared while it signed are deleted |
+
+For the few seconds of signing, the password-less copy is readable by any
+process running as the user, as the password itself would be. The
+signature is SHA-256 Authenticode. Without the variable nothing is signed: the zip
 still runs (a downloaded unsigned executable gets a SmartScreen warning on
 its first run), the MSIX does not install.
 
