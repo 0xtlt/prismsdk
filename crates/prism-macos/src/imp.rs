@@ -3441,16 +3441,32 @@ fn text_area_size(t: &MacTextArea, max_width: Option<f32>) -> NSSize {
     let width = max_width.map_or(240., |w| w as f64);
     let border = t.border();
     let inset = t.text.textContainerInset();
-    let (lm, tc) = unsafe { (t.text.layoutManager(), t.text.textContainer()) };
-    let content = match (lm, tc) {
-        (Some(lm), Some(tc)) => {
-            // Lay out at the asked width, then give the container back.
-            let old = tc.size();
-            let w = (width - 2. * inset.width - 2. * border).max(1.);
-            tc.setSize(NSSize::new(w, f64::MAX / 4.));
-            lm.ensureLayoutForTextContainer(&tc);
-            let used = lm.usedRectForTextContainer(&tc).size.height;
-            tc.setSize(old);
+    // An unstyled field's bezel (1 pt a side) is the scroll view's: its
+    // text is that much narrower and shorter than the frame.
+    let probe = NSSize::new(1000., 1000.);
+    let inside = unsafe {
+        NSScrollView::contentSizeForFrameSize_horizontalScrollerClass_verticalScrollerClass_borderType_controlSize_scrollerStyle(
+            probe,
+            None,
+            None,
+            t.scroll.borderType(),
+            NSControlSize::Regular,
+            objc2_app_kit::NSScrollerStyle::Overlay,
+            MainThreadMarker::from(&*t.scroll),
+        )
+    };
+    let bezel = NSSize::new(probe.width - inside.width, probe.height - inside.height);
+    let (lm, tc, storage) = unsafe {
+        (
+            t.text.layoutManager(),
+            t.text.textContainer(),
+            t.text.textStorage(),
+        )
+    };
+    let content = match (lm, tc, storage) {
+        (Some(lm), Some(tc), Some(storage)) => {
+            let w = (width - bezel.width - 2. * inset.width - 2. * border).max(1.);
+            let used = text_height(&storage, &lm, &tc, w);
             let font = t
                 .text
                 .font()
@@ -3475,7 +3491,37 @@ fn text_area_size(t: &MacTextArea, max_width: Option<f32>) -> NSSize {
         }
         _ => 54.,
     };
-    NSSize::new(width, content + 2. * inset.height + 2. * border)
+    NSSize::new(
+        width,
+        content + 2. * inset.height + 2. * border + bezel.height,
+    )
+}
+
+/// The height of `storage`'s text laid out `width` wide, as the view's
+/// layout manager `lm` and container `like` lay it out. Measured in a copy: the view's own container tracks the view's
+/// width, so laying it out at another width (while the view resizes to fit)
+/// could come back empty, and the field one line short.
+fn text_height(
+    storage: &objc2_app_kit::NSTextStorage,
+    lm_like: &objc2_app_kit::NSLayoutManager,
+    like: &objc2_app_kit::NSTextContainer,
+    width: f64,
+) -> f64 {
+    use objc2_app_kit::{NSLayoutManager, NSTextContainer, NSTextStorage};
+    let copy = NSTextStorage::new();
+    copy.setAttributedString(storage);
+    let lm = NSLayoutManager::new();
+    lm.setTypesetterBehavior(lm_like.typesetterBehavior());
+    lm.setUsesFontLeading(lm_like.usesFontLeading());
+    let tc = NSTextContainer::initWithSize(
+        objc2::AllocAnyThread::alloc(),
+        NSSize::new(width, f64::MAX / 4.),
+    );
+    tc.setLineFragmentPadding(like.lineFragmentPadding());
+    lm.addTextContainer(&tc);
+    copy.addLayoutManager(&lm);
+    lm.ensureLayoutForTextContainer(&tc);
+    lm.usedRectForTextContainer(&tc).size.height
 }
 
 impl AppKit {
@@ -6863,6 +6909,36 @@ mod text_area_tests {
     fn the_default_inset_keeps_appkits_look() {
         assert_eq!(TEXT_AREA_INSET.width + LABEL_FRAGMENT_PADDING, 7. + 5.);
         assert_eq!(TEXT_AREA_INSET.height, 8.);
+    }
+
+    /// A field is measured as tall as its text lays out: the counter's
+    /// rich note wrapped its chip to a second line that the field had no
+    /// room for (measured one line short, the view's typesetter aside).
+    #[test]
+    fn a_text_area_is_measured_as_it_lays_its_text_out() {
+        use objc2_app_kit::{NSLayoutManager, NSTextContainer, NSTextStorage};
+        let storage = NSTextStorage::new();
+        storage.setAttributedString(&objc2_foundation::NSAttributedString::from_nsstring(
+            &NSString::from_str("Select these words, or ⌘-click a link. See the roadmap."),
+        ));
+        let lm = NSLayoutManager::new();
+        lm.setTypesetterBehavior(
+            objc2_app_kit::NSTypesetterBehavior::Behavior_10_2_WithCompatibility,
+        );
+        storage.addLayoutManager(&lm);
+        let tc = NSTextContainer::initWithSize(
+            objc2::AllocAnyThread::alloc(),
+            NSSize::new(150., f64::MAX / 4.),
+        );
+        tc.setLineFragmentPadding(LABEL_FRAGMENT_PADDING);
+        lm.addTextContainer(&tc);
+        lm.ensureLayoutForTextContainer(&tc);
+        let laid_out = lm.usedRectForTextContainer(&tc).size.height;
+        let one_line = lm.defaultLineHeightForFont(&NSFont::systemFontOfSize(12.));
+        assert!(laid_out > 2. * one_line, "wraps: {laid_out}");
+        assert_eq!(text_height(&storage, &lm, &tc, 150.), laid_out);
+        // Measured in a copy: the view's own layout is left as it was.
+        assert_eq!(tc.size().width, 150.);
     }
 }
 
