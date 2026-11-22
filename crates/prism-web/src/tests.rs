@@ -222,8 +222,8 @@ fn ssr_image_progress_timer_and_shape() {
             set_text(1, "i0,0\n|M 0 0 L 1 1\n"),
             Patch::SetRoot { id: 1 },
         ]),
-        // Drawn by the client once it knows the box's size.
-        r#"<div data-pid="1" data-kind="shape" style="" class="prism-shape"></div>"#
+        // Size unknown: scaled to the box until the client measures it.
+        r#"<div data-pid="1" data-kind="shape" style="" class="prism-shape"><svg aria-hidden="true" viewBox="0 0 100 100" preserveAspectRatio="none"><path d="M0 0L100 100" style="fill:none;stroke:none;"></path></svg></div>"#
     );
     assert_eq!(
         html(&[create(1, NodeKind::Timer), Patch::SetRoot { id: 1 }]),
@@ -4824,5 +4824,131 @@ fn a_selection_across_fields_has_a_json_encoding_and_events() {
     assert_eq!(
         ev(json!({"t": "acrosscopy", "id": 1, "cut": true})),
         Some(UiEvent::CopyAcross(1, true))
+    );
+}
+
+// --- Shapes in the first paint (#285) ------------------------------------------------
+
+fn shape_page(style: Style, drawing: &prism_core::shape::Drawing) -> crate::html::PageHtml {
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(1, NodeKind::Shape),
+        Patch::SetStyle { id: 1, style },
+        set_text(1, &drawing.encode()),
+        Patch::SetRoot { id: 1 },
+    ]);
+    b.to_page()
+}
+
+fn fixed(w: f32, h: f32) -> Style {
+    Style {
+        width: Length::Px(w),
+        height: Length::Px(h),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn ssr_shape_of_a_fixed_size_is_drawn_in_pixels_like_the_client() {
+    use prism_core::shape::{Drawing, Path};
+    let icon = Drawing {
+        inset: (2., 2.),
+        paths: vec![
+            Path::new()
+                .move_to(0., 0.)
+                .line_to(1., 1.)
+                .stroke(Color::current(), 2.)
+                .round(),
+            Path::circle(0.5, 0.5, 0.5).fill(Color::adaptive(
+                prism_core::rgb(0x000000),
+                prism_core::rgb(0xffffff),
+            )),
+        ],
+    };
+    let page = shape_page(fixed(24., 24.), &icon);
+    let root = &page.root;
+    assert!(
+        root.contains(r#"<svg aria-hidden="true" viewBox="0 0 24 24">"#),
+        "{root}"
+    );
+    assert!(!root.contains("preserveAspectRatio"), "{root}");
+    // The inset box is 20×20 from (2, 2): the line, then the circle in two halves.
+    assert!(root.contains(r#"d="M2 2L22 22""#), "{root}");
+    assert!(
+        root.contains(r#"d="M12 2A10 10 0 0 1 12 22A10 10 0 0 1 12 2Z""#),
+        "{root}"
+    );
+    // Paint as rules (`data-ps`), never a `style` attribute (strict CSP).
+    assert!(!root.contains("style="), "{root}");
+    assert!(
+        page.css
+            .contains("stroke-width:2;stroke-linecap:round;stroke-linejoin:round;")
+    );
+    assert!(
+        page.css
+            .contains("color-mix(in srgb, currentColor 100%, transparent)")
+    );
+    assert!(page.css.contains("fill:light-dark("), "{}", page.css);
+    assert!(!page.css.contains("vector-effect"), "{}", page.css);
+}
+
+#[test]
+fn ssr_shape_of_a_flexible_size_scales_or_waits_for_the_client() {
+    use prism_core::shape::{Drawing, Path};
+    let line = Drawing {
+        inset: (0., 0.),
+        paths: vec![Path::line([(0., 1.), (0.5, 0.25), (1., 0.5)]).stroke(Color::current(), 1.5)],
+    };
+    let wide = Style {
+        width: Length::Fraction(1.),
+        height: Length::Px(40.),
+        ..Default::default()
+    };
+    let page = shape_page(wide.clone(), &line);
+    assert!(
+        page.root
+            .contains(r#"viewBox="0 0 100 100" preserveAspectRatio="none""#),
+        "{}",
+        page.root
+    );
+    assert!(
+        page.root.contains(r#"d="M0 100L50 25L100 50""#),
+        "{}",
+        page.root
+    );
+    // A stroke keeps its width while the drawing stretches.
+    assert!(
+        page.css.contains("vector-effect:non-scaling-stroke;"),
+        "{}",
+        page.css
+    );
+
+    // A circle would stretch into an ellipse, an inset is in pixels: the
+    // client draws those once it knows the box.
+    let ring = Drawing {
+        inset: (0., 0.),
+        paths: vec![Path::circle(0.5, 0.5, 0.5).stroke(Color::current(), 1.)],
+    };
+    let inset = Drawing {
+        inset: (4., 4.),
+        ..line.clone()
+    };
+    for d in [&ring, &inset] {
+        let page = shape_page(wide.clone(), d);
+        assert!(
+            page.root.ends_with(r#"class="prism-shape"></div>"#),
+            "{}",
+            page.root
+        );
+    }
+    // A border makes the drawn box smaller than the style's size.
+    let bordered = Style {
+        border_width: 1.,
+        ..fixed(24., 24.)
+    };
+    assert!(
+        shape_page(bordered, &ring)
+            .root
+            .ends_with(r#"class="prism-shape"></div>"#)
     );
 }

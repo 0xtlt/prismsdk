@@ -46,6 +46,9 @@ struct HtmlNode {
     attributes: Vec<(String, String)>,
     /// A rich input's runs (`Patch::SetRichValue`, #115).
     runs: String,
+    /// A shape's box in pixels when its style fixes both sides (`w(px)`,
+    /// `h(px)`, no border): its first paint is drawn at that size (#285).
+    fixed_size: Option<(f32, f32)>,
 }
 
 /// A server-rendered page's parts ([`HtmlBackend::to_page`]).
@@ -166,6 +169,14 @@ impl Backend for HtmlBackend {
                         n.states =
                             crate::css::states_css(n.kind.unwrap_or(NodeKind::View), *id, style);
                         n.inert = style.inert;
+                        n.fixed_size = match (style.width, style.height) {
+                            (prism_core::Length::Px(w), prism_core::Length::Px(h))
+                                if style.border_none || style.border_width <= 0. =>
+                            {
+                                Some((w, h))
+                            }
+                            _ => None,
+                        };
                     }
                 }
                 Patch::SetText { id, text } => self.with(*id, |n| n.text = text.clone()),
@@ -754,9 +765,17 @@ impl HtmlBackend {
                     escape(&n.text)
                 );
             }
-            // Drawn by the client once the box has a size (see client.js).
+            // In the first paint like text (#285): an `<svg>` drawn at the
+            // box's fixed size, the way `drawShape` (client.js) draws it;
+            // the client draws it again whenever the box is resized.
             NodeKind::Shape => {
-                let _ = write!(out, r#"<div {attrs} class="prism-shape"></div>"#);
+                let svg = match self.sheet.borrow_mut().as_mut() {
+                    Some(sheet) => shape_svg(&n.text, n.fixed_size, &mut |css| sheet.attr(css)),
+                    None => shape_svg(&n.text, n.fixed_size, &mut |css| {
+                        format!(r#" style="{}""#, escape(css))
+                    }),
+                };
+                let _ = write!(out, r#"<div {attrs} class="prism-shape">{svg}</div>"#);
             }
             // Drawn by the client with WebGL 2: it starts the scene from
             // `data-scene` (a full update) before the socket connects.
@@ -1112,6 +1131,150 @@ pub fn input_attrs(config: &str) -> String {
 pub(crate) fn object_position_css(config: &str) -> String {
     let (x, y) = prism_core::picture_position(config);
     format!("object-position:{}% {}%;", x * 100., y * 100.)
+}
+
+/// A shape's drawing (`prism_core::shape::Drawing::encode`) as the
+/// `<svg>` `drawShape` (client.js) builds: in pixels when the box's size is
+/// known (`size`), else scaled to the box (`preserveAspectRatio="none"`,
+/// strokes that don't scale) if that draws it the same, i.e. without insets
+/// or arcs (circles would turn into ellipses); else nothing until the
+/// client measures the box. `style` gives each path its paint, as CSS
+/// (` data-ps="…"` on a page, so no `style` attribute is needed).
+pub(crate) fn shape_svg(
+    text: &str,
+    size: Option<(f32, f32)>,
+    style: &mut dyn FnMut(&str) -> String,
+) -> String {
+    use prism_core::shape::{Drawing, Segment};
+    let d = Drawing::decode(text);
+    if d.paths.is_empty() {
+        return String::new();
+    }
+    let scaled = size.is_none();
+    let (w, h) = match size {
+        Some(s) => s,
+        None => {
+            let arcs = d
+                .paths
+                .iter()
+                .flat_map(|p| &p.segments)
+                .any(|s| matches!(s, Segment::Arc { .. }));
+            if arcs || d.inset != (0., 0.) {
+                return String::new();
+            }
+            (100., 100.)
+        }
+    };
+    let (ix, iy) = d.inset;
+    let (iw, ih) = ((w - 2. * ix).max(0.), (h - 2. * iy).max(0.));
+    let side = iw.min(ih);
+    // Two decimals: the browser can't show more, and the page stays small.
+    let num = |v: f32| {
+        let v = (v * 100.).round() / 100.;
+        if v == 0. {
+            "0".to_string()
+        } else {
+            v.to_string()
+        }
+    };
+    let x = |v: f32| num(ix + v * iw);
+    let y = |v: f32| num(iy + v * ih);
+    let mut o = format!(
+        r#"<svg aria-hidden="true" viewBox="0 0 {} {}""#,
+        num(w),
+        num(h)
+    );
+    if scaled {
+        o.push_str(r#" preserveAspectRatio="none""#);
+    }
+    o.push('>');
+    for p in &d.paths {
+        let mut path = String::new();
+        let mut open = false;
+        for s in &p.segments {
+            match *s {
+                Segment::Move(a, b) | Segment::Line(a, b) => {
+                    let c = if open && matches!(s, Segment::Line(..)) {
+                        'L'
+                    } else {
+                        'M'
+                    };
+                    let _ = write!(path, "{c}{} {}", x(a), y(b));
+                    open = true;
+                }
+                Segment::Cubic(a, b, c, e, f, g) => {
+                    if !open {
+                        let _ = write!(path, "M{} {}", x(a), y(b));
+                    }
+                    let _ = write!(
+                        path,
+                        "C{} {} {} {} {} {}",
+                        x(a),
+                        y(b),
+                        x(c),
+                        y(e),
+                        x(f),
+                        y(g)
+                    );
+                    open = true;
+                }
+                Segment::Arc {
+                    cx,
+                    cy,
+                    r,
+                    start,
+                    end,
+                } => {
+                    // Degrees clockwise from 12 o'clock; the radius is a
+                    // fraction of the smaller side.
+                    let (cx, cy, r) = (ix + cx * iw, iy + cy * ih, r * side);
+                    let at = |a: f32| {
+                        let a = a.to_radians();
+                        format!("{} {}", num(cx + r * a.sin()), num(cy - r * a.cos()))
+                    };
+                    let _ = write!(path, "{}{}", if open { 'L' } else { 'M' }, at(start));
+                    open = true;
+                    let sweep = (end - start).clamp(-360., 360.);
+                    // One SVG arc can't draw a full circle: two halves at most.
+                    let parts = if sweep.abs() > 180. { 2 } else { 1 };
+                    for k in 1..=parts {
+                        let _ = write!(
+                            path,
+                            "A{} {} 0 0 {} {}",
+                            num(r),
+                            num(r),
+                            if sweep > 0. { 1 } else { 0 },
+                            at(start + sweep / parts as f32 * k as f32)
+                        );
+                    }
+                }
+                Segment::Close => {
+                    path.push('Z');
+                    open = false;
+                }
+            }
+        }
+        let paint = |c: Option<prism_core::Color>| c.map_or("none".to_string(), |c| c.to_css());
+        let mut css = format!("fill:{};stroke:{};", paint(p.fill), paint(p.stroke));
+        if p.stroke.is_some() {
+            let _ = write!(css, "stroke-width:{};", num(p.width));
+            if scaled {
+                css.push_str("vector-effect:non-scaling-stroke;");
+            }
+        }
+        if p.round {
+            css.push_str("stroke-linecap:round;stroke-linejoin:round;");
+        }
+        if let Some((dash, gap)) = p.dash {
+            let _ = write!(css, "stroke-dasharray:{} {};", num(dash), num(gap));
+        }
+        if p.even_odd {
+            css.push_str("fill-rule:evenodd;");
+        }
+        let _ = write!(o, r#"<path d="{}"{}></path>"#, escape(&path), style(&css));
+    }
+    o.push_str("</svg>");
+    o
 }
 
 pub fn escape(s: &str) -> String {

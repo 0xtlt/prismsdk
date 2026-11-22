@@ -7,6 +7,18 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Fixed
+
+- Web: shapes (icons drawn with `shape()`) are in the server-rendered first
+  paint instead of popping in once `client.js` has loaded (#285). The server
+  writes the `<svg>`: in pixels when the shape's width and height are fixed,
+  scaled to the box when it has no arcs or insets (strokes keep their width),
+  and the client draws it again whenever the box is resized. Paint goes in
+  the page's style rules, so a strict `style-src` still allows it.
+- The guide and the "Part of Prism" links of `prismsdk-core`, `-push`,
+  `-apple-build`, `-build`, `-http`, `-ui` and `-native` point to
+  <https://prismsdk.dev/>.
+
 ## 0.1.0 (2026-11-22)
 
 The first version of Prism: write a UI once in Rust and ship it as a web app

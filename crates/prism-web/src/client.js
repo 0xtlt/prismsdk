@@ -1159,7 +1159,9 @@
     }
     const iw = Math.max(0, w - 2 * ix), ih = Math.max(0, h - 2 * iy), side = Math.min(iw, ih);
     const X = (x) => ix + x * iw, Y = (y) => iy + y * ih;
-    let svg = el._svg;
+    // The server's first paint may have drawn it already (#285).
+    let svg = el._svg || (el._svg = el.querySelector(":scope > svg"));
+    if (svg) svg.removeAttribute("preserveAspectRatio");
     if (!svg) {
       svg = el._svg = document.createElementNS(svgNS, "svg");
       svg.setAttribute("aria-hidden", "true");
