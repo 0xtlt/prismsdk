@@ -190,13 +190,20 @@ pub(crate) fn request_host(headers: &HeaderMap, uri: Option<&Uri>) -> Option<Str
 }
 
 /// The scheme the browser used (`X-Forwarded-Proto`, `Forwarded: proto=`,
-/// the URI's; `http` otherwise).
+/// the URI's; `http` otherwise). A socket's `wss` / `ws` (Traefik forwards
+/// those for WebSocket upgrades, #286) is its page's `https` / `http`.
 pub(crate) fn request_scheme(headers: &HeaderMap, uri: Option<&Uri>) -> String {
-    header(headers, "x-forwarded-proto")
-        .map(|p| p.split(',').next().unwrap_or(p).trim().to_ascii_lowercase())
+    let scheme = header(headers, "x-forwarded-proto")
+        .map(|p| p.split(',').next().unwrap_or(p).trim().to_string())
         .or_else(|| forwarded(headers, "proto"))
         .or_else(|| uri.and_then(|u| u.scheme_str()).map(str::to_string))
         .unwrap_or_else(|| "http".into())
+        .to_ascii_lowercase();
+    match scheme.as_str() {
+        "wss" => "https".into(),
+        "ws" => "http".into(),
+        _ => scheme,
+    }
 }
 
 /// The page's origin (`https://app.example.com`): the app's public origin
