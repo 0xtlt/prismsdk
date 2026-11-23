@@ -552,7 +552,7 @@ impl Formatter for BasicFormatter {
 /// `prism.clear`, `prism.unsaved_title`, `prism.unsaved_message`,
 /// `prism.discard`, `prism.cancel`, `prism.files`, `prism.images` and
 /// `prism.all_files` keys (the last three name file dialogs' filters).
-const CHROME: &[(&str, [&str; 15])] = &[
+const CHROME: &[(&str, [&str; 17])] = &[
     (
         "en",
         [
@@ -571,6 +571,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "Files",
             "Images",
             "All files",
+            "Expanded",
+            "Collapsed",
         ],
     ),
     (
@@ -591,6 +593,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "Fichiers",
             "Images",
             "Tous les fichiers",
+            "Développé",
+            "Réduit",
         ],
     ),
     (
@@ -611,6 +615,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "Dateien",
             "Bilder",
             "Alle Dateien",
+            "Erweitert",
+            "Reduziert",
         ],
     ),
     (
@@ -631,6 +637,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "Archivos",
             "Imágenes",
             "Todos los archivos",
+            "Expandido",
+            "Contraído",
         ],
     ),
     (
@@ -651,6 +659,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "File",
             "Immagini",
             "Tutti i file",
+            "Espanso",
+            "Compresso",
         ],
     ),
     (
@@ -671,6 +681,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "Arquivos",
             "Imagens",
             "Todos os arquivos",
+            "Expandido",
+            "Recolhido",
         ],
     ),
     (
@@ -691,6 +703,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "Bestanden",
             "Afbeeldingen",
             "Alle bestanden",
+            "Uitgevouwen",
+            "Samengevouwen",
         ],
     ),
     (
@@ -711,6 +725,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "الملفات",
             "الصور",
             "كل الملفات",
+            "موسّع",
+            "مطوي",
         ],
     ),
     (
@@ -731,6 +747,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "קבצים",
             "תמונות",
             "כל הקבצים",
+            "מורחב",
+            "מכווץ",
         ],
     ),
     (
@@ -751,6 +769,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "ファイル",
             "画像",
             "すべてのファイル",
+            "展開",
+            "折りたたみ",
         ],
     ),
     (
@@ -771,6 +791,8 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "文件",
             "图片",
             "所有文件",
+            "已展开",
+            "已折叠",
         ],
     ),
     (
@@ -791,14 +813,18 @@ const CHROME: &[(&str, [&str; 15])] = &[
             "파일",
             "이미지",
             "모든 파일",
+            "펼쳐짐",
+            "접힘",
         ],
     ),
 ];
 
 /// A built-in Prism text: `back`, `close`, `not_found`, `no_route`,
 /// `clear`, `unsaved_title`, `unsaved_message`, `discard`, `cancel`,
-/// `reorder`, `reorder_hint`, `reorder_position` (`{n}` of `{count}`), or a
-/// file dialog's filter: `files`, `images`, `all_files`.
+/// `reorder`, `reorder_hint`, `reorder_position` (`{n}` of `{count}`), a
+/// file dialog's filter: `files`, `images`, `all_files`, or a disclosure's
+/// state where the platform has no word of its own: `expanded`,
+/// `collapsed`.
 pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &str) -> String {
     if let Some(t) = translations.and_then(|t| t.lookup(locale, &format!("prism.{key}"))) {
         return t.to_string();
@@ -818,6 +844,8 @@ pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &s
         "files" => 12,
         "images" => 13,
         "all_files" => 14,
+        "expanded" => 15,
+        "collapsed" => 16,
         _ => 3,
     };
     CHROME

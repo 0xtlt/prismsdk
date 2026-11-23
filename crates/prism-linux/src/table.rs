@@ -32,6 +32,8 @@ use prism_core::NodeKind;
 /// `GtkAccessibleRelation` values (gtkenums.h).
 const COL_COUNT: i32 = 1;
 const COL_INDEX: i32 = 2;
+/// `GTK_ACCESSIBLE_RELATION_CONTROLS`: what a disclosure folds (#291).
+pub const CONTROLS: i32 = 5;
 const DESCRIBED_BY: i32 = 6;
 pub const LABELLED_BY: i32 = 10;
 const ROW_COUNT: i32 = 13;

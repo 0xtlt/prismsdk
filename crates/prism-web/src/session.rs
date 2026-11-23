@@ -1729,6 +1729,12 @@ impl Encoder {
                 if a11y.current {
                     a["current"] = json!(true);
                 }
+                if let Some(expanded) = a11y.expanded {
+                    a["expanded"] = json!(expanded);
+                }
+                if let Some(target) = a11y.controls_node {
+                    a["controls"] = json!(target);
+                }
                 // A tooltip (#216): its text, or `true` for the full text
                 // while truncated.
                 match &a11y.tooltip {

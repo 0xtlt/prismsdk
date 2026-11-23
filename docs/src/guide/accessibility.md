@@ -4,7 +4,7 @@ Accessibility is built in, not opt-in. The core resolves one description per nod
 
 | | Web | iOS | macOS | Windows | Android | Linux |
 |---|---|---|---|---|---|---|
-| API | ARIA + semantic HTML (`<main>`, `<h1>`, `<button>`, `role=switch`, `tablist`) | `UIAccessibility` traits, labels, values | `NSAccessibility` roles, labels, press action | UI Automation: WinUI's peers for its controls, custom automation peers for drawn views (control type, Toggle, SelectionItem and Value patterns, landmarks, dialogs) | native views (`Button`, `Switch`…), `contentDescription`, `setAccessibilityHeading` | GTK accessible roles, labels and states |
+| API | ARIA + semantic HTML (`<main>`, `<h1>`, `<button>`, `role=switch`, `tablist`) | `UIAccessibility` traits, labels, values | `NSAccessibility` roles, labels, press action | UI Automation: WinUI's peers for its controls, custom automation peers for drawn views (control type, Toggle, SelectionItem, Value and ExpandCollapse patterns, landmarks, dialogs) | native views (`Button`, `Switch`…), `contentDescription`, `setAccessibilityHeading` | GTK accessible roles, labels and states |
 | Keyboard | Tab/Enter/Space on custom buttons, arrow keys in tab bars and radio groups, visible focus | — | Full Keyboard Access, Space/Return, focus ring | Tab, Space/Enter on clickable views, focus visuals | native controls | Tab, Space/Enter on clickable views |
 | Navigation | focus moves to the new screen's title; document title follows | native | window title follows | window title follows | activity title follows (what TalkBack reads) | window title follows |
 
@@ -67,6 +67,34 @@ div()
 | `selected` | `aria-selected` | selected trait | `.isSelected` | `accessibilitySelected` | `View.setSelected` | `GTK_ACCESSIBLE_STATE_SELECTED` | SelectionItem's `IsSelected` |
 
 Only the web tells « current page » and « selected » apart; the native platforms have one selected state for both. A checked tab, radio or toggle button also reads as selected (`Accessibility::is_selected`).
+
+## Disclosures
+
+A row that folds its options, a « Show more », a button opening a panel: say whether its content is shown with `accessibility_expanded(bool)`, and which element it shows with `accessibility_controls(name)`, the name given to that element with `.id(name)`:
+
+```rust
+div()
+    .child(text("Options"))
+    .on_click(cx.listener(|this, _, _| this.open = !this.open))
+    .accessibility_expanded(self.open)
+    .accessibility_controls("options")
+// …
+self.open.then(|| div().id("options").children(options))
+```
+
+Screen readers then say « Options, button, collapsed », and « expanded » once it is open.
+
+| | `expanded` | `controls` |
+|---|---|---|
+| Web | `aria-expanded` | `aria-controls` |
+| iOS, iPadOS, tvOS, visionOS | the expanded status (iOS, iPadOS and tvOS 18, visionOS 2 and later); before, « expanded » or « collapsed » before its value | — |
+| watchOS | « expanded » or « collapsed » before its value | — |
+| macOS | `accessibilityExpanded`; a drawn view is a disclosure triangle | its linked element |
+| Android | the state description (Android 11 and later), the expand or collapse action | — |
+| Linux | `GTK_ACCESSIBLE_STATE_EXPANDED` | `GTK_ACCESSIBLE_RELATION_CONTROLS` |
+| Windows | the ExpandCollapse pattern | its controlled peer |
+
+The words « expanded » and « collapsed » come in Prism's languages; override them with the `prism.expanded` and `prism.collapsed` keys of your [translations](i18n.md).
 
 ## Tooltips
 

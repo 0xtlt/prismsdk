@@ -203,6 +203,8 @@ public final class PrismHost {
         /** The ARIA role name the app gave (`radio`, `checkbox`…), and its checked state. */
         String a11yRole;
         Boolean a11yChecked;
+        /** A disclosure's state (#291): expanded, collapsed, or none. */
+        Boolean a11yExpanded;
         /** The tooltip is the text's full content while ellipsized (#216). */
         boolean tipTruncated, tipBound;
         /** A filled picture's focal point (#218), in fractions. */
@@ -535,10 +537,20 @@ public final class PrismHost {
                 // `.heading(n)`: TalkBack says « heading » and jumps between them.
                 n.view.setAccessibilityHeading("heading".equals(n.a11yRole));
                 n.a11yChecked = p.isNull("checked") ? null : p.optBoolean("checked");
+                Boolean wasExpanded = n.a11yExpanded;
+                n.a11yExpanded = p.has("expanded") && !p.isNull("expanded") ? p.optBoolean("expanded") : null;
                 // A selected item or the current page: TalkBack says « selected ».
                 if (n.view.isSelected() != p.optBoolean("selected")) n.view.setSelected(p.optBoolean("selected"));
                 PrismText.clickable(n);
-                PrismForms.a11y(n, n.a11yRole, p.isNull("value") ? null : p.optString("value", null));
+                String a11yValue = p.isNull("value") ? null : p.optString("value", null);
+                PrismForms.a11y(n, n.a11yRole, a11yValue);
+                // A disclosure (#291): « Expanded » / « Collapsed » (Android 11+),
+                // before its value if it has one.
+                if (android.os.Build.VERSION.SDK_INT >= 30 && (n.a11yExpanded != null || wasExpanded != null)) {
+                    String state = n.a11yExpanded == null ? null : n.a11yExpanded ? expandedLabel : collapsedLabel;
+                    n.view.setStateDescription(state == null ? a11yValue
+                            : TextUtils.isEmpty(a11yValue) ? state : state + ", " + a11yValue);
+                }
                 tooltip(n, p.opt("tip"));
                 break;
             case "children": setChildren(n, p.getJSONArray("children")); break;
@@ -1108,6 +1120,8 @@ public final class PrismHost {
     static String backLabel = "Back";
     /** The action emptying an optional date picker (#89), in the app's language. */
     static String clearLabel = "Clear";
+    /** A disclosure's state as TalkBack says it (#291), in the app's language. */
+    static String expandedLabel = "Expanded", collapsedLabel = "Collapsed";
     /** The app's language (BCP 47), for formatted dates. */
     static String lang = "";
 
@@ -1173,6 +1187,8 @@ public final class PrismHost {
         rtl = p.optBoolean("rtl");
         backLabel = p.optString("back", "Back");
         clearLabel = p.optString("clear", "Clear");
+        expandedLabel = p.optString("expanded", "Expanded");
+        collapsedLabel = p.optString("collapsed", "Collapsed");
         lang = p.isNull("lang") ? "" : p.optString("lang", "");
         View decor = activity.getWindow().getDecorView();
         decor.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);

@@ -5502,6 +5502,34 @@ impl Widgets for AppKit {
         // Selected items and the current page of a navigation: AppKit has no
         // « current » attribute, VoiceOver reads them as selected.
         v.setAccessibilitySelected(a.is_selected());
+        // A disclosure (#291): AppKit's disclosure triangle, whose value
+        // VoiceOver reads as « collapsed » / « expanded ».
+        v.setAccessibilityExpanded(a.expanded == Some(true));
+        if let Some(expanded) = a.expanded
+            && !native
+            && matches!(a.role, Some(Role::Button) | None)
+        {
+            v.setAccessibilityElement(!a.hidden);
+            v.setAccessibilityRole(Some(unsafe {
+                objc2_app_kit::NSAccessibilityDisclosureTriangleRole
+            }));
+            let value = NSString::from_str(if expanded { "1" } else { "0" });
+            unsafe { v.setAccessibilityValue(Some(&value)) };
+        }
+    }
+
+    /// The element a disclosure shows (#291): its linked element, which
+    /// VoiceOver moves to (VO-Command-J).
+    fn set_controls(&mut self, view: &View, target: Option<&View>) {
+        let v = view.ns();
+        match target {
+            Some(t) => {
+                let linked: Retained<AnyObject> = objc2::Message::retain(t.ns()).into();
+                let all = objc2_foundation::NSArray::from_retained_slice(&[linked]);
+                unsafe { v.setAccessibilityLinkedUIElements(Some(&all)) };
+            }
+            None => unsafe { v.setAccessibilityLinkedUIElements(None) },
+        }
     }
 
     fn screen_viewport(&mut self, stack: &View, screen: &View) -> Viewport {

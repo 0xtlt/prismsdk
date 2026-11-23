@@ -517,6 +517,8 @@ impl Win {
         {
             log!("accessibility of node {id}: {e}");
         }
+        // A disclosure and its region, whichever was made last.
+        crate::a11y::link_controls(&self.views, id);
         true
     }
 

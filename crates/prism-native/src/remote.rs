@@ -1060,6 +1060,10 @@ impl Widgets for RemoteWidgets {
             "checked": a11y.checked,
             "selected": a11y.is_selected(),
         });
+        // A disclosure (#291): expanded or collapsed, only when it is one.
+        if let Some(expanded) = a11y.expanded {
+            op["expanded"] = json!(expanded);
+        }
         // A tooltip (#216): its text, or `true` for the full text while
         // ellipsized.
         match &a11y.tooltip {
@@ -1179,6 +1183,8 @@ impl Widgets for RemoteWidgets {
             "back": env.back,
             "close": env.close,
             "clear": env.clear,
+            "expanded": env.expanded,
+            "collapsed": env.collapsed,
         }));
     }
 

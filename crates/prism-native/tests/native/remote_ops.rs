@@ -338,6 +338,16 @@ fn chrome_ops() {
         last(&w),
         json!({"op": "a11y", "id": 3, "label": null, "hidden": false, "role": "radio", "value": null, "checked": true, "selected": true})
     );
+    // A disclosure (#291): its state, only when it is one.
+    w.set_accessibility(
+        &3,
+        &Accessibility {
+            role: Some(Role::Button),
+            expanded: Some(false),
+            ..Default::default()
+        },
+    );
+    assert_eq!(last(&w)["expanded"], json!(false));
     // The current page of a navigation is sent as selected (#64).
     w.set_accessibility(
         &3,
@@ -372,10 +382,12 @@ fn chrome_ops() {
         back: "رجوع".into(),
         close: "إغلاق".into(),
         clear: "مسح".into(),
+        expanded: "موسّع".into(),
+        collapsed: "مطوي".into(),
     });
     assert_eq!(
         last(&w),
-        json!({"op": "env", "lang": "ar", "rtl": true, "back": "رجوع", "close": "إغلاق", "clear": "مسح"})
+        json!({"op": "env", "lang": "ar", "rtl": true, "back": "رجوع", "close": "إغلاق", "clear": "مسح", "expanded": "موسّع", "collapsed": "مطوي"})
     );
     for (a, mode) in [
         (Appearance::System, "system"),

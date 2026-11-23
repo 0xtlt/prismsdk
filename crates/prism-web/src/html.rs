@@ -83,6 +83,9 @@ pub struct HtmlBackend {
     /// While [`to_html_and_css`](HtmlBackend::to_html_and_css) runs: the
     /// rules collected instead of `style` attributes.
     sheet: std::cell::RefCell<Option<Sheet>>,
+    /// While [`to_html`](HtmlBackend::to_html) runs: the nodes another one
+    /// controls (`aria-controls`, #291), which get an `id`.
+    controlled: std::cell::RefCell<std::collections::HashSet<NodeId>>,
 }
 
 /// The first paint's styles as rules: one per distinct declaration set,
@@ -367,6 +370,9 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
     } else if let Some(selected) = a.selected {
         let _ = write!(out, r#" aria-selected="{selected}""#);
     }
+    if let Some(expanded) = a.expanded {
+        let _ = write!(out, r#" aria-expanded="{expanded}""#);
+    }
     if a.current {
         let current = if a.role == Some(Role::Link) {
             "page"
@@ -435,6 +441,12 @@ impl HtmlBackend {
 
     pub fn to_html(&self) -> String {
         let mut out = String::new();
+        *self.controlled.borrow_mut() = self
+            .nodes
+            .values()
+            .filter_map(|n| n.a11y.controls_node)
+            .filter(|t| self.nodes.contains_key(t))
+            .collect();
         // Hover, press and focus rules until the client takes over (it
         // replaces the root, and this with it).
         let mut ids: Vec<&NodeId> = self
@@ -464,6 +476,15 @@ impl HtmlBackend {
             self.write(root, false, &mut out);
         }
         out
+    }
+
+    /// Node `id`'s element `id` (the one `client.js` gives it too).
+    fn dom_id(&self, id: NodeId) -> String {
+        if self.kind(id) == Some(NodeKind::Tab) {
+            format!("prism-panel-{id}")
+        } else {
+            format!("prism-n{id}")
+        }
     }
 
     fn write(&self, id: NodeId, hidden: bool, out: &mut String) {
@@ -529,8 +550,21 @@ impl HtmlBackend {
             None => format!(r#" style="{}""#, escape(&css)),
         };
         let app = app_attrs(&n.attributes);
+        // A disclosure's region (#291), by the `id` it gets (a tab's panel
+        // has its own).
+        let controls = match n.a11y.controls_node {
+            Some(t) if self.nodes.contains_key(&t) => {
+                format!(r#" aria-controls="{}""#, self.dom_id(t))
+            }
+            _ => String::new(),
+        };
+        let dom_id = if kind != NodeKind::Tab && self.controlled.borrow().contains(&id) {
+            format!(r#" id="{}""#, self.dom_id(id))
+        } else {
+            String::new()
+        };
         let attrs = format!(
-            r#"data-pid="{id}" data-kind="{}"{style}{hidden}{inert}{aria}{group}{app}"#,
+            r#"data-pid="{id}" data-kind="{}"{dom_id}{style}{hidden}{inert}{aria}{controls}{group}{app}"#,
             kind.name(),
         );
         // Sheets attached to a stack or tab bar are not screens or tabs: they

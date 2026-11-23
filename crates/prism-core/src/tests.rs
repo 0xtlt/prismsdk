@@ -636,6 +636,71 @@ fn the_current_item_of_a_navigation_is_described_and_moves() {
     );
 }
 
+struct Folding {
+    open: bool,
+}
+
+impl Render for Folding {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        // The toggle comes before the region it names: found after the
+        // render, once the region is mounted.
+        let mut root = div().child(
+            div()
+                .on_click(cx.listener(|this, _, _| this.open = !this.open))
+                .accessibility_expanded(self.open)
+                .accessibility_controls("options")
+                .child(text("Options")),
+        );
+        if self.open {
+            root = root.child(div().id("options").child(text("Bold")));
+        }
+        root
+    }
+}
+
+#[test]
+fn a_disclosure_says_it_is_expanded_and_what_it_controls() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Folding { open: false });
+        cx.set_root(root);
+    });
+    let toggle = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetAccessibility { id, a11y } if a11y.label.as_deref() == Some("Options") => {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let last = |patches: &[Patch]| {
+        patches
+            .iter()
+            .rev()
+            .find_map(|p| match p {
+                Patch::SetAccessibility { id, a11y } if *id == toggle => Some(a11y.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let a = last(&first);
+    assert_eq!(a.expanded, Some(false));
+    assert_eq!(a.controls.as_deref(), Some("options"));
+    // Collapsed: the region is not mounted, so nothing is named.
+    assert_eq!(a.controls_node, None);
+
+    let patches = rt.dispatch(UiEvent::Click(toggle));
+    let a = last(&patches);
+    assert_eq!(a.expanded, Some(true));
+    let region = rt.node_named("options").expect("mounted");
+    assert_eq!(a.controls_node, Some(region));
+
+    // Folded again: the region goes, and the link with it.
+    let patches = rt.dispatch(UiEvent::Click(toggle));
+    let a = last(&patches);
+    assert_eq!((a.expanded, a.controls_node), (Some(false), None));
+}
+
 #[test]
 fn checked_tabs_and_toggle_buttons_read_as_selected() {
     let checked = |role| Accessibility {
@@ -2922,6 +2987,12 @@ fn unsaved_changes_reach_the_backend_on_change() {
         "Tous les fichiers"
     );
     assert_eq!(crate::i18n::chrome_text(None, &fr, "files"), "Fichiers");
+    // A disclosure's state where the platform has no word for it (#291).
+    assert_eq!(crate::i18n::chrome_text(None, &fr, "expanded"), "Développé");
+    assert_eq!(
+        crate::i18n::chrome_text(None, &crate::Locale::new("ko"), "collapsed"),
+        "접힘"
+    );
     assert_eq!(
         crate::i18n::chrome_text(None, &crate::Locale::new("de"), "images"),
         "Bilder"

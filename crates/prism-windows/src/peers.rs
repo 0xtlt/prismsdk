@@ -4,7 +4,8 @@
 //! `Canvas`: WinUI gives the first a button's peer and the second none (a
 //! group's when it has a name). Prism's roles and states (`access.rs`)
 //! need more: a control type of their own (a link, a tab, a check box…),
-//! the Toggle, SelectionItem and Value patterns, a disabled state, a
+//! the Toggle, SelectionItem, Value and ExpandCollapse patterns, a
+//! disabled state, a
 //! container that is an element without a name, a dialog, and the app's
 //! content out of the tree while a modal panel is open.
 //!
@@ -23,7 +24,8 @@
 //! - The peer (`ButtonAutomationPeer`, `FrameworkElementAutomationPeer`)
 //!   overrides nine of `IAutomationPeerOverrides`' 47 methods (the
 //!   others call the base class's) and provides `IToggleProvider`,
-//!   `ISelectionItemProvider`, `IValueProvider` and, for a table and its
+//!   `ISelectionItemProvider`, `IValueProvider`, `IExpandCollapseProvider`
+//!   (a disclosure) and, for a table and its
 //!   cells (`table.rs`), `IGridProvider`, `ITableProvider`,
 //!   `IGridItemProvider` and `ITableItemProvider`.
 //!
@@ -54,12 +56,14 @@ use crate::winui::xaml::Automation::Peers::{
     IFrameworkElementAutomationPeerFactory, PatternInterface,
 };
 use crate::winui::xaml::Automation::Provider::{
-    IGridItemProvider, IGridProvider, IInvokeProvider, IRawElementProviderSimple,
-    ISelectionItemProvider, ITableItemProvider, ITableProvider, IToggleProvider, IValueProvider,
+    IExpandCollapseProvider, IGridItemProvider, IGridProvider, IInvokeProvider,
+    IRawElementProviderSimple, ISelectionItemProvider, ITableItemProvider, ITableProvider,
+    IToggleProvider, IValueProvider,
 };
 use crate::winui::xaml::Automation::{
-    AutomationElementIdentifiers, RowOrColumnMajor, SelectionItemPatternIdentifiers,
-    TogglePatternIdentifiers, ValuePatternIdentifiers,
+    AutomationElementIdentifiers, ExpandCollapsePatternIdentifiers, ExpandCollapseState,
+    RowOrColumnMajor, SelectionItemPatternIdentifiers, TogglePatternIdentifiers,
+    ValuePatternIdentifiers,
 };
 use crate::winui::xaml::Controls::{Button, Canvas, IButtonFactory, ICanvasFactory};
 use crate::winui::xaml::{FrameworkElement, IUIElementOverrides, UIElement};
@@ -204,6 +208,22 @@ pub fn changed(element: &UIElement, old: Option<&Semantics>, new: &Semantics) ->
             &state(new.toggled)?,
         )?;
     }
+    if old.expanded != new.expanded
+        && let Some(open) = new.expanded
+    {
+        let state = |e: bool| {
+            PropertyValue::CreateInt32(if e {
+                ExpandCollapseState::Expanded.0
+            } else {
+                ExpandCollapseState::Collapsed.0
+            })
+        };
+        peer.RaisePropertyChangedEvent(
+            &ExpandCollapsePatternIdentifiers::ExpandCollapseStateProperty()?,
+            &state(old.expanded == Some(true))?,
+            &state(open)?,
+        )?;
+    }
     if old.selected != new.selected && new.selected.is_some() {
         peer.RaisePropertyChangedEvent(
             &SelectionItemPatternIdentifiers::IsSelectedProperty()?,
@@ -263,7 +283,7 @@ enum Kind {
 /// address of its vtable pointer.
 #[repr(C)]
 struct Outer {
-    vtables: [*const c_void; 9],
+    vtables: [*const c_void; 10],
     refs: AtomicU32,
     /// The inner (non-delegating) object, the base class.
     inner: UnsafeCell<Option<IInspectable>>,
@@ -308,6 +328,7 @@ fn slot_of(kind: Kind, iid: &GUID) -> Option<usize> {
             ITableProvider::IID,
             IGridItemProvider::IID,
             ITableItemProvider::IID,
+            IExpandCollapseProvider::IID,
         ]
         .iter()
         .position(|i| i == iid)
@@ -438,6 +459,7 @@ struct Tables {
     table: Vtbl<3>,
     grid_item: Vtbl<5>,
     table_item: Vtbl<2>,
+    expand: Vtbl<3>,
 }
 
 fn tables() -> &'static Tables {
@@ -567,6 +589,14 @@ fn tables() -> &'static Tables {
                 no_headers as *const () as usize, // GetRowHeaderItems
             ],
         },
+        expand: Vtbl {
+            base: inspectable::<9>(),
+            methods: [
+                expand_state as *const () as usize,
+                collapse as *const () as usize,
+                expand as *const () as usize,
+            ],
+        },
     })
 }
 
@@ -582,7 +612,7 @@ fn compose(
     let vt = |v: &'static IInspectable_Vtbl| v as *const IInspectable_Vtbl as *const c_void;
     let vtables = match kind {
         Kind::Button | Kind::Canvas => {
-            let mut v = [core::ptr::null(); 9];
+            let mut v = [core::ptr::null(); 10];
             v[0] = vt(&t.identity);
             v[1] = vt(&t.element.base);
             v
@@ -597,6 +627,7 @@ fn compose(
             vt(&t.table.base),
             vt(&t.grid_item.base),
             vt(&t.table_item.base),
+            vt(&t.expand.base),
         ],
     };
     let o = Box::into_raw(Box::new(Outer {
@@ -751,6 +782,7 @@ unsafe extern "system" fn pattern(this: *mut c_void, which: i32, out: *mut *mut 
             let mine = (which == PatternInterface::Toggle && s.toggled.is_some())
                 || (which == PatternInterface::SelectionItem && s.selected.is_some())
                 || (which == PatternInterface::Value && s.value.is_some())
+                || (which == PatternInterface::ExpandCollapse && s.expanded.is_some())
                 || (matches!(which, PatternInterface::Grid | PatternInterface::Table) && grid)
                 || (matches!(
                     which,
@@ -926,6 +958,35 @@ unsafe extern "system" fn toggle_state(this: *mut c_void, out: *mut i32) -> HRES
 
 unsafe extern "system" fn toggle(this: *mut c_void) -> HRESULT {
     unsafe { activate(outer::<2>(this)) }
+}
+
+unsafe extern "system" fn expand_state(this: *mut c_void, out: *mut i32) -> HRESULT {
+    unsafe {
+        *out = match lookup(outer::<9>(this).key).and_then(|s| s.expanded) {
+            Some(true) => ExpandCollapseState::Expanded.0,
+            _ => ExpandCollapseState::Collapsed.0,
+        };
+    }
+    S_OK
+}
+
+/// Expands or collapses the region: a click, unless it already is.
+fn expand_to(this: *mut c_void, open: bool) -> HRESULT {
+    unsafe {
+        let o = outer::<9>(this);
+        if lookup(o.key).and_then(|s| s.expanded) == Some(open) {
+            return S_OK;
+        }
+        activate(o)
+    }
+}
+
+unsafe extern "system" fn collapse(this: *mut c_void) -> HRESULT {
+    expand_to(this, false)
+}
+
+unsafe extern "system" fn expand(this: *mut c_void) -> HRESULT {
+    expand_to(this, true)
 }
 
 unsafe extern "system" fn is_selected(this: *mut c_void, out: *mut bool) -> HRESULT {

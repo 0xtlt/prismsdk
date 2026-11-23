@@ -71,6 +71,12 @@ pub trait Widgets {
     /// announces a cell with its column's header. Default: nothing (the
     /// roles alone, from `set_accessibility`).
     fn set_table(&mut self, _table: &Self::View, _rows: &[table::TableRow<'_, Self::View>]) {}
+    /// The element `view` shows, hides or changes
+    /// (`accessibility_controls`, #291), after its `set_accessibility`;
+    /// `None`: none any more. Backends whose screen readers know the link
+    /// make it (macOS: linked elements, Linux: the controls relation,
+    /// Windows: controlled peers). Default: nothing.
+    fn set_controls(&mut self, _view: &Self::View, _target: Option<&Self::View>) {}
     /// Mount `view` as the root, replacing the previous one.
     fn set_root(&mut self, view: &Self::View);
     fn destroy(&mut self, view: &Self::View);
@@ -2024,6 +2030,16 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetAccessibility { id, a11y } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_accessibility(&e.view, a11y);
+                        let target = a11y
+                            .controls_node
+                            .and_then(|t| self.nodes.get(&t))
+                            .map(|t| &t.view);
+                        if a11y.controls.is_some() || self.extras.controllers.remove(id) {
+                            self.widgets.set_controls(&e.view, target);
+                        }
+                        if a11y.controls.is_some() {
+                            self.extras.controllers.insert(*id);
+                        }
                     }
                 }
                 Patch::SetAppearance { appearance } => self.widgets.set_appearance(*appearance),

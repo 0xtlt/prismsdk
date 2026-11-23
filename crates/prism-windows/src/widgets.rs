@@ -959,6 +959,11 @@ impl Widgets for Win {
         }
     }
 
+    fn set_controls(&mut self, view: &NodeId, target: Option<&NodeId>) {
+        crate::a11y::set_controls(*view, target.copied());
+        crate::a11y::link_controls(&self.views, *view);
+    }
+
     fn set_value(&mut self, view: &NodeId, value: f64) {
         let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;

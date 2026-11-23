@@ -82,6 +82,11 @@ pub struct RenderEnvironment {
     pub close: String,
     /// Label of the action emptying an optional date picker (#89).
     pub clear: String,
+    /// What screen readers say of an expanded element where the platform
+    /// has no word of its own for it (#291).
+    pub expanded: String,
+    /// The same, collapsed.
+    pub collapsed: String,
 }
 
 /// A mutation of the host tree.
@@ -941,6 +946,9 @@ pub struct Reconciler {
     global_key_up: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
     /// `.id(…)` names of mounted nodes.
     names: HashMap<String, NodeId>,
+    /// Nodes that name the element they control
+    /// (`accessibility_controls`, #291): resolved after every render.
+    controllers: IdSet<NodeId>,
     /// Nodes created with `.autofocus()` in this render.
     autofocus: Vec<NodeId>,
     /// Runtime-mounted layers: (entity, its root node), bottom first.
@@ -1496,6 +1504,8 @@ impl Reconciler {
             back: app.chrome_text("back"),
             close: app.chrome_text("close"),
             clear: app.chrome_text("clear"),
+            expanded: app.chrome_text("expanded"),
+            collapsed: app.chrome_text("collapsed"),
         };
         if self.environment.as_ref() != Some(&env) {
             let patch = Patch::SetEnvironment { env: env.clone() };
@@ -1512,8 +1522,30 @@ impl Reconciler {
                 appearance: self.appearance,
             });
         }
+        self.resolve_controls(&mut patches);
         self.push_commands(app, &mut patches);
         patches
+    }
+
+    /// The nodes controllers name (#291), once every node is mounted: the
+    /// one named may come later in the tree, or go.
+    fn resolve_controls(&mut self, patches: &mut Vec<Patch>) {
+        let ids: Vec<NodeId> = self.controllers.iter().copied().collect();
+        for id in ids {
+            let Some(name) = self.nodes.get(&id).and_then(|m| m.a11y.controls.clone()) else {
+                self.controllers.remove(&id);
+                continue;
+            };
+            let target = self.node_named(&name).filter(|t| *t != id);
+            let m = self.nodes.get_mut(&id).expect("controller is mounted");
+            if m.a11y.controls_node != target {
+                m.a11y.controls_node = target;
+                patches.push(Patch::SetAccessibility {
+                    id,
+                    a11y: m.a11y.clone(),
+                });
+            }
+        }
     }
 
     /// Mounts the app's layers (`App::add_layer`) that are not mounted yet
@@ -2320,7 +2352,17 @@ impl Reconciler {
         // A clickable container, or a table cell (#284), reads its text.
         let auto_label =
             (kind == NodeKind::View && clickable || kind.is_table_cell()) && a11y.label.is_none();
-        let effective = self.effective_a11y(id, a11y, clickable, value);
+        let mut effective = self.effective_a11y(id, a11y, clickable, value);
+        effective.controls_node = effective
+            .controls
+            .as_deref()
+            .and_then(|name| self.node_named(name))
+            .filter(|t| *t != id);
+        if effective.controls.is_some() {
+            self.controllers.insert(id);
+        } else {
+            self.controllers.remove(&id);
+        }
         let m = self.nodes.get_mut(&id).unwrap();
         m.auto_label = auto_label;
         if m.a11y != effective {
@@ -2741,6 +2783,7 @@ impl Reconciler {
         {
             self.entity_roots.remove(&e.id());
         }
+        self.controllers.remove(&id);
         self.click.remove(&id);
         self.input.remove(&id);
         self.rich_input.remove(&id);

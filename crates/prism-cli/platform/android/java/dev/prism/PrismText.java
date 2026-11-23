@@ -85,8 +85,10 @@ final class PrismText {
      * button, checked"), else a button when a text is clickable.
      */
     static void clickable(PrismHost.Node n) {
-        if (!n.kind.equals("text") && !n.kind.equals("view")) return;
-        String role = n.a11yRole == null ? "" : n.a11yRole;
+        boolean plain = n.kind.equals("text") || n.kind.equals("view");
+        // A button may be a disclosure too (#291).
+        if (!plain && !n.kind.equals("button")) return;
+        String role = n.a11yRole == null || !plain ? "" : n.a11yRole;
         String cls;
         switch (role) {
             case "radio": cls = "android.widget.RadioButton"; break;
@@ -96,15 +98,30 @@ final class PrismText {
             default: cls = n.clickable && n.kind.equals("text") ? "android.widget.Button" : null;
         }
         boolean checkable = role.equals("radio") || role.equals("checkbox") || role.equals("switch");
-        n.view.setAccessibilityDelegate(cls == null ? null : new View.AccessibilityDelegate() {
+        Boolean expanded = n.a11yExpanded;
+        n.view.setAccessibilityDelegate(cls == null && expanded == null ? null : new View.AccessibilityDelegate() {
             @SuppressWarnings("deprecation") // setChecked(int) is API 36
             @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
                 super.onInitializeAccessibilityNodeInfo(host, info);
-                info.setClassName(cls);
+                if (cls != null) info.setClassName(cls);
                 if (checkable) {
                     info.setCheckable(true);
                     info.setChecked(Boolean.TRUE.equals(n.a11yChecked));
                 }
+                // A disclosure (#291): TalkBack offers to expand or collapse it.
+                if (expanded != null) {
+                    info.addAction(expanded ? AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE
+                            : AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND);
+                }
+            }
+
+            /** Expanding or collapsing it is its click. */
+            @Override public boolean performAccessibilityAction(View host, int action, android.os.Bundle args) {
+                if (expanded != null && host.isEnabled()
+                        && (action == (expanded ? AccessibilityNodeInfo.ACTION_COLLAPSE : AccessibilityNodeInfo.ACTION_EXPAND))) {
+                    return host.performClick();
+                }
+                return super.performAccessibilityAction(host, action, args);
             }
         });
     }

@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use prism_core::{Accessibility, NodeId, NodeKind, Role};
+use prism_core::{Accessibility, IdMap, NodeId, NodeKind, Role};
 use windows_core::{Interface, Result};
 
 use crate::access::{self, Landmark};
@@ -34,6 +34,9 @@ thread_local! {
     static LIVE: RefCell<HashMap<NodeId, String>> = RefCell::default();
     /// The sheets and dialogs shown as panels.
     static DIALOGS: RefCell<HashSet<NodeId>> = RefCell::default();
+    /// Each disclosure's region (`accessibility_controls`): its element's
+    /// `ControlledPeers`.
+    static CONTROLS: RefCell<HashMap<NodeId, NodeId>> = RefCell::default();
 }
 
 /// The app's content canvas (`peers::canvas(Key::Content)`).
@@ -45,11 +48,7 @@ pub fn set_content(e: &impl Interface) {
 /// else its control or text, else its canvas. `text` is the node's own
 /// (a clickable text's button is named by it).
 pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> {
-    let target: UIElement = match (&v.button, v.content.named()) {
-        (Some(b), _) => b.cast()?,
-        (None, Some(e)) => e,
-        (None, None) => v.outer(),
-    };
+    let target = element(v)?;
     let own = (v.button.is_some() && v.content.element().is_some()).then_some(text);
     let name = a.label.as_deref().or(own).unwrap_or("");
     AutomationProperties::SetName(&target, &h(name))?;
@@ -149,8 +148,57 @@ fn live(id: NodeId, a: &Accessibility) {
     }
 }
 
+/// The element that speaks for a view: its clickable button, else its
+/// control or text, else its canvas.
+fn element(v: &View) -> Result<UIElement> {
+    Ok(match (&v.button, v.content.named()) {
+        (Some(b), _) => b.cast()?,
+        (None, Some(e)) => e,
+        (None, None) => v.outer(),
+    })
+}
+
+/// Node `id` controls `target`'s region, or none.
+pub fn set_controls(id: NodeId, target: Option<NodeId>) {
+    CONTROLS.with(|c| match target {
+        Some(t) => c.borrow_mut().insert(id, t),
+        None => c.borrow_mut().remove(&id),
+    });
+}
+
+/// The `ControlledPeers` of node `id` (a disclosure) and of the
+/// disclosures controlling it, once their elements are made.
+pub fn link_controls(views: &IdMap<NodeId, View>, id: NodeId) {
+    let pairs: Vec<(NodeId, Option<NodeId>)> = CONTROLS.with(|c| {
+        let c = c.borrow();
+        let own = (id, c.get(&id).copied());
+        std::iter::once(own)
+            .chain(
+                c.iter()
+                    .filter(|(_, t)| **t == id)
+                    .map(|(k, t)| (*k, Some(*t))),
+            )
+            .collect()
+    });
+    for (from, to) in pairs {
+        let Some(v) = views.get(&from) else { continue };
+        let r = (|| {
+            let peers = AutomationProperties::GetControlledPeers(&element(v)?)?;
+            peers.Clear()?;
+            if let Some(t) = to.and_then(|t| views.get(&t)) {
+                peers.Append(&element(t)?)?;
+            }
+            Ok::<_, windows_core::Error>(())
+        })();
+        if let Err(e) = r {
+            crate::win::log!("controlled region of node {from}: {e}");
+        }
+    }
+}
+
 /// Node `id` is gone.
 pub fn forget(id: NodeId) {
+    CONTROLS.with(|c| c.borrow_mut().remove(&id));
     peers::forget(Key::Node(id));
     peers::forget(Key::Clickable(id));
     LIVE.with(|l| l.borrow_mut().remove(&id));
