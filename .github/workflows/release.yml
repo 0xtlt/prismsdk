@@ -1,8 +1,17 @@
 name: Release
 
-# A pushed version tag (v0.2.0) gets its GitHub release, its notes taken from
-# that version's section of CHANGELOG.md (scripts/release-notes.py). Run by
-# hand with a tag, it updates that release from main's CHANGELOG.md.
+# A pushed version tag publishes that version (RELEASING.md):
+#
+# 1. every crate to crates.io, through trusted publishing (no stored token:
+#    GitHub vouches for this workflow, crates.io hands it a token for the
+#    job), from macOS so the Apple crates' Swift bridge is checked;
+# 2. then its GitHub release, its notes taken from that version's section of
+#    CHANGELOG.md (scripts/release-notes.py).
+#
+# A tag with a pre-release suffix (v0.2.0-rc.1) publishes a pre-release on
+# both: cargo picks it only for those who ask for that version. Run by hand
+# with a tag, the workflow only updates that release's notes from main's
+# CHANGELOG.md.
 on:
   push:
     tags: ["v*"]
@@ -13,13 +22,62 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  CARGO_TERM_COLOR: always
+  IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+  TVOS_DEPLOYMENT_TARGET: "17.0"
+  WATCHOS_DEPLOYMENT_TARGET: "10.0"
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
 
 jobs:
+  publish:
+    if: github.event_name == 'push'
+    runs-on: macos-15
+    # The environment crates.io's trusted publishing trusts.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag is the workspace's version, on main, with its notes
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG, but the workspace's version is $version"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG is not a commit of main"
+            exit 1
+          fi
+          python3 scripts/release-notes.py "$version" > /dev/null
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      # Packages every crate and builds each from its package, before any
+      # upload: a release publishes all of its crates or none.
+      - name: Package and build every crate
+        run: cargo publish --workspace --dry-run --locked
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish to crates.io
+        run: scripts/publish.sh
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
   release:
+    needs: publish
+    # After the crates, or by hand to update the notes.
+    if: always() && (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -27,8 +85,11 @@ jobs:
         run: python3 scripts/release-notes.py "${TAG#v}" > notes.md
       - name: Create or update the release
         run: |
+          # v0.2.0-rc.1: a pre-release.
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "Prism ${TAG#v}" --notes-file notes.md
+            gh release edit "$TAG" --title "Prism ${TAG#v}" --notes-file notes.md $pre
           else
-            gh release create "$TAG" --title "Prism ${TAG#v}" --notes-file notes.md --verify-tag
+            gh release create "$TAG" --title "Prism ${TAG#v}" --notes-file notes.md --verify-tag $pre
           fi
