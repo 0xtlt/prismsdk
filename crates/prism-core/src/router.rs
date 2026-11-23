@@ -278,6 +278,8 @@ pub(crate) enum NavOp {
     Link(String),
     Replace(String),
     Reset(String),
+    /// The stack holds only this screen afterwards (#289).
+    Root(String),
     Back,
     Present(String),
     Dismiss,
@@ -384,6 +386,17 @@ impl Router {
         self.entries().len()
     }
 
+    /// The visible screen's entity (#288): the sheet's top screen while a
+    /// sheet is up, else the selected tab's. `None` when it is not built
+    /// yet or the router is closed.
+    pub fn top_entity(&self) -> Option<crate::app::EntityId> {
+        self.modal
+            .last()
+            .or_else(|| self.entries().last())
+            .and_then(|e| e.entity)
+            .map(|e| e.id())
+    }
+
     /// Index of the selected tab.
     pub fn selected_tab(&self) -> usize {
         self.selected
@@ -481,6 +494,7 @@ impl Router {
                 }
             }
             NavOp::Reset(path) => self.reset(&path, cx),
+            NavOp::Root(path) => self.root(&path, cx),
             NavOp::Back => {
                 let depth = self.depth().saturating_sub(1);
                 self.truncate(self.selected, depth, cx)
@@ -622,6 +636,34 @@ impl Router {
         for t in self.tabs.iter_mut().take(to + 1).skip(from) {
             t.shown = true;
         }
+    }
+
+    /// Leaves `path` alone in its stack (#289), as a tab bar does with a
+    /// tab's root: in the tab it belongs to (else the selected one), the
+    /// sheet closed, the other tabs untouched. The bottom screen stays,
+    /// state and all, when it already shows `path`; nothing is built
+    /// underneath.
+    fn root(&mut self, path: &str, cx: &mut Context<Self>) {
+        let path = normalize_path(path);
+        self.dismiss(cx);
+        let tab = self.owning_tab(&path, false).unwrap_or(self.selected);
+        self.selected = tab;
+        if self.tabs[tab]
+            .entries
+            .first()
+            .is_some_and(|e| e.path == path)
+        {
+            self.truncate(tab, 1, cx);
+            return;
+        }
+        for old in std::mem::take(&mut self.tabs[tab].entries) {
+            release_screen(&self.shared, old.entity, cx);
+        }
+        let entity = self.open(&path, cx);
+        self.tabs[tab].entries.push(Entry {
+            path,
+            entity: Some(entity),
+        });
     }
 
     /// Opens `path` in the tab whose root best matches it. Each tab's root

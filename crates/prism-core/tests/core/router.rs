@@ -628,3 +628,195 @@ fn a_headerless_sheet_stays_closable() {
         prism_core::STACK_CLOSABLE | prism_core::STACK_NO_HEADER
     );
 }
+
+// --- The top screen (#288) and stacks of one screen (#289) ---
+
+/// What the screens saw: `"<name> top|under"` at each render, `"<name>
+/// shown"` when their screen became the top one.
+#[derive(Default)]
+struct Seen(Vec<String>);
+
+struct Watched(String);
+
+impl Render for Watched {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let line = format!(
+            "{} {}",
+            self.0,
+            if cx.is_top_screen() { "top" } else { "under" }
+        );
+        cx.global_mut::<Seen>().0.push(line);
+        screen(self.0.clone())
+            .child(text(format!("at {}", self.0)))
+            .child(div().link_root("/b").child(text("to b alone")))
+    }
+}
+
+fn watched(cx: &mut App, name: &str) -> Entity<Watched> {
+    let name = name.to_string();
+    cx.new_entity(|cx| {
+        cx.on_screen_shown(|this: &mut Watched, cx| {
+            let line = format!("{} shown", this.0);
+            cx.global_mut::<Seen>().0.push(line);
+        });
+        Watched(name)
+    })
+}
+
+fn watched_app(path: &str, tabs: bool) -> Harness {
+    Harness::at(path, move |cx| {
+        let mut b = Router::new();
+        if tabs {
+            b = b.tab("A", "a", "/").tab("B", "b", "/b");
+        }
+        let router = b
+            .route("/", |cx, _| watched(cx, "a"))
+            .route("/b", |cx, _| watched(cx, "b"))
+            .route("/b/:n", |cx, p| {
+                let name = format!("b{}", p.get("n").unwrap());
+                watched(cx, &name)
+            })
+            .route("/c", |cx, _| watched(cx, "c"))
+            .build(cx);
+        cx.set_root(router);
+    })
+}
+
+fn seen(h: &mut Harness) -> Vec<String> {
+    std::mem::take(&mut h.rt.app.global_mut::<Seen>().0)
+}
+
+#[test]
+fn a_screen_knows_it_is_the_top_one() {
+    let mut h = watched_app("/", false);
+    assert_eq!(seen(&mut h), ["a shown", "a top"]);
+    h.rt.app.navigate("/c");
+    h.render();
+    assert_eq!(seen(&mut h), ["c shown", "c top"]);
+    assert!(h.rt.app.top_screen().is_some());
+    // A global change re-renders the screen kept under it too.
+    h.rt.app.refresh();
+    h.render();
+    let mut lines = seen(&mut h);
+    lines.sort();
+    assert_eq!(lines, ["a under", "c top"]);
+    // Back reveals `a`: it renders again, knowing it is on top.
+    h.rt.app.back();
+    h.render();
+    assert_eq!(seen(&mut h), ["a shown", "a top"]);
+    // A sheet over it is the top screen; closing it shows `a` again.
+    h.rt.app.present("/b");
+    h.render();
+    assert_eq!(seen(&mut h), ["b shown", "b top"]);
+    h.rt.app.refresh();
+    h.render();
+    let mut lines = seen(&mut h);
+    lines.sort();
+    assert_eq!(lines, ["a under", "b top"]);
+    h.rt.app.dismiss();
+    h.render();
+    assert_eq!(seen(&mut h), ["a shown", "a top"]);
+}
+
+#[test]
+fn a_tab_screen_is_on_top_while_its_tab_is_selected() {
+    let mut h = watched_app("/", true);
+    assert_eq!(seen(&mut h), ["a shown", "a top"]);
+    let tabs = h.host.find(|n| n.kind == NodeKind::Tabs).unwrap();
+    h.dispatch(UiEvent::Change(tabs, 1.));
+    let lines = seen(&mut h);
+    assert!(lines.contains(&"b shown".to_string()), "{lines:?}");
+    assert!(lines.contains(&"b top".to_string()), "{lines:?}");
+    h.rt.app.refresh();
+    h.render();
+    let mut lines = seen(&mut h);
+    lines.sort();
+    assert_eq!(lines, ["a under", "b top"]);
+    // Back to the first tab: `a` is shown again.
+    h.dispatch(UiEvent::Change(tabs, 0.));
+    assert_eq!(seen(&mut h), ["a shown", "a top"]);
+}
+
+#[test]
+fn without_a_router_every_entity_is_on_top() {
+    struct Solo;
+    impl Render for Solo {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            text(cx.is_top_screen().to_string())
+        }
+    }
+    let h = Harness::new(|cx| {
+        let e = cx.new_entity(|_| Solo);
+        cx.set_root(e);
+    });
+    h.host.by_text("true");
+    assert_eq!(h.rt.app.top_screen(), None);
+    assert_eq!(h.rt.app.stack_depth(), 0);
+}
+
+#[test]
+fn navigate_root_leaves_one_screen_without_building_the_root() {
+    let mut h = watched_app("/c", false);
+    let s = stack(&h);
+    assert_eq!(screens(&h, s), ["a", "c"]);
+    seen(&mut h);
+    h.rt.app.navigate_root("/b");
+    let p = h.render().to_vec();
+    assert_eq!(screens(&h, s), ["b"]);
+    assert_eq!(h.rt.app.stack_depth(), 1);
+    assert_eq!(path(&h), "/b");
+    // `a` and `c` are released; no root screen is built underneath.
+    assert_eq!(destroys(&p).len(), 2 * 4);
+    assert_eq!(seen(&mut h), ["b shown", "b top"]);
+    // Pushed over it, then back to it alone: the same screen, kept.
+    let bottom = h.host.get(s).children[0];
+    h.rt.app.navigate("/b/1");
+    h.render();
+    assert_eq!(h.rt.app.stack_depth(), 2);
+    seen(&mut h);
+    h.rt.app.navigate_root("/b");
+    h.render();
+    assert_eq!(screens(&h, s), ["b"]);
+    assert_eq!(h.host.get(s).children[0], bottom);
+    assert_eq!(seen(&mut h), ["b shown", "b top"]);
+    // Back has nowhere to go.
+    h.rt.app.back();
+    h.render();
+    assert_eq!(screens(&h, s), ["b"]);
+}
+
+#[test]
+fn link_root_follows_the_link_alone_in_the_stack() {
+    let mut h = watched_app("/c", false);
+    let s = stack(&h);
+    let c = *h.host.get(s).children.last().unwrap();
+    // The `c` screen's link (the screen under it has one too).
+    fn link_in(h: &Harness, id: u64) -> Option<u64> {
+        let n = h.host.get(id);
+        if n.clickable && h.host.child_texts(id).iter().any(|t| t == "to b alone") {
+            return Some(id);
+        }
+        n.children.iter().find_map(|c| link_in(h, *c))
+    }
+    let link = link_in(&h, c).expect("the link");
+    h.dispatch(UiEvent::Click(link));
+    h.render();
+    assert_eq!(screens(&h, s), ["b"]);
+    assert_eq!(path(&h), "/b");
+}
+
+#[test]
+fn navigate_root_opens_in_the_tab_the_path_belongs_to() {
+    let mut h = watched_app("/c", true);
+    assert_eq!(h.rt.app.stack_depth(), 2);
+    h.rt.app.navigate_root("/b/2");
+    h.render();
+    let tabs = h.host.find(|n| n.kind == NodeKind::Tabs).unwrap();
+    assert_eq!(h.host.get(tabs).value, Some(1.));
+    assert_eq!(path(&h), "/b/2");
+    assert_eq!(h.rt.app.stack_depth(), 1);
+    // The first tab keeps its screens.
+    h.dispatch(UiEvent::Change(tabs, 0.));
+    assert_eq!(path(&h), "/c");
+    assert_eq!(h.rt.app.stack_depth(), 2);
+}

@@ -1835,6 +1835,7 @@ impl Reconciler {
             on_navigate,
             on_change,
             link,
+            link_root,
             context_menu,
             click_menu,
             on_scroll,
@@ -2090,7 +2091,7 @@ impl Reconciler {
             (config, label, None)
         };
         // A link navigates when activated in the app.
-        let on_click = on_click.or_else(|| link.clone().map(link_handler));
+        let on_click = on_click.or_else(|| link.clone().map(|l| link_handler(l, link_root)));
         // A click menu (#247) opens below the node, in place of `on_click`.
         let on_click = match click_menu {
             Some(menu) => {
@@ -2650,7 +2651,9 @@ impl Reconciler {
             if let Some(size) = span.size.filter(|_| font_size > 0.) {
                 run.size = Some(size / font_size);
             }
-            let handler = span.on_click.or_else(|| run.href.clone().map(link_handler));
+            let handler = span
+                .on_click
+                .or_else(|| run.href.clone().map(|l| link_handler(l, false)));
             if let Some(h) = handler {
                 let item = crate::spans::link_id(id, i);
                 self.menu_items.entry(id).or_default().push((item, h));
@@ -2687,7 +2690,7 @@ impl Reconciler {
             let handler = span
                 .on_click
                 .clone()
-                .or_else(|| run.href.clone().map(link_handler));
+                .or_else(|| run.href.clone().map(|l| link_handler(l, false)));
             if let Some(h) = handler {
                 let item = crate::spans::link_id(id, i);
                 self.menu_items.entry(id).or_default().push((item, h));
@@ -2839,11 +2842,14 @@ impl Reconciler {
     }
 }
 
-/// What activating a link to `path` does: navigate in the app, or open a URL.
-fn link_handler(path: String) -> Handler<ClickEvent> {
+/// What activating a link to `path` does: navigate in the app (`root`:
+/// leaving it alone in the stack, #289), or open a URL.
+fn link_handler(path: String, root: bool) -> Handler<ClickEvent> {
     std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
         if crate::spans::is_external(&path) {
             app.open_url(path.clone());
+        } else if root {
+            app.navigate_root(path.clone());
         } else {
             app.navigate(path.clone());
         }
