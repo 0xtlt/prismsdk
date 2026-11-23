@@ -447,4 +447,91 @@ mod tests {
         );
         assert_eq!(origin_of("/relative"), None);
     }
+
+    /// A web component styled like the app's fields (#294).
+    struct StyledHost;
+    impl Render for StyledHost {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div().child(
+                web_component("rich-editor")
+                    .border(1.)
+                    .text_size(15.)
+                    .font_weight(FontWeight::Semibold)
+                    .text_color(rgb(0x123456))
+                    .line_height(22.)
+                    .hover(|s| s.text_color(rgb(0x654321)))
+                    .focus_within(|s| s.font_weight(FontWeight::Bold))
+                    .when_width_at_least(500., |s| s.text_size(18.))
+                    .child(text("fallback")),
+            )
+        }
+    }
+
+    #[test]
+    fn a_web_component_host_carries_its_typography() {
+        let init: AppInit = Arc::new(|cx: &mut App| {
+            let root = cx.new_entity(|_| StyledHost);
+            cx.set_root(root);
+        });
+        let mut rt = Runtime::new(&init);
+        let patches = rt.render();
+        // The first paint.
+        let mut html = crate::HtmlBackend::default();
+        html.apply(&patches);
+        let out = html.to_html();
+        let host = out
+            .split("<rich-editor ")
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .unwrap();
+        for decl in [
+            "font-size:0.9375rem;",
+            "font-weight:600;",
+            "color:rgba(18,52,86,1);",
+            "line-height:1.375rem;",
+        ] {
+            assert!(host.contains(decl), "{decl} in {host}");
+        }
+        assert!(
+            out.contains(":hover{color:rgba(101,67,33,1) !important;}"),
+            "{out}"
+        );
+        assert!(
+            out.contains(":focus-within{font-weight:700 !important;}"),
+            "{out}"
+        );
+        // Live: the style op, its states and its width variants.
+        let mut e = crate::Encoder::default();
+        let ops = e.encode(&patches);
+        let style = ops
+            .iter()
+            .find(|o| {
+                o["op"] == "style" && o["css"].as_str().is_some_and(|c| c.contains("border:"))
+            })
+            .unwrap();
+        let css = style["css"].as_str().unwrap();
+        assert!(
+            css.contains("font-size:0.9375rem;font-weight:600;"),
+            "{css}"
+        );
+        assert!(
+            style["states"]
+                .as_str()
+                .unwrap()
+                .contains("color:rgba(101,67,33,1)")
+        );
+        let wide = style["cq"][0][1].as_str().unwrap();
+        assert!(wide.contains("font-size:1.125rem;"), "{wide}");
+        // A plain view still has none (its children style their own text).
+        let view = ops
+            .iter()
+            .find(|o| {
+                o["op"] == "style" && o["css"].as_str().is_some_and(|c| !c.contains("border:"))
+            })
+            .unwrap();
+        assert!(
+            !view["css"].as_str().unwrap().contains("font-size"),
+            "{view}"
+        );
+    }
 }

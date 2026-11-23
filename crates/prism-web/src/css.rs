@@ -23,6 +23,17 @@ fn align(a: Align) -> &'static str {
 }
 
 pub fn css(kind: NodeKind, s: &Style) -> String {
+    node_css(kind, false, s)
+}
+
+/// The CSS of a node; `island`: the node is an island's or a web
+/// component's element (#294). Its shadow root inherits the element's
+/// font, color and text alignment, so the host carries the typography a
+/// view has no use for: `.text_size(…)`, `.font_weight(…)`, `.text_color(…)`
+/// and the rest, in its hover, focus and width variants too.
+pub(crate) fn node_css(kind: NodeKind, island: bool, s: &Style) -> String {
+    // Text styles: every node that shows text, and an island's host.
+    let text_styles = (kind != NodeKind::View && !kind.is_table_part()) || island;
     // `Color::current()` against the node's own text color when it has one
     // (`currentColor` is inherited on the web, not on native platforms).
     let resolved;
@@ -280,7 +291,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         );
     }
 
-    if kind != NodeKind::View && !kind.is_table_part() {
+    if text_styles {
         // rem: follows the browser's text size setting (web Dynamic Type).
         let _ = write!(
             w,
@@ -374,7 +385,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     {
         w.push_str("outline:none;");
     }
-    if kind != NodeKind::View && !kind.is_table_part() {
+    if text_styles {
         typography(kind, s, w);
     }
     if let Some(cursor) = s.cursor {
@@ -562,7 +573,7 @@ fn nearest_group(node: &str, state: &str) -> String {
 /// on `[data-pid]`): for each state, the declarations its style changes,
 /// `!important` to win over the inline style. Empty when it has none.
 /// Rules come in the order states apply, so later ones win, like natively.
-pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
+pub fn states_css(kind: NodeKind, island: bool, id: prism_core::NodeId, s: &Style) -> String {
     use prism_core::Interaction;
     if s.states.is_empty() {
         return String::new();
@@ -578,7 +589,7 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
         }
         out
     };
-    let base = decls(&css(kind, s));
+    let base = decls(&node_css(kind, island, s));
     let mut out = String::new();
     let node = format!(r#"[data-pid="{id}"]"#);
     // Refinements that follow a named group ancestor (#212).
@@ -619,7 +630,7 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
     let (groups, own): (Vec<_>, Vec<_>) =
         unnamed.partition(|(sel, ..)| sel.starts_with("[data-group]"));
     for (selector, media, st) in groups.into_iter().chain(named).chain(own) {
-        let now = decls(&css(kind, st));
+        let now = decls(&node_css(kind, island, st));
         let mut body = String::new();
         for (p, v) in &now {
             if !base.iter().any(|(bp, bv)| bp == p && bv == v) {
@@ -764,7 +775,7 @@ fn layout_extras(kind: NodeKind, s: &Style, w: &mut String) {
 /// `[[480, "css…"], [768, "css…"]]`, or null. The client watches the
 /// element's width (`ResizeObserver`) and applies the widest variant it
 /// reaches (the style op's `css` below the first).
-pub fn own_width_variants(kind: NodeKind, s: &Style) -> serde_json::Value {
+pub fn own_width_variants(kind: NodeKind, island: bool, s: &Style) -> serde_json::Value {
     use serde_json::{Value, json};
     let thresholds = s.own_width_thresholds();
     if thresholds.is_empty() {
@@ -773,7 +784,7 @@ pub fn own_width_variants(kind: NodeKind, s: &Style) -> serde_json::Value {
     Value::Array(
         thresholds
             .into_iter()
-            .map(|t| json!([t, css(kind, &s.resolve_own_width(t))]))
+            .map(|t| json!([t, node_css(kind, island, &s.resolve_own_width(t))]))
             .collect(),
     )
 }
@@ -782,7 +793,7 @@ pub fn own_width_variants(kind: NodeKind, s: &Style) -> serde_json::Value {
 /// scroll view: class `prism-scroll-x`, its children keep their size), `sb`
 /// (its scroll bars, `overlay` or `hidden`) and `cq` (see
 /// [`own_width_variants`]).
-pub fn layout_op_fields(kind: NodeKind, s: &Style, op: &mut serde_json::Value) {
+pub fn layout_op_fields(kind: NodeKind, island: bool, s: &Style, op: &mut serde_json::Value) {
     if kind == NodeKind::Scroll && s.scroll_axis == prism_core::ScrollAxis::Horizontal {
         op["hx"] = serde_json::json!(true);
     }
@@ -790,7 +801,7 @@ pub fn layout_op_fields(kind: NodeKind, s: &Style, op: &mut serde_json::Value) {
     if kind == NodeKind::Scroll && s.scrollbar != prism_core::Scrollbar::Auto {
         op["sb"] = serde_json::json!(s.scrollbar.name());
     }
-    let cq = own_width_variants(kind, s);
+    let cq = own_width_variants(kind, island, s);
     if !cq.is_null() {
         op["cq"] = cq;
     }

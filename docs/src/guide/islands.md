@@ -44,6 +44,7 @@ impl Render for Dashboard {
 - `.prop(name, &value)` serializes any `serde::Serialize` value as JSON. `.prop_json(name, json)` takes JSON you already have. A prop that changes in a later render updates the **live** island: the element is kept, nothing is re-mounted, and the island gets only the props that changed. A prop no longer set arrives as `null`.
 - `.on(name, handler)` handles the island's `CustomEvent`s. `IslandEvent::detail::<T>()` parses the detail (any `serde::Deserialize`, so a `[1, 2.5]` array reads as `(usize, f64)`). `detail_value()` returns a `serde_json::Value`.
 - Islands take styles, `.key`, `.id` and accessibility modifiers like any `div`. Give them a size, because their content is not known to the server.
+- Their typography is set on the host element too (#294): `text_size`, `font_weight`, `text_color`, `line_height`, `text_align` and the other text styles, in their `hover`, `focus_within` and breakpoint variants (`.md(…)`) as well. The component's shadow root inherits them, so a component that should look like the app's inputs only uses `font: inherit` and `color: inherit`.
 - `.native(element)` shows `element` in native apps instead of the children, which stay the web's fallback.
 
 ## An island crate

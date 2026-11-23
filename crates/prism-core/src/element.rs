@@ -1055,6 +1055,12 @@ macro_rules! builder {
             /// platform, the web included: set them while a suggestion
             /// menu is open, `&[]` when it closes.
             ///
+            /// An entry may name modifiers before its key (`"cmd+b"`,
+            /// `"cmd+shift+z"`, `"alt+ArrowUp"`, #294): it takes the key
+            /// only with exactly those held, `cmd` being ⌘ on Apple
+            /// platforms and Ctrl elsewhere, `ctrl` the other control key.
+            /// An entry without modifiers takes its key whatever is held.
+            ///
             /// ```ignore
             /// div()
             ///     .child(rich_input(runs))

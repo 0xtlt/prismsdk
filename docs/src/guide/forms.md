@@ -342,6 +342,56 @@ text_flow()
 
 Touch selection handles stay inside one field on every platform: the system draws and drives them for one text view (UIKit's text interaction, Android's editor, the browser's) and cannot hand them to another. On a touch screen, extend from the app instead: the counter's Blocks demo has a "Select all blocks" button (`cx.set_selection_across` from the first block's start to the last one's end); typing, the on-screen keyboard's delete key and copy then act on the whole range.
 
+## Rich text editor
+
+`ui::rich_text_input(doc)` is a ready editor for formatted text (#294): paragraphs, headings (levels 1 to 3), bulleted and numbered lists, and runs in bold, italic or linked, written without seeing markup. It is built from the pieces above: one `rich_input` per block in a `text_flow`, so it edits natively wherever `rich_input` does and the selection runs across blocks. It is an entity: create it once, keep it, and read or command it from your toolbar.
+
+```rust
+use prism::ui::{self, BlockKind, LinkRequest, RichText, RichTextChange, RichTextInput};
+
+struct Note { body: Entity<RichTextInput>, markdown: String }
+
+// Once, when the screen is built (`cx` is the screen's `Context`).
+let on_change = cx.listener(|this: &mut Note, e: &RichTextChange, _| {
+    this.markdown = e.value.to_markdown()
+});
+let on_link = cx.listener(|this: &mut Note, e: &LinkRequest, cx| {
+    // Open your link picker with `e.href` and `e.text`; then answer:
+    this.body.update(cx, |ed, cx| ed.set_link("https://prismsdk.dev", cx));
+});
+let body = cx.new(|_| {
+    ui::rich_text_input(RichText::from_markdown(&saved))
+        .label("Body")
+        .placeholder("Write something…")
+        .on_change(on_change)
+        .on_link_request(on_link)
+});
+cx.observe(&body, |_, _, _| {}); // re-render the toolbar when the selection moves
+
+// In `render`: a toolbar showing and changing the selection's formatting.
+let f = self.body.read(cx).formatting();
+let pressed = |on| if on { ui::Variant::Primary } else { ui::Variant::Ghost };
+let body = self.body;
+div()
+    .child(ui::button("B").variant(pressed(f.bold))
+        .on_click(cx.listener(move |_, _, cx| body.update(cx, |ed, cx| ed.toggle_bold(cx)))))
+    .child(ui::button("H2").variant(pressed(f.block == BlockKind::Heading(2)))
+        .on_click(cx.listener(move |_, _, cx| body.update(cx, |ed, cx| ed.toggle_block(BlockKind::Heading(2), cx)))))
+    .child(body)
+```
+
+- **The value**: `RichText { blocks }`, each `RichBlock { kind, spans }` with `BlockKind::Paragraph`, `Heading(level)`, `Bullet` or `Numbered`, its spans the [rich text](typography.md#rich-text) runs (`is_bold()`, `is_italic()`, `href()`). `value()` reads it, `set_value(doc, cx)` replaces it, `on_change` hears each edit once the event is handled (so the handler may update the entity that holds the editor), `revision()` counts them.
+- **Markdown and HTML**: `to_markdown()` / `from_markdown(&str)` write and read CommonMark (headings, `-` and `1.` lists, `**`, `*`, `[text](url)`, backslash escapes; other syntax is read as its text: a quote as a paragraph, an image as its alt text, code as plain text). `to_html()` / `from_html(&str)` do the same with HTML, reading pasted HTML through a sanitizer: only the model's subset is kept (scripts, styles and `javascript:` links never are), Google Docs' bold wrappers included.
+- **Modes**: block by default; `.inline()` keeps one line (a title, a caption): bold, italic and links, Enter does nothing, line breaks typed or pasted become spaces.
+- **Typing**: Enter splits the block (an empty list item leaves the list, a heading is followed by a paragraph), Backspace at a block's start turns a list item into a paragraph, then joins it to the block before; Delete at its end joins the next one; ← → ↑ ↓ at a block's edges move into the next one. `- `, `* `, `1. `, `# `, `## ` and `### ` typed at a paragraph's start make it a list item or a heading (`.markdown_shortcuts(false)` turns that off).
+- **Commands**: `toggle_bold`, `toggle_italic` (on a caret: what is typed next), `set_block(kind)` and `toggle_block(kind)` for the selected blocks, `request_link`, `set_link(href)` (a caret in a link changes its target; a caret elsewhere inserts `href` as a linked text), `remove_link`, `select(RichSelection)`, `focus()`. ⌘B, ⌘I and ⌘K (Ctrl elsewhere) do the first three: the editor declares them with `consume_keys(&["cmd+b", "cmd+i", "cmd+k"])`, so the browser's or the platform's own shortcuts never run.
+- **Links**: ⌘K or `request_link` calls `on_link_request` with `LinkRequest { href, text, selection }` (`href` is the link the caret or the selection is in). Open your picker; answer with `set_link` or `remove_link`, at once or later: the request's selection is kept, so the picker may take the focus meanwhile. Without `on_link_request`, ⌘K does nothing.
+- **A toolbar's state**: `formatting()` gives `Formatting { bold, italic, link, block }` for the selection (bold when all of it is), with the caret's pending marks; `in_link()`. `selection()` gives the `RichSelection { anchor, head }` in `RichPosition { block, offset }`, `is_focused()` whether a block has the focus.
+- **Clipboard**: a copy writes plain text, HTML, Markdown and the editor's own type (`RICH_TEXT_TYPE`), so a paste into another editor keeps the blocks exactly. A paste reads the richest type there is (the editor's own, then HTML, then Markdown, then text: lines become blocks); `.paste(PasteMode::Plain)` keeps only the text, in the style of where it lands.
+- **Looks**: the frame of `ui::text_area` (surface, border, the accent around the focused editor); `.style(|s| …)` refines it. Headings are drawn 1.6, 1.35 and 1.15 times the theme's text size, list markers beside their items (hidden from screen readers).
+- **Accessibility**: each block is a text field (`role=textbox`, `aria-multiline` on the web) labelled with the editor's label and, for headings and items, the block's kind (« Heading 2 », « List item », « Item 3 », in Prism's 12 languages); the editor is a group with its label.
+- **On-screen keyboards**: Backspace with the caret at a block's start deletes nothing, so iOS and Android report no key for it; their text areas report it as a `Backspace` key there, and the editor joins the blocks as with a hardware keyboard.
+
 **Sheets, popovers, dialogs** that a screen opens without a route: see [Dialogs, menus, tray](dialogs-menus.md#sheets-popovers-and-dialogs-without-a-route).
 
 **Absolute positioning**: `div().absolute().bottom(16.).left(16.).right(16.)` takes an element out of the flex flow and places it at its insets from the parent (`.top()`, `.inset(0.)`…), like CSS `position: absolute` (taffy on native). Later siblings draw on top; `left`/`right` are the leading and trailing edges.

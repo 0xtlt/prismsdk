@@ -95,6 +95,15 @@ define_class!(
             }
         }
 
+        /// A soft keyboard's Backspace with the caret at the start deletes
+        /// nothing, and UIKit reports no key for it: reported here, so an
+        /// editor can join a block to the one before (#294).
+        #[unsafe(method(deleteBackward))]
+        fn delete_backward(&self) {
+            crate::interaction::backspace_at_start(self);
+            let _: () = unsafe { msg_send![super(self), deleteBackward] };
+        }
+
         /// Without the app's hook, a rich input pastes plain text (#115).
         #[unsafe(method(paste:))]
         fn paste(&self, sender: Option<&AnyObject>) {

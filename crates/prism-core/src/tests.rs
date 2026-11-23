@@ -5230,3 +5230,71 @@ fn impossible_control_events_never_reach_the_app() {
     rt.dispatch(UiEvent::Layout(tracked, frame));
     assert_eq!(rt.app.frames.get(&tracked), Some(&frame));
 }
+
+#[test]
+fn consume_entries_with_modifiers_take_only_that_chord() {
+    use crate::events::{consume_entry_matches, consume_entry_matches_event};
+    use crate::{KeyEvent, Modifiers};
+    let press = |key: &str, mods: Modifiers| {
+        let mut k = KeyEvent::new(key);
+        k.modifiers = mods;
+        k
+    };
+    let apple = cfg!(target_vendor = "apple");
+    let command = Modifiers {
+        meta: apple,
+        control: !apple,
+        ..Modifiers::default()
+    };
+    let command_shift = Modifiers {
+        shift: true,
+        ..command
+    };
+    let other = Modifiers {
+        meta: !apple,
+        control: apple,
+        ..Modifiers::default()
+    };
+    // ⌘B / Ctrl+B, whatever the letter's case.
+    assert!(consume_entry_matches_event("cmd+b", &press("b", command)));
+    assert!(consume_entry_matches_event("cmd+b", &press("B", command)));
+    // Not without the modifier, with another, or with more.
+    assert!(!consume_entry_matches_event(
+        "cmd+b",
+        &press("b", Modifiers::default())
+    ));
+    assert!(!consume_entry_matches_event("cmd+b", &press("b", other)));
+    assert!(!consume_entry_matches_event(
+        "cmd+b",
+        &press("B", command_shift)
+    ));
+    assert!(consume_entry_matches_event(
+        "cmd+shift+z",
+        &press("Z", command_shift)
+    ));
+    assert!(consume_entry_matches_event("ctrl+k", &press("k", other)));
+    assert!(consume_entry_matches_event(
+        "alt+ArrowUp",
+        &press(
+            "ArrowUp",
+            Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            }
+        )
+    ));
+    // An entry without modifiers takes the key whatever is held, as before.
+    assert!(consume_entry_matches_event(
+        "Enter",
+        &press("Enter", command)
+    ));
+    // A plus is a key too.
+    assert!(consume_entry_matches_event(
+        "+",
+        &press("+", Modifiers::default())
+    ));
+    assert!(consume_entry_matches_event("cmd++", &press("+", command)));
+    // Where the modifiers are unknown, chords never match.
+    assert!(!consume_entry_matches("cmd+b", "b", None));
+    assert!(consume_entry_matches("Enter", "Enter", None));
+}

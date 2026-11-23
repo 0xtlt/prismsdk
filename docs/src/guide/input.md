@@ -79,6 +79,8 @@ While the focus is in the element, those keys reach its `on_key_down` (and its a
 | Linux (GTK) | the window's capture-phase key controller stops it |
 | Windows | the message loop drops the key message before XAML sees it |
 
+**Chords**: an entry can name modifiers before its key, `cmd+`, `ctrl+`, `alt+` and `shift+` (#294): `consume_keys(&["cmd+b", "cmd+i", "cmd+shift+z"])` takes ⌘B from the field (the browser's bold, Firefox's bookmarks sidebar) only with exactly those modifiers held, the letter whatever its case. `cmd` is ⌘ on Apple platforms and Ctrl elsewhere (`Modifiers::command()`), `ctrl` the other control key (⌃ on Apple platforms, the Windows key elsewhere). An entry without modifiers takes its key whatever is held, as before. On iOS, iPadOS and visionOS, chords are key commands too (letters, digits and the named keys, with ⌘, ⌘⇧, ⌃, ⌥ or ⌥⇧).
+
 ### Leaving a field at its edges
 
 A grid of cells or a document of blocks moves to the next field only when the caret is at the field's edge: ← at its start, → at its end, ↑ on its first visual line, ↓ on its last (wrapped lines count). Elsewhere the field moves its caret. `consume_key_at` declares a key with its edge, and the platform checks the caret when the key is pressed, before the field acts (#211):

@@ -1,6 +1,7 @@
 //! The Forms card of the Components tab: sliders, a select, date and time
 //! pickers, text input variants, a text area, a rich note with a toolbar
-//! over its selection (#217), blocks selected as one text (#231), a spinner
+//! over its selection (#217), blocks selected as one text (#231), a rich
+//! text editor with its toolbar and Markdown (#294), a spinner
 //! and toasts. It is
 //! its own entity, so dragging a slider only re-renders this card.
 
@@ -34,6 +35,9 @@ pub struct Forms {
     /// spans.
     blocks: Vec<String>,
     blocks_selected: usize,
+    /// The rich text editor (#294), and its value as Markdown.
+    editor: Option<Entity<ui::RichTextInput>>,
+    editor_markdown: String,
     /// Whether the note and the blocks have their sample texts, made in
     /// the app's language on the first render.
     samples: bool,
@@ -60,6 +64,8 @@ impl Default for Forms {
             note_log: String::new(),
             blocks: Vec::new(),
             blocks_selected: 0,
+            editor: None,
+            editor_markdown: String::new(),
             samples: false,
         }
     }
@@ -75,6 +81,7 @@ impl Render for Forms {
                 strings::forms_block_second(cx),
                 strings::forms_block_third(cx),
             ];
+            self.make_editor(cx);
         }
         let t = Theme::of(cx);
         let sizes: Vec<String> = strings::forms_sizes(cx)
@@ -215,6 +222,7 @@ impl Render for Forms {
             .child(self.shared_draft(cx))
             .child(self.note(cx))
             .child(self.blocks(cx))
+            .child(self.editor(cx))
             .child(ui::spinner().label(strings::forms_syncing(cx)))
             .child(
                 div()
@@ -490,6 +498,102 @@ impl Forms {
                     String::new()
                 })
                 .text_size(12.),
+            )
+    }
+    /// The rich text editor (#294): its value kept as Markdown, ⌘K
+    /// linking the selection to the guide (an app would open its own
+    /// link picker).
+    fn make_editor(&mut self, cx: &mut Context<Self>) {
+        let sample = ui::RichText::from_markdown(&strings::forms_editor_sample(cx));
+        let label = strings::forms_editor(cx);
+        let placeholder = strings::forms_editor_placeholder(cx);
+        let on_link = cx.listener(|this: &mut Self, e: &ui::LinkRequest, cx| {
+            let Some(editor) = this.editor else { return };
+            let linked = e.href.is_some();
+            editor.update(cx, |ed, cx| {
+                if linked {
+                    ed.remove_link(cx)
+                } else {
+                    ed.set_link("https://prismsdk.dev", cx)
+                }
+            });
+        });
+        let on_change = cx.listener(|this: &mut Self, e: &ui::RichTextChange, _| {
+            this.editor_markdown = e.value.to_markdown()
+        });
+        self.editor_markdown = sample.to_markdown();
+        let editor = cx.new(move |_| {
+            ui::rich_text_input(sample)
+                .label(label)
+                .placeholder(placeholder)
+                .on_change(on_change)
+                .on_link_request(on_link)
+        });
+        // The toolbar follows the selection.
+        cx.observe(&editor, |_, _, _| {});
+        self.editor = Some(editor);
+    }
+
+    fn editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(editor) = self.editor else {
+            return div();
+        };
+        let t = Theme::of(cx);
+        let f = editor.read(cx).formatting();
+        let tool = |label: String, on: bool| {
+            ui::button(label).small().variant(if on {
+                ui::Variant::Primary
+            } else {
+                ui::Variant::Ghost
+            })
+        };
+        let command = move |f: fn(&mut ui::RichTextInput, &mut Context<ui::RichTextInput>)| {
+            move |_: &mut Self, _: &ClickEvent, cx: &mut Context<Self>| editor.update(cx, f)
+        };
+        let block = |kind: ui::BlockKind| {
+            move |_: &mut Self, _: &ClickEvent, cx: &mut Context<Self>| {
+                editor.update(cx, |ed, cx| ed.toggle_block(kind, cx))
+            }
+        };
+        let toolbar = div()
+            .flex_row()
+            .flex_wrap()
+            .gap(4.)
+            .child(
+                tool(strings::forms_editor_bold(cx), f.bold)
+                    .on_click(cx.listener(command(|ed, cx| ed.toggle_bold(cx)))),
+            )
+            .child(
+                tool(strings::forms_editor_italic(cx), f.italic)
+                    .on_click(cx.listener(command(|ed, cx| ed.toggle_italic(cx)))),
+            )
+            .child(
+                tool(strings::forms_editor_link(cx), f.in_link())
+                    .on_click(cx.listener(command(|ed, cx| ed.request_link(cx)))),
+            )
+            .child(
+                tool("H2".into(), f.block == ui::BlockKind::Heading(2))
+                    .on_click(cx.listener(block(ui::BlockKind::Heading(2)))),
+            )
+            .child(
+                tool("•".into(), f.block == ui::BlockKind::Bullet)
+                    .on_click(cx.listener(block(ui::BlockKind::Bullet))),
+            )
+            .child(
+                tool("1.".into(), f.block == ui::BlockKind::Numbered)
+                    .on_click(cx.listener(block(ui::BlockKind::Numbered))),
+            );
+        div()
+            .flex_col()
+            .gap(6.)
+            .child(text(strings::forms_editor(cx)).text_size(12.))
+            .child(toolbar)
+            .child(editor)
+            .child(
+                text(self.editor_markdown.clone())
+                    .font_mono()
+                    .text_size(12.)
+                    .text_color(t.muted),
             )
     }
 }

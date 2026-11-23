@@ -14,8 +14,8 @@ use prism_core::{Capabilities, NodeId, NodeKind, Patch, PlatformServices, Runtim
 use serde_json::{Value, json};
 
 use crate::WebApp;
+use crate::glyphs;
 use crate::html::AssetUrls;
-use crate::{css, glyphs};
 
 pub(crate) enum Inbound {
     /// A text message from the page.
@@ -1594,6 +1594,10 @@ impl PlatformServices for WebServices {
 #[derive(Default)]
 pub struct Encoder {
     kinds: HashMap<NodeId, NodeKind>,
+    /// Island and web component elements (#294): their style carries the
+    /// typography their shadow root inherits. Their `island` op comes
+    /// right after their `create`, before their first style.
+    islands: std::collections::HashSet<NodeId>,
     /// While one message is encoded: each CSS sent so far → the node that
     /// carries it, and back (to forget a carrier restyled or destroyed).
     sent: HashMap<String, NodeId>,
@@ -1647,7 +1651,8 @@ impl Encoder {
             }
             Patch::SetStyle { id, style } => {
                 let kind = self.kinds.get(id).copied().unwrap_or(NodeKind::View);
-                let css = css(kind, style);
+                let island = self.islands.contains(id);
+                let css = crate::css::node_css(kind, island, style);
                 let mut op = match self.carrier(*id, &css) {
                     Some(like) => json!({ "op": "style", "id": id, "like": like }),
                     None => json!({ "op": "style", "id": id, "css": css }),
@@ -1656,9 +1661,9 @@ impl Encoder {
                 if !motion.is_null() {
                     op["motion"] = motion;
                 }
-                crate::css::layout_op_fields(kind, style, &mut op);
+                crate::css::layout_op_fields(kind, island, style, &mut op);
                 // Hover, press and focus refinements: pseudo-class rules.
-                let states = crate::css::states_css(kind, *id, style);
+                let states = crate::css::states_css(kind, island, *id, style);
                 if !states.is_empty() {
                     op["states"] = json!(states);
                 }
@@ -1792,6 +1797,7 @@ impl Encoder {
             Patch::SetRoot { id } => json!({ "op": "root", "id": id }),
             Patch::Destroy { id } => {
                 self.kinds.remove(id);
+                self.islands.remove(id);
                 self.drop_targets.remove(id);
                 self.forget(*id);
                 json!({ "op": "destroy", "id": id })
@@ -1877,6 +1883,7 @@ impl Encoder {
                 source,
                 events,
             } => {
+                self.islands.insert(*id);
                 let module = self.module_urls.as_ref().and_then(|urls| urls(source));
                 let wasm = matches!(source, prism_core::IslandSource::Wasm(_));
                 json!({ "op": "island", "id": id, "tag": tag, "module": module, "wasm": wasm, "events": events })

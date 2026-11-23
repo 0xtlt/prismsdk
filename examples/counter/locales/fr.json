@@ -392,7 +392,13 @@
     "undo": "Annuler",
     "signed_in": "Connecté ({count} caractères)",
     "error": "Afficher une erreur",
-    "toast_error": "Serveur injoignable"
+    "toast_error": "Serveur injoignable",
+    "editor": "Texte enrichi : ⌘B, ⌘I, ⌘K, ou « - » et « ## » pour commencer une liste ou un titre",
+    "editor_placeholder": "Écrivez quelque chose…",
+    "editor_bold": "Gras",
+    "editor_italic": "Italique",
+    "editor_link": "Lien",
+    "editor_sample": "## Notes de version\n\nÉcrivez en **gras** et en *italique*, avec des [liens](https://prismsdk.dev).\n\n- Entrée commence un nouvel élément\n- Retour arrière au début joint les blocs"
   },
   "layout": {
     "heading": "Mise en page",

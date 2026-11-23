@@ -324,9 +324,35 @@ impl Span {
     pub fn bold(self) -> Self {
         self.font_weight(FontWeight::Bold)
     }
+    /// The paragraph's weight again, not bold (#294): what a « bold »
+    /// command toggling off does to the selected runs.
+    pub fn no_bold(mut self) -> Self {
+        self.run.weight = None;
+        self
+    }
     /// Italic.
     pub fn italic(mut self) -> Self {
         self.run.italic = true;
+        self
+    }
+    /// Not italic (#294).
+    pub fn no_italic(mut self) -> Self {
+        self.run.italic = false;
+        self
+    }
+    /// Makes the run a link to an app path or a URL (#294), underlined
+    /// like [`link`]: what a « set link » command does to the selected
+    /// runs.
+    pub fn link_to(mut self, path: impl Into<String>) -> Self {
+        self.run.href = Some(path.into());
+        self.run.underline = true;
+        self
+    }
+    /// The run without its link and the link's underline (#294).
+    pub fn no_link(mut self) -> Self {
+        if self.run.href.take().is_some() {
+            self.run.underline = false;
+        }
         self
     }
     /// Underlined.

@@ -1054,14 +1054,15 @@ fn padding_works_on_every_leaf_and_replaces_a_fields_own() {
     assert!(c.contains("padding-inline:10px 32px;"), "{c}");
     // Padding in a state (`.hover(|s| s.px(…))`) reaches leaves too.
     let hover = style(text("Chip").px(8.).hover(|s| s.px(16.)));
-    let rules = crate::css::states_css(NodeKind::Text, 7, &hover.resolve(Default::default()));
+    let rules =
+        crate::css::states_css(NodeKind::Text, false, 7, &hover.resolve(Default::default()));
     assert!(
         rules.contains("padding-inline:16px 16px !important;"),
         "{rules}"
     );
     // So do rules on its own width.
     let wide = style(text("Chip").px(8.).when_width_at_least(300., |s| s.px(20.)));
-    let v = crate::css::own_width_variants(NodeKind::Text, &wide);
+    let v = crate::css::own_width_variants(NodeKind::Text, false, &wide);
     assert!(
         v[0][1]
             .as_str()
@@ -3488,7 +3489,7 @@ fn interaction_states_become_pseudo_class_rules() {
         .focus_within(|s| s.opacity(0.9))
         .group_hover(|s| s.text_color(rgb(0xFF0000)))
         .resolve(Default::default());
-    let rules = css::states_css(NodeKind::View, 7, &s);
+    let rules = css::states_css(NodeKind::View, false, 7, &s);
     for part in [
         r#"@media (hover:hover){[data-pid="7"]:hover{background:rgba(238,238,238,1) !important;}}"#,
         r#"[data-pid="7"]:active{box-shadow:unset !important;}"#,
@@ -3499,7 +3500,7 @@ fn interaction_states_become_pseudo_class_rules() {
     }
     // Views have no text properties: the group rule changes nothing here.
     assert!(!rules.contains("[data-group]"));
-    let t = css::states_css(NodeKind::Text, 8, &s);
+    let t = css::states_css(NodeKind::Text, false, 8, &s);
     assert!(
         t.contains(r#"@media (hover:hover){[data-group]:hover [data-pid="8"]:not(:where([data-group]:not(:hover) *)){color:rgba(255,0,0,1) !important;}}"#),
         "{t}"
@@ -3515,7 +3516,7 @@ fn interaction_states_become_pseudo_class_rules() {
         "{base}"
     );
     assert_eq!(
-        css::states_css(NodeKind::View, 9, &clear),
+        css::states_css(NodeKind::View, false, 9, &clear),
         r#"[data-group]:focus-within [data-pid="9"]:not(:where([data-group]:not(:focus-within) *)){display:flex !important;}"#
     );
     // Precedence: rules come in the order states apply (active after hover).
@@ -3525,10 +3526,10 @@ fn interaction_states_become_pseudo_class_rules() {
         .drop_hover(|s| s.bg(rgb(0xEEEEFF)))
         .resolve(Default::default());
     assert_eq!(
-        css::states_css(NodeKind::View, 10, &drop),
+        css::states_css(NodeKind::View, false, 10, &drop),
         r#"[data-pid="10"][data-prism-drop]{background:rgba(238,238,255,1) !important;}"#
     );
-    assert!(css::states_css(NodeKind::View, 7, &Style::default()).is_empty());
+    assert!(css::states_css(NodeKind::View, false, 7, &Style::default()).is_empty());
 
     // The style op carries them, and the group flag.
     let mut e = Encoder::default();
@@ -3787,12 +3788,12 @@ fn scroll_bars_can_be_overlay_or_hidden() {
         ..Style::default()
     };
     let mut op = json!({});
-    crate::css::layout_op_fields(NodeKind::Scroll, &style(Scrollbar::Auto), &mut op);
+    crate::css::layout_op_fields(NodeKind::Scroll, false, &style(Scrollbar::Auto), &mut op);
     assert!(op.get("sb").is_none());
-    crate::css::layout_op_fields(NodeKind::Scroll, &style(Scrollbar::Hidden), &mut op);
+    crate::css::layout_op_fields(NodeKind::Scroll, false, &style(Scrollbar::Hidden), &mut op);
     assert_eq!(op["sb"], "hidden");
     let mut view = json!({});
-    crate::css::layout_op_fields(NodeKind::View, &style(Scrollbar::Hidden), &mut view);
+    crate::css::layout_op_fields(NodeKind::View, false, &style(Scrollbar::Hidden), &mut view);
     assert!(view.get("sb").is_none(), "scroll views only");
     let mut b = HtmlBackend::default();
     b.apply(&[
@@ -3989,7 +3990,7 @@ fn fields_with_their_own_look_skip_the_focus_outline() {
         .resolve(Default::default());
     assert!(css::css(NodeKind::TextInput, &ring).contains("outline:none;"));
     // The focused state does not bring the outline back.
-    let rules = css::states_css(NodeKind::TextInput, 3, &ring);
+    let rules = css::states_css(NodeKind::TextInput, false, 3, &ring);
     assert!(!rules.contains("outline"), "{rules}");
     // Other kinds keep it.
     assert!(!css::css(NodeKind::Button, &Style::default().p(12.)).contains("outline:none;"));
@@ -4547,7 +4548,7 @@ fn group_drop_hover_follows_the_drop_target() {
         .group_drop_hover(|s| s.opacity(1.))
         .group_drop_hover_named("zone", |s| s.opacity(0.8))
         .resolve(Default::default());
-    let rules = css::states_css(NodeKind::View, 7, &label);
+    let rules = css::states_css(NodeKind::View, false, 7, &label);
     assert!(
         rules.contains(
             r#"[data-group][data-prism-drop] [data-pid="7"]:not(:where([data-group]:not([data-prism-drop]) *)){opacity:unset !important;}"#
@@ -4572,7 +4573,7 @@ fn named_groups_have_their_own_rules() {
         .group_hover_named("row", |s| s.opacity(1.).w(px(16.)))
         .group_hover(|s| s.opacity(0.5))
         .resolve(Default::default());
-    let rules = css::states_css(NodeKind::View, 7, &grip);
+    let rules = css::states_css(NodeKind::View, false, 7, &grip);
     // Opacity back to 1 is `unset` (its initial value).
     assert!(
         rules.contains(r#"@media (hover:hover){[data-gn="row"]:hover [data-pid="7"]{width:16px !important;opacity:unset !important;}}"#),
@@ -4589,7 +4590,7 @@ fn named_groups_have_their_own_rules() {
     let odd = Style::default()
         .group_hover_named("a\"]</style>", |s| s.opacity(0.5))
         .resolve(Default::default());
-    let r = css::states_css(NodeKind::View, 8, &odd);
+    let r = css::states_css(NodeKind::View, false, 8, &odd);
     assert!(r.contains(r#"[data-gn="a\"]\3c /style\3e "]:hover"#), "{r}");
 
     // The style op names the group; the page carries `data-gn`.

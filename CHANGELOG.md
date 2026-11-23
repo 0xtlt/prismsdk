@@ -7,6 +7,43 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- UI: `ui::rich_text_input(doc)`, a rich text editor (#294): paragraphs,
+  headings, bulleted and numbered lists, and runs in bold, italic or
+  linked, edited without markup on every platform `rich_input` runs on
+  (one native field per block, the selection running across them). Its
+  value is a `RichText` the app stores, with `to_markdown` /
+  `from_markdown` and `to_html` / `from_html` (pasted HTML sanitized to
+  the model's subset). Block and inline modes; ⌘B, ⌘I and ⌘K (Ctrl
+  elsewhere); commands for a toolbar (`toggle_bold`, `set_block`,
+  `set_link`…) and its state (`formatting()`); `on_link_request` for the
+  app's link picker; Markdown shortcuts (`- `, `1. `, `## `); copy and
+  paste of HTML, Markdown and its own type. Headings and list items are
+  named for screen readers with the new `prism.heading`,
+  `prism.list_item` and `prism.numbered_item` texts, in Prism's 12
+  languages.
+- Keys: a `consume_keys` entry can name modifiers, `"cmd+b"`,
+  `"cmd+shift+z"`, `"alt+ArrowUp"` (#294): the key is taken from the
+  focused field only with exactly those held, `cmd` being ⌘ on Apple
+  platforms and Ctrl elsewhere. On iOS, iPadOS and visionOS chords are
+  key commands too.
+- Spans: `no_bold()`, `no_italic()`, `link_to(path)` and `no_link()`.
+- iOS, iPadOS, visionOS and Android: Backspace from the on-screen
+  keyboard with the caret at the start of a text area, which deletes
+  nothing, is reported as a `Backspace` key to the nodes listening to
+  keys (#294), as a hardware press is.
+
+### Fixed
+
+- Web: a horizontal scroll view (`scroll_x()`) no longer stops the mouse
+  wheel from scrolling the vertical view around it (#293): each scroll
+  view contains overscroll on its own axis only.
+- Web: a `web_component` or `island` host now gets its typography
+  (`text_size`, `font_weight`, `text_color`, `line_height`…), in its
+  `hover`, `focus_within` and breakpoint variants too (#294), so its
+  shadow root can inherit the app's text styles.
+
 ## 0.1.2 (2026-11-23)
 
 Disclosures for screen readers, a router that tells screens they are on

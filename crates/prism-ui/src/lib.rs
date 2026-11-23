@@ -122,6 +122,12 @@ pub use forms::{
 };
 pub use forms::{FileInput, FilesHandler, ProgressHandler, file_input};
 
+mod rich_text;
+pub use rich_text::{
+    BlockKind, Formatting, LinkRequest, PasteMode, RICH_TEXT_TYPE, RichBlock, RichPosition,
+    RichSelection, RichText, RichTextChange, RichTextInput, rich_text_input,
+};
+
 mod charts;
 pub mod qr;
 mod qr_code;
