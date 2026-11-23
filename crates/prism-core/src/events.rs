@@ -169,6 +169,7 @@ pub struct FileDropEvent {
 
 /// Why files dropped on a drop target did not reach the app (#290).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DropError {
     /// None of the files is of a type the target takes.
     NotAccepted,

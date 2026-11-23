@@ -2762,7 +2762,7 @@ impl Div {
     ///     .on_drop_error(cx.listener(|this, e: &DropErrorEvent, _| this.notice = Some(match e.error {
     ///         DropError::NotAccepted => "Only images, please",
     ///         DropError::Limits => "Too many files at once",
-    ///         DropError::Busy | DropError::Failed => "The upload failed: try again",
+    ///         _ => "The upload failed: try again",
     ///     })))
     /// ```
     pub fn on_drop_error(mut self, handler: Handler<crate::events::DropErrorEvent>) -> Self {

@@ -7,6 +7,59 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.1.2 (2026-11-23)
+
+Disclosures for screen readers, a router that tells screens they are on
+top, sidebars acting as tabs, and drops that no longer fail silently.
+
+### Added
+
+- Accessibility: `accessibility_expanded(bool)` and
+  `accessibility_controls(name)` say whether a disclosure shows its
+  content and which element it folds (#291): `aria-expanded` and
+  `aria-controls` on the web, `accessibilityExpanded` and linked elements
+  on macOS, the expanded status on iOS, iPadOS, tvOS 18 and visionOS 2,
+  the state description and expand/collapse actions on Android, the
+  expanded state and controls relation on Linux, the ExpandCollapse
+  pattern and controlled peers on Windows. Where the platform has no
+  state of its own the words come from the new `prism.expanded` and
+  `prism.collapsed` texts, in Prism's 12 languages.
+- Router: `cx.is_top_screen()` tells a screen whether it is the visible
+  one (the screens kept under it for Back and the other tabs' re-render
+  too), `cx.on_screen_shown(f)` runs each time it becomes the visible one
+  again, and the screen renders again then (#288). `App::top_screen()`
+  and `Router::top_entity()` give its entity.
+- Router: `cx.navigate_root(path)` and `.link_root(path)` leave `path`
+  alone in its stack, without building the root route underneath:
+  sidebar entries that act as tabs (#289). `App::stack_depth()` reads
+  the stack's depth.
+- Drops: `on_drop_error` hears of files dropped on a target that did not
+  reach the app, with a `DropError` (`NotAccepted`, `Limits`, `Busy`,
+  `Failed`) and the details (#290): on the web a type the target does not
+  take, the upload limits, a fifth drop at once, a busy server, an
+  unwritable data directory, an upload cut off (a refused drop stops
+  uploading at once); natively files that could not be copied. The web
+  server says at startup when its data directory is not writable.
+- Styles: `group_drop_hover` and `group_drop_hover_named` restyle a drop
+  target's descendants while files are over it (#290).
+
+### Fixed
+
+- Web: a WebSocket forwarded by a proxy as `wss`/`ws`
+  (`X-Forwarded-Proto`, `Forwarded`) counts as the page's `https`/`http`
+  when its origin is checked (#286).
+- Bare popovers (`.bare()`) draw no box of their own on every platform,
+  like bare dialogs (#287).
+
+### Changed
+
+- New variants and fields in public types: `Interaction::GroupDropHover`
+  (`Interaction::ALL` has 10 states), `UiEvent::DropFailed`,
+  `Accessibility::{expanded, controls, controls_node}`,
+  `RenderEnvironment::{expanded, collapsed}`, `VNode::{link_root,
+  on_drop_error}`. Code that matches these enums exhaustively or builds
+  these structs without `..Default::default()` needs the new ones.
+
 ## 0.1.1 (2026-11-22)
 
 A fix for the web's first paint and the crates' links.
