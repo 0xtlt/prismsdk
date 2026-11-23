@@ -53,6 +53,10 @@ top, sidebars acting as tabs, and drops that no longer fail silently.
 
 ### Changed
 
+- Releases publish themselves: pushing a version's tag builds every crate
+  on macOS, publishes them to crates.io through trusted publishing, then
+  creates the GitHub release; a tag such as `v0.2.0-rc.1` publishes a
+  pre-release (RELEASING.md).
 - New variants and fields in public types: `Interaction::GroupDropHover`
   (`Interaction::ALL` has 10 states), `UiEvent::DropFailed`,
   `Accessibility::{expanded, controls, controls_node}`,

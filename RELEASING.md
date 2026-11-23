@@ -1,15 +1,18 @@
 # Releasing
 
 Every crate shares one version (`[workspace.package] version` in the root
-`Cargo.toml`) and is released together. Only maintainers with a crates.io
-token for the crates can publish.
+`Cargo.toml`) and is released together. Pushing the version's tag publishes
+it: `.github/workflows/release.yml` checks the tag, builds every crate from
+its package on macOS, publishes them to crates.io through trusted publishing
+(no token is stored anywhere), then creates the GitHub release.
 
 ## Checklist
 
 1. **Start from a green `main`.** CI passes (format, tests, clippy on every
    target, bundles) and the docs workflow builds.
 2. **Pick the version.** Before 1.0, a breaking change bumps the minor
-   (`0.1.x` → `0.2.0`), anything else the patch.
+   (`0.1.x` → `0.2.0`), anything else the patch. A release candidate takes
+   a pre-release suffix: `0.2.0-rc.1` (see [Release candidates](#release-candidates)).
 3. **Bump it in one commit**, in this order:
    1. `[workspace.package] version` in `Cargo.toml`;
    2. the `version = "…"` of every `prism*` entry in `[workspace.dependencies]`
@@ -35,14 +38,53 @@ token for the crates can publish.
    `--dry-run` packages each crate, then builds it from its package against
    the others' packages, so a file outside a crate's directory (or a missing
    version on a path dependency) fails here.
-5. **Tag** the bump commit: `git tag v0.2.0 && git push origin main v0.2.0`.
-6. **Publish** (below), then check the docs.rs builds. The tag's push
-   creates the GitHub release (`.github/workflows/release.yml`), its notes
-   being the version's section of `CHANGELOG.md`
-   (`scripts/release-notes.py 0.2.0` prints them). A section longer than
-   GitHub takes gives its summary and each entry's first sentence, with a
-   link to the full list. After a fix to the notes on `main`,
-   `gh workflow run release.yml -f tag=v0.2.0` updates the release.
+5. **Tag** the bump commit once it is on `main`:
+   `git tag v0.2.0 && git push origin v0.2.0`. The release workflow then:
+   1. refuses a tag that is not the workspace's version, not on `main`, or
+      without its `CHANGELOG.md` section;
+   2. runs `cargo publish --workspace --dry-run`: nothing is uploaded unless
+      every crate packages and builds;
+   3. publishes with `scripts/publish.sh` (the crates of that version not on
+      crates.io yet, in dependency order);
+   4. creates the GitHub release, its notes being the version's section of
+      `CHANGELOG.md` (`scripts/release-notes.py 0.2.0` prints them). A
+      section longer than GitHub takes gives its summary and each entry's
+      first sentence, with a link to the full list.
+6. **Check** the run (`gh run watch`), then the docs.rs builds. After a fix
+   to the notes on `main`, `gh workflow run release.yml -f tag=v0.2.0`
+   updates the release (and publishes nothing).
+
+If the upload stops halfway (crates.io down, a rate limit), re-run the failed
+job: `scripts/publish.sh` skips the crates already published.
+
+## Release candidates
+
+A version with a pre-release suffix (`0.2.0-rc.1`, `0.2.0-beta.2`) goes the
+same way, from its tag `v0.2.0-rc.1`, with a `## 0.2.0-rc.1 (date)` section
+in `CHANGELOG.md`. crates.io marks it a pre-release: `prismsdk = "0.2"`
+keeps resolving to the last stable version, and only
+`prismsdk = "0.2.0-rc.1"` gets it. The GitHub release is marked a
+pre-release too. The final `0.2.0` follows with its own bump and tag.
+
+## Trusted publishing (set up once)
+
+crates.io lets the release workflow publish without a stored token: for each
+crate, it trusts the `0xtlt/prismsdk` repository's `release.yml` workflow in
+the `release` environment. GitHub signs a statement for the job
+(`id-token: write`), `rust-lang/crates-io-auth-action` trades it for a token
+that lasts only for the job, and the action revokes it at the end.
+
+- The `release` environment exists in the repository's settings
+  (Environments), its deployments limited to `v*` tags.
+- Each crate of the workspace has the configuration on crates.io (the
+  crate's Settings → Trusted Publishing: owner `0xtlt`, repository
+  `prismsdk`, workflow `release.yml`, environment `release`). A new crate
+  is published once by hand (trusted publishing configures existing crates),
+  then gets it too.
+
+To publish by hand instead (from macOS with Xcode), with a crates.io token
+in `CARGO_REGISTRY_TOKEN`: `cargo publish --workspace --dry-run`, then
+`scripts/publish.sh`.
 
 ## Publish order
 
@@ -70,17 +112,15 @@ the table is the same order for publishing crate by crate.
 | 17 | `prismsdk-cli` | apple-build, build |
 | 18 | `prismsdk-island` | – (islands' WASM side; built for `wasm32-unknown-unknown`) |
 
-Publishing must happen from macOS with Xcode: verifying `prism-macos`,
-`prism-ios` and `prism-watchos` compiles the Swift bridge.
+Publishing must happen from macOS with Xcode (the release workflow runs on
+`macos-15`): verifying `prism-macos`, `prism-ios` and `prism-watchos`
+compiles the Swift bridge.
 
 ### New versions of existing crates
 
 crates.io accepts 30 updates in a burst, then one a minute: the whole
-workspace goes in one command.
-
-```sh
-cargo publish --workspace
-```
+workspace goes in one command (`scripts/publish.sh`, which the release
+workflow runs).
 
 ### The first release (new crates)
 
