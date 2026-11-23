@@ -2860,6 +2860,15 @@ impl Widgets for Gtk {
         }
     }
 
+    /// What a disclosure folds (#291): the controls relation.
+    fn set_controls(&mut self, view: &View, target: Option<&View>) {
+        crate::table::set_relation(
+            &view.widget(),
+            crate::table::CONTROLS,
+            target.map(View::widget).as_ref(),
+        );
+    }
+
     fn set_table(&mut self, table: &View, rows: &[prism_native::table::TableRow<'_, View>]) {
         let rows: Vec<(gtk::Widget, bool, Vec<gtk::Widget>)> = rows
             .iter()
@@ -2918,6 +2927,11 @@ impl Widgets for Gtk {
             set_accessible_selected(&w, a11y.is_selected());
         } else {
             reset_accessible_state(&w, a11y_state::SELECTED);
+        }
+        // A disclosure (#291): Orca says « expanded » / « collapsed ».
+        match a11y.expanded {
+            Some(expanded) => set_accessible_expanded(&w, expanded),
+            None => reset_accessible_state(&w, a11y_state::EXPANDED),
         }
         // A drawn control that is disabled: unavailable for screen readers
         // (GTK's own controls are made insensitive below).
@@ -4121,6 +4135,7 @@ fn set_accessible_int(w: &impl IsA<gtk::Widget>, property: i32, n: i32) {
 /// `GtkAccessibleState` values (gtkenums.h, counted from 0).
 pub(crate) mod a11y_state {
     pub const DISABLED: i32 = 2;
+    pub const EXPANDED: i32 = 3;
     pub const PRESSED: i32 = 6;
     pub const SELECTED: i32 = 7;
 }
@@ -4218,6 +4233,24 @@ pub(crate) fn set_accessible_selected(w: &impl IsA<gtk::Widget>, selected: bool)
     // SAFETY: every GtkWidget implements GtkAccessible; one int state.
     unsafe {
         gtk_accessible_update_state_value(widget.cast(), 1, &SELECTED, value.to_glib_none_mut().0);
+    }
+}
+
+/// `GTK_ACCESSIBLE_STATE_EXPANDED` (gtkenums.h): a disclosure shows more
+/// (#291).
+fn set_accessible_expanded(w: &impl IsA<gtk::Widget>, expanded: bool) {
+    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    // « Boolean or undefined »: an int, like SELECTED.
+    let mut value = i32::from(expanded).to_value();
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible; one int state.
+    unsafe {
+        gtk_accessible_update_state_value(
+            widget.cast(),
+            1,
+            &a11y_state::EXPANDED,
+            value.to_glib_none_mut().0,
+        );
     }
 }
 

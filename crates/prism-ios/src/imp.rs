@@ -1402,6 +1402,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         image_cache: HashMap::new(),
         image_sources: image_sources(_config.assets.as_deref(), &_config.embedded_assets),
         semantic: None,
+        disclosure_words: ("Expanded".into(), "Collapsed".into()),
         radii: HashMap::new(),
         pickers: HashMap::new(),
         date_pickers: HashMap::new(),
@@ -1601,6 +1602,9 @@ pub struct UiKit {
     radii: HashMap<NodeId, f64>,
     /// Layout direction of native chrome (set once the locale is known).
     semantic: Option<objc2_ui_kit::UISemanticContentAttribute>,
+    /// What VoiceOver says of an expanded and a collapsed element before
+    /// iOS 18, which has no expanded status (#291).
+    disclosure_words: (String, String),
     /// Sheets currently presented, by modal id.
     presented: Vec<NodeId>,
     /// Options, placeholder and selection of each picker.
@@ -3061,6 +3065,7 @@ impl Widgets for UiKit {
         // Date pickers speak the app's language (month names, digits).
         #[cfg(not(target_os = "tvos"))]
         crate::dates::set_clear_label(&env.clear);
+        self.disclosure_words = (env.expanded.clone(), env.collapsed.clone());
         if self.lang != env.lang {
             self.lang = env.lang.clone();
             for p in self.date_pickers.values() {
@@ -3469,12 +3474,34 @@ impl Widgets for UiKit {
             v.setAccessibilityLabel(ns(&a.label).as_deref(), mtm);
         }
         v.setAccessibilityHint(ns(&a.hint).as_deref(), mtm);
-        let value = a.value.clone().or_else(|| match (a.role, a.checked) {
+        let mut value = a.value.clone().or_else(|| match (a.role, a.checked) {
             (Some(Role::Switch | Role::Checkbox), Some(on)) if !native_control => {
                 Some(if on { "1".into() } else { "0".into() })
             }
             _ => None,
         });
+        // A disclosure (#291): VoiceOver says « expanded » / « collapsed »
+        // from iOS 18; before, its value says it.
+        {
+            use objc2_ui_kit::UIAccessibilityExpandedStatus as S;
+            if v.respondsToSelector(sel!(setAccessibilityExpandedStatus:)) {
+                v.setAccessibilityExpandedStatus(
+                    match a.expanded {
+                        Some(true) => S::Expanded,
+                        Some(false) => S::Collapsed,
+                        None => S::Unsupported,
+                    },
+                    mtm,
+                );
+            } else if let Some(expanded) = a.expanded {
+                let (on, off) = &self.disclosure_words;
+                let state = if expanded { on } else { off };
+                value = Some(match value {
+                    Some(v) if !v.is_empty() => format!("{state}, {v}"),
+                    _ => state.clone(),
+                });
+            }
+        }
         if value.is_some() || !native_control {
             v.setAccessibilityValue(ns(&value).as_deref(), mtm);
         }

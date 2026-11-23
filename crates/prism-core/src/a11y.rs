@@ -143,6 +143,16 @@ pub struct Accessibility {
     pub hidden: bool,
     /// The tooltip shown while the pointer rests on it (#216).
     pub tooltip: Option<Tooltip>,
+    /// Whether the element shows (`true`) or hides (`false`) more content:
+    /// a disclosure, a row that folds its options, a menu button (#291).
+    /// `None`: it does neither.
+    pub expanded: Option<bool>,
+    /// The `.id(…)` name of the element this one shows, hides or changes
+    /// (the region a disclosure folds, #291).
+    pub controls: Option<String>,
+    /// The node [`controls`](Self::controls) names, found by Prism once
+    /// both are mounted (backends read this one).
+    pub controls_node: Option<crate::NodeId>,
 }
 
 /// A tooltip (#216): the platform's own, with its own delay.
@@ -216,6 +226,37 @@ pub trait Accessible: Sized {
     /// the web (`"page"` on a link), read as selected on the native platforms.
     fn accessibility_current(mut self, current: bool) -> Self {
         self.a11y_mut().current = current;
+        self
+    }
+
+    /// Says whether the element shows (`true`) or hides (`false`) more
+    /// content (#291): a disclosure, a row that folds its options, a
+    /// button opening a menu. `aria-expanded` on the web; macOS:
+    /// `accessibilityExpanded`; iOS, iPadOS, tvOS 18 and visionOS 2 and
+    /// later: the expanded status, before them "expanded" / "collapsed"
+    /// before its value; Android: the state description (Android 11+) and the expand
+    /// or collapse action; Linux: the expanded state; Windows: the
+    /// ExpandCollapse pattern; watchOS: its value.
+    ///
+    /// ```text
+    /// div()
+    ///     .child(text("Options"))
+    ///     .on_click(cx.listener(|this, _, _| this.open = !this.open))
+    ///     .accessibility_expanded(self.open)
+    ///     .accessibility_controls("options")
+    /// ```
+    fn accessibility_expanded(mut self, expanded: bool) -> Self {
+        self.a11y_mut().expanded = Some(expanded);
+        self
+    }
+
+    /// Names the element this one shows, hides or changes: the one given
+    /// `.id(name)` (#291). `aria-controls` on the web; macOS: its linked
+    /// element; Linux: the controls relation; Windows: its controlled
+    /// peer. iOS and Android have no such link (the expanded state is what
+    /// they read).
+    fn accessibility_controls(mut self, name: impl Into<String>) -> Self {
+        self.a11y_mut().controls = Some(name.into());
         self
     }
 

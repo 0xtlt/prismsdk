@@ -94,6 +94,48 @@ fn ssr_current_links_are_the_current_page() {
     );
 }
 
+/// #291: a disclosure's state and the region it folds, which gets an id.
+#[test]
+fn ssr_disclosures_say_expanded_and_point_at_their_region() {
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::View),
+        a11y(
+            2,
+            Accessibility {
+                expanded: Some(true),
+                controls: Some("options".into()),
+                controls_node: Some(3),
+                ..Default::default()
+            },
+        ),
+        create(3, NodeKind::View),
+        create(4, NodeKind::View),
+        a11y(
+            4,
+            Accessibility {
+                expanded: Some(false),
+                ..Default::default()
+            },
+        ),
+        children(1, &[2, 3, 4]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    let html = b.to_html();
+    assert!(
+        html.contains(r#"data-pid="2" data-kind="view" style="" aria-expanded="true" aria-controls="prism-n3""#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"data-pid="3" data-kind="view" id="prism-n3""#),
+        "{html}"
+    );
+    assert!(html.contains(r#"aria-expanded="false""#), "{html}");
+    // Only the region named gets an id.
+    assert_eq!(html.matches(" id=").count(), 1, "{html}");
+}
+
 #[test]
 fn ssr_links_are_anchors() {
     let mut b = HtmlBackend::default();

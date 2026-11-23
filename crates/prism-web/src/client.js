@@ -3299,6 +3299,11 @@
     set("aria-selected", role === "tab" ? String(!!(selected ?? a.checked)) : selected === null ? null : String(selected));
     // A link (its own `<a href>` or the role) is the current page (#144).
     set("aria-current", a.current ? (role === "link" || link ? "page" : "true") : null);
+    // A disclosure (#291): whether it shows more, and the region it folds.
+    set("aria-expanded", a.expanded === true || a.expanded === false ? String(a.expanded) : null);
+    const target = a.controls != null ? nodes.get(a.controls) : null;
+    if (target && !target.id) target.id = `prism-n${a.controls}`;
+    set("aria-controls", target ? target.id : null);
     // A button with a state is a toggle button.
     set("aria-pressed", role === "button" && a.checked !== null && a.checked !== undefined ? String(a.checked) : null);
     set("aria-valuetext", role === "slider" ? a.value || null : null);

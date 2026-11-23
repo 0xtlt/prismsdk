@@ -500,6 +500,8 @@ struct Node {
     var a11yHidden = false
     /// A selected item or the current page of a navigation (`.isSelected`).
     var a11ySelected = false
+    /// A disclosure's state (#291): expanded, collapsed, or none.
+    var a11yExpanded: Bool?
     var hidden = false
     var style: [String: Any] = [:]
     /// x, y, width, height in the parent (from Rust's layout).
@@ -583,6 +585,9 @@ final class PrismStore: ObservableObject {
     @Published var scheme: ColorScheme?
     /// The action emptying an optional date picker (#89), in the app's language.
     @Published var clear = "Clear"
+    /// A disclosure's state as VoiceOver says it (#291), in the app's language.
+    @Published var expanded = "Expanded"
+    @Published var collapsed = "Collapsed"
     /// Runtime layers (the toaster), above everything.
     @Published var layers: [UInt64] = []
     /// `cx.focus` / `.autofocus()`: the node, and a count so asking again
@@ -643,6 +648,7 @@ final class PrismStore: ObservableObject {
                 nodes[id]?.label = p["label"] as? String
                 nodes[id]?.a11yHidden = p["hidden"] as? Bool ?? false
                 nodes[id]?.a11ySelected = p["selected"] as? Bool ?? false
+                nodes[id]?.a11yExpanded = p["expanded"] as? Bool
                 nodes[id]?.role = role
                 nodes[id]?.a11yValue = value
                 nodes[id]?.checked = p["checked"] as? Bool
@@ -652,6 +658,8 @@ final class PrismStore: ObservableObject {
                 rtl = p["rtl"] as? Bool ?? false
                 lang = p["lang"] as? String ?? ""
                 clear = p["clear"] as? String ?? "Clear"
+                expanded = p["expanded"] as? String ?? "Expanded"
+                collapsed = p["collapsed"] as? String ?? "Collapsed"
             case "style": nodes[id]?.style = p["s"] as? [String: Any] ?? [:]
             case "frame":
                 if let f = p["f"] as? [Double], f.count == 4 { nodes[id]?.frame = prismFrame(f) }
@@ -942,6 +950,8 @@ struct NodeView: View {
                 .accessibilityAddTraits(n.role == "radio" ? (n.checked == true ? [.isButton, .isSelected] : .isButton) : [])
                 .accessibilityHidden(n.a11yHidden || n.inert)
                 .accessibilityAddTraits(n.a11ySelected ? .isSelected : [])
+                // A disclosure (#291): SwiftUI has no expanded state, so its value says it.
+                .modifier(A11yExpanded(expanded: n.a11yExpanded, value: n.a11yValue))
                 .allowsHitTesting(!n.noHit && !n.inert)
                 .disabled(n.inert)
                 .id(id)
@@ -1342,6 +1352,23 @@ struct RowClick: ViewModifier {
 
 /// `a11y.value` (e.g. "40 %") read out instead of the control's own value,
 /// switched on and off like `A11yLabel`.
+/// A disclosure's state (#291) as its value, before the value it has.
+struct A11yExpanded: ViewModifier {
+    @ObservedObject var store = PrismStore.shared
+    let expanded: Bool?
+    let value: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let expanded {
+            let state = expanded ? store.expanded : store.collapsed
+            content.accessibilityValue(value.map { $0.isEmpty ? state : "\(state), \($0)" } ?? state)
+        } else {
+            content
+        }
+    }
+}
+
 struct A11yValue: ViewModifier {
     let value: String?
 

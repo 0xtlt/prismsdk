@@ -79,6 +79,9 @@ pub struct Semantics {
     pub selected: Option<bool>,
     /// The Value pattern, read-only: read after the name ("40 %").
     pub value: Option<String>,
+    /// The ExpandCollapse pattern: a disclosure's region shown or not
+    /// (`accessibility_expanded`).
+    pub expanded: Option<bool>,
     /// Activated through the Invoke pattern. Check boxes, switches, tabs
     /// and radios are toggled or selected instead, like WinUI's.
     pub invoke: bool,
@@ -167,6 +170,7 @@ pub fn semantics(a: &Accessibility, clickable: bool) -> Semantics {
         toggled,
         selected,
         value,
+        expanded: a.expanded,
         disabled: a.disabled,
         element: control.is_some() && !a.hidden,
         hidden: a.hidden,
@@ -324,6 +328,14 @@ mod tests {
         let mut st = a11y(Role::Status);
         st.value = Some("Saved".into());
         assert_eq!(semantics(&st, false).value, None);
+        // A disclosure: the ExpandCollapse pattern, still invoked.
+        let d = Accessibility {
+            expanded: Some(true),
+            ..Default::default()
+        };
+        let s = semantics(&d, true);
+        assert_eq!((s.expanded, s.invoke), (Some(true), true));
+        assert_eq!(semantics(&a11y(Role::Button), true).expanded, None);
         assert_eq!(
             semantics(&a11y(Role::Navigation), false).landmark,
             Landmark::Navigation

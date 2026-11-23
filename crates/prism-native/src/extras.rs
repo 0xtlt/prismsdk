@@ -62,6 +62,9 @@ pub(crate) struct Extras {
     pub painted: IdMap<NodeId, Vec<NodeId>>,
     /// Nodes whose ancestors are painted in order again (`restack`).
     pub restack: IdSet<NodeId>,
+    /// Nodes that name the element they control (#291), so a node that
+    /// stops naming one is told.
+    pub controllers: IdSet<NodeId>,
 }
 
 /// Containers that fixed nodes are positioned against.
@@ -368,6 +371,7 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
     }
 
     pub(crate) fn forget_extras(&mut self, id: NodeId) {
+        self.extras.controllers.remove(&id);
         self.extras.z_nodes.remove(&id);
         self.extras.painted.remove(&id);
         self.extras.children.remove(&id);

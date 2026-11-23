@@ -27,6 +27,7 @@ Microsoft.UI.Xaml.Automation.AutomationProperty
 Microsoft.UI.Xaml.Automation.TogglePatternIdentifiers
 Microsoft.UI.Xaml.Automation.SelectionItemPatternIdentifiers
 Microsoft.UI.Xaml.Automation.ValuePatternIdentifiers
+Microsoft.UI.Xaml.Automation.ExpandCollapsePatternIdentifiers
 Microsoft.UI.Xaml.Automation.AutomationElementIdentifiers
 Microsoft.UI.Xaml.IUIElementOverrides
 Microsoft.UI.Xaml.Controls.IButtonFactory

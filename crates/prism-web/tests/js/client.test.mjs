@@ -421,8 +421,15 @@ test("accessibility patches set and clear ARIA", () => {
   a11y({ role: "button", current: true, selected: true });
   assert.equal(el.getAttribute("aria-current"), "true");
   assert.equal(el.getAttribute("aria-selected"), "true");
+  // A disclosure (#291): its state, and the region it folds (given an id).
+  a11y({ role: "button", expanded: false });
+  assert.equal(el.getAttribute("aria-expanded"), "false");
+  a11y({ role: "button", expanded: true, controls: 1 });
+  assert.equal(el.getAttribute("aria-expanded"), "true");
+  assert.equal(el.getAttribute("aria-controls"), "prism-n1");
+  assert.equal(el.id, "prism-n1");
   a11y({});
-  for (const name of ["role", "aria-level", "aria-checked", "aria-selected", "aria-current", "aria-hidden", "aria-disabled"]) {
+  for (const name of ["role", "aria-level", "aria-checked", "aria-selected", "aria-current", "aria-hidden", "aria-disabled", "aria-expanded", "aria-controls"]) {
     assert.equal(el.getAttribute(name), null, name);
   }
 
