@@ -129,6 +129,38 @@ fn groups_drive_their_descendants_and_can_show_hidden_nodes() {
     assert_eq!(h.w().hidden.get(&clear), Some(&true));
 }
 
+/// #290: a drop target marked `group()` restyles its children while files
+/// are over it, named or not.
+#[test]
+fn a_drop_target_group_drives_its_children() {
+    let mut h = tree(|| {
+        div()
+            .group()
+            .group_named("zone")
+            .on_drop_files(
+                ["image/*"],
+                std::rc::Rc::new(|_: &FileDropEvent, _: &mut App| {}),
+            )
+            .child(
+                div()
+                    .w(10.)
+                    .opacity(0.5)
+                    .group_drop_hover(|s| s.opacity(1.))
+                    .group_drop_hover_named("zone", |s| s.bg(rgb(RED))),
+            )
+    });
+    let [zone, label] = views(&h)[..] else {
+        panic!("two views")
+    };
+    assert_eq!(h.w().styles[&label].opacity, 0.5);
+    assert!(h.r.set_interaction(zone, Interaction::DropHover, true));
+    assert_eq!(h.w().styles[&label].opacity, 1.);
+    assert_eq!(h.w().styles[&label].background, Some(rgb(RED)));
+    h.r.set_interaction(zone, Interaction::DropHover, false);
+    assert_eq!(h.w().styles[&label].opacity, 0.5);
+    assert_eq!(h.w().styles[&label].background, None);
+}
+
 /// #212: a refinement follows the group it names, through other groups,
 /// and its size changes are laid out.
 #[test]

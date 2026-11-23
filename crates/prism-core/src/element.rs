@@ -781,6 +781,8 @@ pub struct VNode {
     )>,
     /// The upload of what was dropped on the node (#199).
     pub on_drop_progress: Option<Handler<crate::events::DropProgress>>,
+    /// Files dropped on the node that did not reach the app (#290).
+    pub on_drop_error: Option<Handler<crate::events::DropErrorEvent>>,
     /// A rich input's editing hooks (#217): its selection's rectangle,
     /// copy, cut and paste, modifier-clicks on its spans.
     pub edit: crate::text_edit::EditHandlers,
@@ -862,6 +864,7 @@ impl VNode {
             consume_keys: Vec::new(),
             on_drop_files: None,
             on_drop_progress: None,
+            on_drop_error: None,
             edit: Default::default(),
             selection_group: false,
             across: Default::default(),
@@ -2716,7 +2719,8 @@ impl Div {
     /// app) and dropped on the container (#111): `types` are MIME types
     /// (`"image/*"`) or extensions (`".pdf"`), empty for any file, like
     /// [`PickFiles::types`](crate::PickFiles::types). The handler gets the
-    /// dropped files it accepts (it is not called when none is); style
+    /// dropped files it accepts (it is not called when none is: see
+    /// [`on_drop_error`](Div::on_drop_error)); style
     /// the highlight while files hover with
     /// [`drop_hover`](crate::Styled::drop_hover). On the web the browser
     /// uploads the files over the app's connection first, like
@@ -2742,6 +2746,27 @@ impl Div {
     /// device already: it is not called.
     pub fn on_drop_progress(mut self, handler: Handler<crate::events::DropProgress>) -> Self {
         self.0.on_drop_progress = Some(handler);
+        self
+    }
+
+    /// Called when files dropped on the container
+    /// ([`on_drop_files`](Div::on_drop_files)) do not reach the app (#290):
+    /// none is of a type it takes, they are past the app's upload limits
+    /// or the server is busy (web), or they could not be read or stored
+    /// (the data directory is not writable, the upload was cut off). When
+    /// only some of the files failed, `on_drop_files` gets the others.
+    ///
+    /// ```ignore
+    /// div()
+    ///     .on_drop_files(["image/*"], cx.listener(|this, e: &FileDropEvent, _| this.add(&e.files)))
+    ///     .on_drop_error(cx.listener(|this, e: &DropErrorEvent, _| this.notice = Some(match e.error {
+    ///         DropError::NotAccepted => "Only images, please",
+    ///         DropError::Limits => "Too many files at once",
+    ///         DropError::Busy | DropError::Failed => "The upload failed: try again",
+    ///     })))
+    /// ```
+    pub fn on_drop_error(mut self, handler: Handler<crate::events::DropErrorEvent>) -> Self {
+        self.0.on_drop_error = Some(handler);
         self
     }
 

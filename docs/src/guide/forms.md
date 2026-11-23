@@ -89,6 +89,23 @@ let files = cx.pick_files_with_progress(PickFiles::new(), |p, cx| {             
 - **Files**: `ui::file_input` (or `cx.pick_files`) opens `<input type=file>`, `UIDocumentPickerViewController`, `NSOpenPanel`, `GtkFileChooserNative` (the desktop portal), `ACTION_OPEN_DOCUMENT` or `IFileOpenDialog`; `PickedFile::read()` returns the bytes. On the web the browser uploads them over the app's connection and `read()` reads the server's copy. There is no file picker on tvOS and watchOS (`DeviceError::Unavailable`).
 - **Folders** (#225): `cx.pick_folder(PickFolder::new().title("Import")).await?` gives `Option<PickedFolder { name, path, files }>`: every file under the chosen folder, sub-folders included (hidden ones left out), each `PickedFile::name` being its path in the folder (`notes/2024/a.md`). `NSOpenPanel` on macOS, GTK's folder chooser on Linux and `IFileOpenDialog` (`FOS_PICKFOLDERS`) on Windows read the files in place (`path` is the folder's); the Files app's folder picker on iOS and iPadOS and `ACTION_OPEN_DOCUMENT_TREE` on Android copy them for the app; the web uploads them like picked files (`<input webkitdirectory>`). `DeviceError::Unavailable` on tvOS and watchOS.
 - **Drop targets** (#111): `div().on_drop_files(["image/*", ".pdf"], cx.listener(|this, e: &FileDropEvent, cx| …))` receives files dragged from the system (the desktop, the Files app, another app in split screen) and dropped on the element; `e.files` are the dropped files it accepts, readable like picked ones, and the handler is not called when none is. `.drop_hover(|s| s.bg(…))` styles the zone while accepted files are over it. Types are those of `PickFiles::types` (empty for any file); the innermost target under the pointer gets the drop. Keep a chooser next to it (`ui::file_input`): phones rarely drag files. `cx.capabilities().drop_files` is `false` on tvOS and watchOS. On the web, `.on_drop_progress(cx.listener(|this, e: &DropProgress, cx| …))` follows the upload of what was dropped (#199): `e.sent` of `e.total` bytes (`e.fraction()`), from 0 as the upload starts to the last byte, just before `on_drop_files`, like `pick_files_with_progress` for picked files. Natively the files are on the device already, and it is not called.
+- **Refused drops** (#290): `.on_drop_error(cx.listener(|this, e: &DropErrorEvent, cx| …))` hears of files dropped on the target that did not reach the app, so it can tell the user. `e.error` says why: `DropError::NotAccepted` (none is of a type it takes), `Limits` (more files or bytes than the web app's `upload_limits`, or more than four drops uploading at once), `Busy` (the server receives too many files from every session right now), `Failed` (the files could not be read or stored: the data directory is not writable, a file vanished, the upload was cut off); `e.reason` has the details in English, for a log. When only some files failed, `on_drop_files` gets the others. On the web, a refused drop stops uploading at once, and the server says on stderr at startup when its data directory (`PRISM_DATA_DIR`, `WebApp::data_dir`) is not writable.
+- **The zone's children while files are over it** (#290): mark the drop target `.group()` (or `.group_named("zone")`), and its descendants follow its drop hover with `.group_drop_hover(|s| …)` (or `.group_drop_hover_named("zone", |s| …)`), like `group_hover`: a label that says « Release to upload », an icon that lights up.
+
+```rust
+div()
+    .group()
+    .on_drop_files(["image/*"], cx.listener(|this, e: &FileDropEvent, _| this.add(&e.files)))
+    .on_drop_error(cx.listener(|this, e: &DropErrorEvent, _| {
+        this.notice = Some(match e.error {
+            DropError::NotAccepted => "Only images, please",
+            DropError::Limits => "Too many files at once",
+            DropError::Busy | DropError::Failed => "The upload failed: try again",
+        })
+    }))
+    .drop_hover(|s| s.bg(rgb(0xEEF2FF)))
+    .child(text("Drop images here").opacity(0.6).group_drop_hover(|s| s.opacity(1.).bold()))
+```
 
   | | Drop | Highlight | Files |
   |---|---|---|---|

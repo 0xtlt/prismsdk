@@ -3422,8 +3422,9 @@ impl Widgets for Gtk {
         if let Some(old) = self.drop_targets.remove(&id) {
             w.remove_controller(&old);
         }
-        let Some(types) = types else { return };
-        let accept = prism_core::PickFiles::new().types(types.to_vec());
+        if types.is_none() {
+            return;
+        }
         // Files from the file manager or another app (#111); GTK sets
         // `:drop(active)` while they are over it.
         let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
@@ -3438,9 +3439,9 @@ impl Widgets for Gtk {
                 return false;
             };
             let paths: Vec<_> = list.files().iter().filter_map(|f| f.path()).collect();
-            let accept = accept.clone();
             // Copying large files takes a while: off the main loop.
             glib::MainContext::default().spawn_local(async move {
+                let dropped = paths.len();
                 let copied = gio::spawn_blocking(move || {
                     paths
                         .into_iter()
@@ -3449,12 +3450,20 @@ impl Widgets for Gtk {
                 })
                 .await
                 .unwrap_or_default();
-                let files: Vec<_> = copied
-                    .into_iter()
-                    .filter(|f| accept.accepts(&f.name, &f.mime))
-                    .collect();
-                if !files.is_empty() {
-                    dispatch(UiEvent::DropFiles(id, files));
+                let unread = dropped - copied.len();
+                // prism-core keeps the ones the target takes, and says so
+                // when there is none.
+                if !copied.is_empty() {
+                    dispatch(UiEvent::DropFiles(id, copied));
+                }
+                // Some could not be copied (#290).
+                if unread > 0 {
+                    let reason = prism_core::DropError::unread(unread, dropped);
+                    dispatch(UiEvent::DropFailed(
+                        id,
+                        prism_core::DropError::Failed,
+                        reason,
+                    ));
                 }
             });
             true

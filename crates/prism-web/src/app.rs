@@ -687,6 +687,16 @@ impl WebApp {
         }
     }
 
+    /// Whether the data directory takes files: created if missing, a probe
+    /// written and removed (#290).
+    pub(crate) fn data_dir_writable(&self) -> std::io::Result<()> {
+        let root = &self.inner.data_root;
+        std::fs::create_dir_all(root)?;
+        let probe = root.join(format!(".prism-probe-{}", std::process::id()));
+        std::fs::write(&probe, b"")?;
+        std::fs::remove_file(&probe)
+    }
+
     pub(crate) fn session_dir(&self, sid: &str) -> PathBuf {
         self.inner.data_root.join(sid)
     }

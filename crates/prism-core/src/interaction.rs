@@ -35,15 +35,20 @@ pub enum Interaction {
     /// Files are dragged over the node, a drop target that accepts them
     /// ([`Div::on_drop_files`](crate::Div::on_drop_files), #111).
     DropHover,
+    /// An ancestor marked [`group`](crate::Styled::group) is in
+    /// [`DropHover`](Self::DropHover) (#290): a drop zone's label says
+    /// « Drop to upload ».
+    GroupDropHover,
 }
 
 impl Interaction {
     /// Every state, in the order refinements apply (later ones win): a
     /// group's states first, then the node's own.
-    pub const ALL: [Interaction; 9] = [
+    pub const ALL: [Interaction; 10] = [
         Interaction::GroupHover,
         Interaction::GroupFocusWithin,
         Interaction::GroupActive,
+        Interaction::GroupDropHover,
         Interaction::Hover,
         Interaction::FocusWithin,
         Interaction::Focus,
@@ -63,6 +68,7 @@ impl Interaction {
             Interaction::GroupFocusWithin => 64,
             Interaction::GroupActive => 128,
             Interaction::DropHover => 256,
+            Interaction::GroupDropHover => 512,
         }
     }
 
@@ -73,6 +79,7 @@ impl Interaction {
             Interaction::Hover => Some(Interaction::GroupHover),
             Interaction::FocusWithin => Some(Interaction::GroupFocusWithin),
             Interaction::Active => Some(Interaction::GroupActive),
+            Interaction::DropHover => Some(Interaction::GroupDropHover),
             _ => None,
         }
     }
@@ -90,6 +97,7 @@ impl Interaction {
             Interaction::GroupFocusWithin => "group_focus_within",
             Interaction::GroupActive => "group_active",
             Interaction::DropHover => "drop_hover",
+            Interaction::GroupDropHover => "group_drop_hover",
         }
     }
 

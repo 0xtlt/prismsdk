@@ -167,6 +167,64 @@ pub struct FileDropEvent {
     pub files: Vec<crate::PickedFile>,
 }
 
+/// Why files dropped on a drop target did not reach the app (#290).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DropError {
+    /// None of the files is of a type the target takes.
+    NotAccepted,
+    /// More files or bytes than the app takes at once (web: the web app's
+    /// `upload_limits`), or more drops uploading at the same time than it
+    /// allows.
+    Limits,
+    /// The server receives too many files from every session right now:
+    /// try again later (web).
+    Busy,
+    /// The files could not be read or stored: the app's data directory is
+    /// not writable, a file vanished, the upload was cut off.
+    Failed,
+}
+
+impl DropError {
+    /// Short name (`not_accepted`, `limits`, `busy`, `failed`), as remote
+    /// hosts report it.
+    pub fn name(self) -> &'static str {
+        match self {
+            DropError::NotAccepted => "not_accepted",
+            DropError::Limits => "limits",
+            DropError::Busy => "busy",
+            DropError::Failed => "failed",
+        }
+    }
+
+    /// The error named `name` (see [`name`](Self::name)).
+    pub fn from_name(name: &str) -> Option<DropError> {
+        [
+            DropError::NotAccepted,
+            DropError::Limits,
+            DropError::Busy,
+            DropError::Failed,
+        ]
+        .into_iter()
+        .find(|e| e.name() == name)
+    }
+
+    /// The details of `failed` dropped files out of `dropped` that could
+    /// not be copied where the app reads them (native backends).
+    pub fn unread(failed: usize, dropped: usize) -> String {
+        format!("{failed} of {dropped} dropped files could not be read")
+    }
+}
+
+/// Files dropped on a drop target were refused, or failed to arrive
+/// (#290): [`Div::on_drop_error`](crate::Div::on_drop_error).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DropErrorEvent {
+    /// What went wrong, to word the app's own message.
+    pub error: DropError,
+    /// The details, in English (for a log).
+    pub reason: String,
+}
+
 /// Where a drag is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DragPhase {

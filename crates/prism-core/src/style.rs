@@ -2366,7 +2366,8 @@ pub trait Styled: Sized {
         self.with_style(|s| s.cursor = Some(cursor))
     }
     /// Marks the node as a group: descendants' `group_hover`,
-    /// `group_active` and `group_focus_within` refinements follow its states.
+    /// `group_active`, `group_focus_within` and `group_drop_hover`
+    /// refinements follow its states.
     fn group(self) -> Self {
         self.with_style(|s| s.group = true)
     }
@@ -2438,6 +2439,38 @@ pub trait Styled: Sized {
         self.with_style(move |s| {
             s.states.push_named(
                 crate::interaction::Interaction::GroupFocusWithin,
+                name.clone(),
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// Style changes while files a [`group`](Self::group) ancestor accepts
+    /// are dragged over it (#290): that ancestor is the drop target
+    /// ([`Div::on_drop_files`](crate::Div::on_drop_files)), its children
+    /// change with it.
+    ///
+    /// ```ignore
+    /// div().group().on_drop_files(["image/*"], on_drop).child(
+    ///     text("Drop images here")
+    ///         .opacity(0.6)
+    ///         .group_drop_hover(|s| s.opacity(1.).bold()),
+    /// )
+    /// ```
+    fn group_drop_hover(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states.push(
+                crate::interaction::Interaction::GroupDropHover,
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// Style changes while files the [`group_named`](Self::group_named)
+    /// ancestor `name` accepts are dragged over it (#290).
+    fn group_drop_hover_named(self, name: &str, f: impl Fn(Style) -> Style + 'static) -> Self {
+        let name: std::rc::Rc<str> = name.into();
+        self.with_style(move |s| {
+            s.states.push_named(
+                crate::interaction::Interaction::GroupDropHover,
                 name.clone(),
                 std::rc::Rc::new(f),
             )

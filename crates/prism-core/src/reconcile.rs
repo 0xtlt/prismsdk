@@ -580,6 +580,9 @@ pub enum UiEvent {
     FocusChange(NodeId, bool),
     /// Files dropped on a target are uploading (#199): bytes sent, total.
     DropProgress(NodeId, u64, u64),
+    /// Files dropped on a target did not reach the app (#290): why, and
+    /// the details.
+    DropFailed(NodeId, crate::events::DropError, String),
     /// A video's playback reached the end (#207).
     Ended(NodeId),
     /// A node that reports its layout was laid out at a new frame (#192).
@@ -938,6 +941,7 @@ pub struct Reconciler {
     across: Option<Across>,
     layout: IdMap<NodeId, Handler<crate::events::LayoutEvent>>,
     drop_progress: IdMap<NodeId, Handler<crate::events::DropProgress>>,
+    drop_error: IdMap<NodeId, Handler<crate::events::DropErrorEvent>>,
     ended: IdMap<NodeId, Handler<crate::video::EndedEvent>>,
     magnify: IdMap<NodeId, Handler<crate::events::MagnifyEvent>>,
     key_down: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
@@ -1277,6 +1281,11 @@ impl Reconciler {
         id: NodeId,
     ) -> Option<Handler<crate::events::DropProgress>> {
         self.drop_progress.get(&id).cloned()
+    }
+
+    /// The `on_drop_error` handler of node `id` (#290).
+    pub fn drop_error_handler(&self, id: NodeId) -> Option<Handler<crate::events::DropErrorEvent>> {
+        self.drop_error.get(&id).cloned()
     }
 
     /// The `on_layout` handler of node `id` (#192).
@@ -1859,6 +1868,7 @@ impl Reconciler {
             on_web_load,
             on_drop_files,
             on_drop_progress,
+            on_drop_error,
             drag_payload,
             on_drop_payload,
             on_drag_over,
@@ -2296,6 +2306,10 @@ impl Reconciler {
         match on_drop_progress {
             Some(h) => self.drop_progress.insert(id, h),
             None => self.drop_progress.remove(&id),
+        };
+        match on_drop_error {
+            Some(h) => self.drop_error.insert(id, h),
+            None => self.drop_error.remove(&id),
         };
         match on_ended {
             Some(h) => self.ended.insert(id, h),
@@ -2801,6 +2815,7 @@ impl Reconciler {
         self.web_load.remove(&id);
         self.drop_files.remove(&id);
         self.drop_progress.remove(&id);
+        self.drop_error.remove(&id);
         self.drag_payloads.remove(&id);
         self.drop_payload.remove(&id);
         self.drag_over.remove(&id);

@@ -2622,6 +2622,10 @@ fn drop_targets_get_the_files_they_accept() {
                         this.got = e.files.iter().map(|f| f.name.clone()).collect();
                     }),
                 )
+                // What did not reach the app (#290).
+                .on_drop_error(cx.listener(|this, e: &DropErrorEvent, _| {
+                    this.got = vec![format!("{:?} {}", e.error, e.reason)];
+                }))
             } else {
                 zone
             }
@@ -2660,10 +2664,20 @@ fn drop_targets_get_the_files_they_accept() {
         ],
     ));
     find_text(&patches, "cat.png,doc.PDF");
-    // Nothing it accepts: the handler is not called.
-    assert!(
-        rt.dispatch(UiEvent::DropFiles(id, vec![file("a.txt", "text/plain")]))
-            .is_empty()
+    // Nothing it accepts: the drop handler is not called, the error one is.
+    let patches = rt.dispatch(UiEvent::DropFiles(id, vec![file("a.txt", "text/plain")]));
+    find_text(
+        &patches,
+        "NotAccepted no dropped file is of a type the target takes",
+    );
+    // A backend's failure reaches it as is.
+    let reason = DropError::unread(1, 2);
+    let patches = rt.dispatch(UiEvent::DropFailed(id, DropError::Failed, reason));
+    find_text(&patches, "Failed 1 of 2 dropped files could not be read");
+    assert_eq!(DropError::from_name("limits"), Some(DropError::Limits));
+    assert_eq!(
+        DropError::from_name(DropError::Busy.name()),
+        Some(DropError::Busy)
     );
     // No longer a drop target.
     let root = *rt.app.global::<Entity<Zone>>();

@@ -33,7 +33,19 @@ impl WebApp {
     /// for pages and static files, so your own routes take precedence.
     /// `merge` it at the root, or `nest` it with [`base_path`](WebApp::base_path)
     /// set to the same prefix.
+    ///
+    /// Says once on stderr when the data directory
+    /// ([`data_dir`](WebApp::data_dir)) is not writable: `cx.storage()`,
+    /// uploads and dropped files would fail in every session (#290).
     pub fn router<S: Clone + Send + Sync + 'static>(&self) -> Router<S> {
+        if let Err(e) = self.data_dir_writable() {
+            eprintln!(
+                "prism-web: the data directory {} is not writable ({e}): storage, uploads and \
+                 dropped files will fail. Set PRISM_DATA_DIR or WebApp::data_dir to a \
+                 directory the server can write.",
+                self.inner.data_root.display()
+            );
+        }
         Router::new()
             .route("/ws", get(socket))
             .fallback(page)

@@ -70,8 +70,25 @@ enum Call {
     /// user has not chosen yet.
     Waiting(Option<usize>),
     /// The files the page announced were refused (why): the call fails.
-    Refused(String),
+    Refused(Refusal),
     Receiving(Batch),
+}
+
+/// Why an upload was refused or failed: the kind a drop target's
+/// `on_drop_error` gets (#290), and the details.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    pub kind: prism_core::DropError,
+    pub why: String,
+}
+
+impl Refusal {
+    fn new(kind: prism_core::DropError, why: impl Into<String>) -> Self {
+        Refusal {
+            kind,
+            why: why.into(),
+        }
+    }
 }
 
 struct Batch {
@@ -270,7 +287,7 @@ impl Uploads {
         app: &WebApp,
         id: Key,
         failed: bool,
-    ) -> Option<Result<Vec<prism_core::PickedFile>, String>> {
+    ) -> Option<Result<Vec<prism_core::PickedFile>, Refusal>> {
         match self.calls.remove(&id)? {
             // The page was told to stop (or failed anyway): the refusal says why.
             Call::Refused(why) => Some(Err(why)),
@@ -288,7 +305,10 @@ impl Uploads {
                     return if failed {
                         None
                     } else {
-                        Some(Err("the files did not arrive whole".into()))
+                        Some(Err(Refusal::new(
+                            prism_core::DropError::Failed,
+                            "the files did not arrive whole",
+                        )))
                     };
                 }
                 let files = std::mem::take(&mut batch.files);
@@ -321,11 +341,15 @@ impl Batch {
         sid: &str,
         max: Option<usize>,
         files: &[Value],
-    ) -> Result<Batch, String> {
+    ) -> Result<Batch, Refusal> {
+        use prism_core::DropError::{Busy, Failed, Limits};
         let limits = app.upload_limits();
         let most = max.map_or(limits.files, |m| m.min(limits.files));
         if files.len() > most {
-            return Err(format!("too many files (at most {most})"));
+            return Err(Refusal::new(
+                Limits,
+                format!("too many files (at most {most})"),
+            ));
         }
         let dir = app.files_dir(sid);
         let mut staged = Vec::with_capacity(files.len());
@@ -335,12 +359,12 @@ impl Batch {
             let name = text("name").unwrap_or("file");
             let mime = text("mime").unwrap_or("application/octet-stream");
             if name.len() > MAX_NAME || mime.len() > MAX_MIME {
-                return Err("a file name or type is too long".into());
+                return Err(Refusal::new(Limits, "a file name or type is too long"));
             }
             let size = f.get("size").and_then(Value::as_u64).unwrap_or(0);
             total = total
                 .checked_add(size)
-                .ok_or_else(|| "the files are too large".to_string())?;
+                .ok_or_else(|| Refusal::new(Limits, "the files are too large"))?;
             let ext = Path::new(name)
                 .extension()
                 .and_then(|e| e.to_str())
@@ -360,14 +384,27 @@ impl Batch {
         // What this browser keeps on the server (expired files go first).
         let kept = sweep(app, &dir, SystemTime::now());
         if kept.saturating_add(total) > limits.bytes {
-            return Err(format!(
-                "the files are too large (at most {} bytes per browser)",
-                limits.bytes
+            return Err(Refusal::new(
+                Limits,
+                format!(
+                    "the files are too large (at most {} bytes per browser)",
+                    limits.bytes
+                ),
             ));
         }
-        let reserved = Reservation::take(app.uploading(), total, limits.uploading)
-            .ok_or_else(|| "the server is receiving too many files: try again later".to_string())?;
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let reserved =
+            Reservation::take(app.uploading(), total, limits.uploading).ok_or_else(|| {
+                Refusal::new(
+                    Busy,
+                    "the server is receiving too many files: try again later",
+                )
+            })?;
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            Refusal::new(
+                Failed,
+                format!("the data directory {} is not writable: {e}", dir.display()),
+            )
+        })?;
         Ok(Batch {
             files: staged,
             total,
