@@ -7,7 +7,8 @@
 //! - Sheet: `UISheetPresentationController` (large, or medium + large),
 //!   with a grabber; swiping down closes it.
 //! - Popover: `UIPopoverPresentationController` pointing at the parent,
-//!   kept a popover on phones too; a tap outside closes it.
+//!   kept a popover on phones too; a tap outside closes it. A bare one
+//!   (#287) has a clear background without arrow or shadow.
 //! - Dialog: a card centered over a dimmed full-screen presentation; a tap
 //!   outside closes it. tvOS has neither sheets nor popovers
 //!   (`API_UNAVAILABLE(tvos)`): every overlay is such a card there, over a
@@ -57,6 +58,96 @@ use objc2_ui_kit::{
 use prism_core::NodeId;
 use prism_core::controls::{Backdrop, OverlayConfig, OverlayKind, place_beside};
 use prism_native::Viewport;
+
+/// What UIKit tells a popover's background (it reads them back).
+#[cfg(not(target_os = "tvos"))]
+pub struct BareBackgroundIvars {
+    arrow_offset: Cell<f64>,
+    arrow_direction: Cell<objc2_ui_kit::UIPopoverArrowDirection>,
+}
+
+#[cfg(not(target_os = "tvos"))]
+impl Default for BareBackgroundIvars {
+    fn default() -> Self {
+        BareBackgroundIvars {
+            arrow_offset: Cell::new(0.),
+            arrow_direction: Cell::new(objc2_ui_kit::UIPopoverArrowDirection::Up),
+        }
+    }
+}
+
+#[cfg(not(target_os = "tvos"))]
+define_class!(
+    /// A bare popover's background (#287): nothing drawn, no arrow, no
+    /// insets, no shadow, so the app's content is the whole popover.
+    #[unsafe(super(objc2_ui_kit::UIPopoverBackgroundView, UIView, UIResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismBarePopoverBackground"]
+    #[ivars = BareBackgroundIvars]
+    pub struct BarePopoverBackground;
+
+    impl BarePopoverBackground {
+        #[unsafe(method_id(initWithFrame:))]
+        fn init_with_frame(this: objc2::rc::Allocated<Self>, frame: CGRect) -> Retained<Self> {
+            let this = this.set_ivars(BareBackgroundIvars::default());
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        #[unsafe(method(arrowBase))]
+        fn arrow_base() -> f64 {
+            0.
+        }
+
+        #[unsafe(method(arrowHeight))]
+        fn arrow_height() -> f64 {
+            0.
+        }
+
+        #[unsafe(method(contentViewInsets))]
+        fn content_view_insets() -> objc2_ui_kit::UIEdgeInsets {
+            objc2_ui_kit::UIEdgeInsets {
+                top: 0.,
+                left: 0.,
+                bottom: 0.,
+                right: 0.,
+            }
+        }
+
+        /// No rounded, inset content view: the app draws its own card.
+        #[unsafe(method(wantsDefaultContentAppearance))]
+        fn wants_default_content_appearance() -> bool {
+            false
+        }
+
+        #[unsafe(method(arrowOffset))]
+        fn arrow_offset(&self) -> f64 {
+            self.ivars().arrow_offset.get()
+        }
+
+        #[unsafe(method(setArrowOffset:))]
+        fn set_arrow_offset(&self, offset: f64) {
+            self.ivars().arrow_offset.set(offset);
+        }
+
+        #[unsafe(method(arrowDirection))]
+        fn arrow_direction(&self) -> objc2_ui_kit::UIPopoverArrowDirection {
+            self.ivars().arrow_direction.get()
+        }
+
+        #[unsafe(method(setArrowDirection:))]
+        fn set_arrow_direction(&self, direction: objc2_ui_kit::UIPopoverArrowDirection) {
+            self.ivars().arrow_direction.set(direction);
+        }
+
+        /// UIKit gives the background a shadow: none here.
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews(&self) {
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            self.layer().setShadowOpacity(0.);
+            self.setBackgroundColor(Some(&UIColor::clearColor()));
+        }
+    }
+);
 
 pub struct ControllerIvars {
     id: Cell<NodeId>,
@@ -546,13 +637,26 @@ impl Overlay {
             view.setAccessibilityViewIsModal(true, mtm);
             self.place_card();
         } else {
-            view.setBackgroundColor(Some(&UIColor::systemBackgroundColor()));
+            // A bare popover (#287): the app's content is the whole card.
+            let fill = if c.bare && c.kind == OverlayKind::Popover {
+                UIColor::clearColor()
+            } else {
+                UIColor::systemBackgroundColor()
+            };
+            view.setBackgroundColor(Some(&fill));
             #[cfg(not(target_os = "tvos"))]
             match c.kind {
                 OverlayKind::Popover => {
                     self.vc
                         .setModalPresentationStyle(UIModalPresentationStyle::Popover);
                     if let Some(pc) = self.vc.popoverPresentationController() {
+                        // SAFETY: the class is a `UIPopoverBackgroundView`.
+                        unsafe {
+                            pc.setPopoverBackgroundViewClass(
+                                c.bare
+                                    .then(<BarePopoverBackground as objc2::ClassType>::class),
+                            );
+                        }
                         let source = self.anchor.superview();
                         pc.setSourceView(source.as_deref());
                         let window = source.as_ref().and_then(|s| s.window());

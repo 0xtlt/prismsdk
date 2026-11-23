@@ -15,7 +15,8 @@
 //!   entry animation and placement (flipped without room), light dismiss,
 //!   Escape, focus in and back are WinUI's. `fixed` and `manual` ones
 //!   ignore a click outside; one that leaves the focus to its anchor is
-//!   transient and lets the click through.
+//!   transient and lets the click through. A bare one (#287) has a clear
+//!   presenter: no background, border, corners, shadow or animation.
 //!
 //! The content node is laid out by prism-native in the area
 //! `Widgets::overlay_viewport` gives; its canvas (`View::kids`) moves into
@@ -308,8 +309,9 @@ impl Overlay {
 
 /// `FlyoutPresenter` without its padding and size limits (the content is
 /// laid out by Prism), in the app's theme (a flyout does not follow the
-/// theme of the element it opens on).
-fn presenter_style(dark: bool) -> Option<Style> {
+/// theme of the element it opens on); a bare one (#287) without its
+/// background, border, corners or shadow either.
+fn presenter_style(dark: bool, bare: bool) -> Option<Style> {
     const XAML: &str = r#"<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="FlyoutPresenter">
 <Setter Property="RequestedTheme" Value="THEME"/>
 <Setter Property="Padding" Value="0"/>
@@ -321,25 +323,31 @@ fn presenter_style(dark: bool) -> Option<Style> {
 <Setter Property="ScrollViewer.VerticalScrollMode" Value="Disabled"/>
 <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
 <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled"/>
-</Style>"#;
-    let load = |theme: &str| {
-        XamlReader::Load(&h(&XAML.replace("THEME", theme)))
+BARE</Style>"#;
+    const BARE: &str = r#"<Setter Property="Background" Value="Transparent"/>
+<Setter Property="BorderThickness" Value="0"/>
+<Setter Property="CornerRadius" Value="0"/>
+<Setter Property="IsDefaultShadowEnabled" Value="False"/>
+"#;
+    let load = |theme: &str, bare: bool| {
+        let xaml = XAML
+            .replace("THEME", theme)
+            .replace("BARE", if bare { BARE } else { "" });
+        XamlReader::Load(&h(&xaml))
             .and_then(|o| o.cast())
             .map_err(|e| crate::win::log!("flyout style: {e}"))
             .ok()
     };
     thread_local! {
-        static STYLES: std::cell::RefCell<Option<(Option<Style>, Option<Style>)>> =
-            const { std::cell::RefCell::new(None) };
+        /// Light, dark, bare light, bare dark: loaded once each.
+        static STYLES: std::cell::RefCell<[Option<Option<Style>>; 4]> =
+            const { std::cell::RefCell::new([None, None, None, None]) };
     }
     STYLES.with(|s| {
-        let mut s = s.borrow_mut();
-        let (light, dark_style) = s.get_or_insert_with(|| (load("Light"), load("Dark")));
-        if dark {
-            dark_style.clone()
-        } else {
-            light.clone()
-        }
+        let i = usize::from(dark) + 2 * usize::from(bare);
+        s.borrow_mut()[i]
+            .get_or_insert_with(|| load(if dark { "Dark" } else { "Light" }, bare))
+            .clone()
     })
 }
 
@@ -538,9 +546,11 @@ impl Win {
                     && anchor.XamlRoot().is_ok()
                 {
                     let base: FlyoutBase = flyout.cast()?;
-                    if let Some(s) = presenter_style(dark) {
+                    if let Some(s) = presenter_style(dark, config.bare) {
                         flyout.SetFlyoutPresenterStyle(&s)?;
                     }
+                    // A bare one appears at once, like a bare dialog.
+                    base.SetAreOpenCloseAnimationsEnabled(!config.bare)?;
                     let options = FlyoutShowOptions::new()?;
                     options.SetPlacement(placement(config, rtl))?;
                     let transient = config.keep_focus;

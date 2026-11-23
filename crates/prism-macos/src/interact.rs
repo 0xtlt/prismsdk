@@ -640,8 +640,8 @@ pub(crate) type Delegate = objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSP
 /// focus to its anchor (`keep_focus`, #70) is a borderless child panel
 /// instead: it never becomes key, so the anchor's field keeps the keys,
 /// and its views still take clicks (`acceptsFirstMouse`). A bare dialog
-/// (#166) is a borderless, transparent child panel too, one that becomes
-/// key: no sheet or popover box around the app's panel.
+/// (#166) or popover (#287) is a borderless, transparent child panel too,
+/// one that becomes key: no sheet or popover box around the app's panel.
 pub struct MacOverlay {
     pub(crate) id: NodeId,
     pub(crate) anchor: Retained<PrismView>,
@@ -739,9 +739,9 @@ impl MacOverlay {
     }
 
     /// Shown in a panel (see [`MacOverlay`]): a popover that leaves the
-    /// focus to its anchor, and a bare dialog (#166).
+    /// focus to its anchor, and a bare dialog or popover (#166, #287).
     fn panel_kind(c: OverlayConfig) -> bool {
-        (c.kind == OverlayKind::Popover && c.keep_focus)
+        (c.kind == OverlayKind::Popover && (c.keep_focus || c.bare))
             || (c.kind == OverlayKind::Dialog && c.bare)
     }
 
@@ -906,7 +906,9 @@ impl MacOverlay {
 
     /// Shows a `keep_focus` popover: a borderless panel, a child of the
     /// anchor's window (it moves with it), that never becomes key. A bare
-    /// dialog's panel becomes key instead, and holds the presses behind it.
+    /// dialog's panel becomes key instead, and holds the presses behind it;
+    /// a bare popover's (#287) becomes key too (unless it leaves the focus
+    /// to its anchor), and a press behind it closes it and goes on.
     fn show_panel(&self, size: NSSize) {
         let Some(parent) = (unsafe { self.anchor.superview() }) else {
             return;
@@ -915,14 +917,16 @@ impl MacOverlay {
             return;
         };
         let mtm = self.host.mtm();
-        let dialog = self.config.get().kind == OverlayKind::Dialog;
-        let cached = self
-            .panel
-            .borrow_mut()
-            .take()
-            .filter(|(p, _)| p.isKindOfClass(PrismDialogPanel::class()) == dialog);
+        let c = self.config.get();
+        let dialog = c.kind == OverlayKind::Dialog;
+        // Takes the keys: a bare dialog, a bare popover that keeps them.
+        let key = dialog || !c.keep_focus;
+        let cached = self.panel.borrow_mut().take().filter(|(p, b)| {
+            p.isKindOfClass(PrismDialogPanel::class()) == key
+                && b.isKindOfClass(NSVisualEffectView::class()) == !c.bare
+        });
         let (panel, background) = cached.unwrap_or_else(|| {
-            if dialog {
+            if key {
                 let panel: Retained<PrismDialogPanel> = unsafe {
                     msg_send![
                         PrismDialogPanel::alloc(mtm),
@@ -944,6 +948,7 @@ impl MacOverlay {
                 return (panel, background);
             }
             let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+            let bare = c.bare;
             let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
                 NSPanel::alloc(mtm),
                 NSRect::new(NSPoint::ZERO, size),
@@ -958,7 +963,13 @@ impl MacOverlay {
             panel.setHidesOnDeactivate(false);
             panel.setOpaque(false);
             panel.setBackgroundColor(Some(&NSColor::clearColor()));
-            panel.setHasShadow(true);
+            panel.setHasShadow(!bare);
+            if bare {
+                // No box (#287): the app's content is the whole panel.
+                let background = NSView::new(mtm);
+                panel.setContentView(Some(&background));
+                return (panel, background);
+            }
             let background = NSVisualEffectView::new(mtm);
             background.setMaterial(NSVisualEffectMaterial::Popover);
             background.setState(NSVisualEffectState::Active);
@@ -980,7 +991,7 @@ impl MacOverlay {
         self.place_panel(size);
         // SAFETY: both windows are alive; `dismiss` detaches the panel.
         unsafe { window.addChildWindow_ordered(&panel, NSWindowOrderingMode::Above) };
-        if !dialog {
+        if !key {
             panel.orderFront(None);
             // A press anywhere else in the window closes it and still
             // reaches what it landed on (the anchor's field, #182).
@@ -1002,16 +1013,18 @@ impl MacOverlay {
         }
         // Modal like any dialog: the keys go to it (Escape reaches the
         // host, `cancelOperation:`), presses behind close it and go no
-        // further.
+        // further. A bare popover's close it (unless fixed or manual) and
+        // reach what they landed on, like a popover's light dismiss.
         panel.makeKeyAndOrderFront(None);
         panel.makeFirstResponder(Some(&self.host));
         let (host, shown) = (self.host.clone(), panel.clone());
         let id = self.id;
-        self.hold_presses_behind(window, true, move || {
+        let stays = !dialog && c.manual;
+        self.hold_presses_behind(window, dialog, move || {
             if !shown.isVisible() {
                 return false;
             }
-            if !host.ivars().overlay_fixed.get() {
+            if !host.ivars().overlay_fixed.get() && !stays {
                 crate::imp::dispatch(prism_core::UiEvent::Dismiss(
                     id,
                     prism_core::DismissReason::Outside,

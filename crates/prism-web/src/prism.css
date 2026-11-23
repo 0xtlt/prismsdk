@@ -206,6 +206,8 @@ dialog.prism-overlay-box[data-prism-bare="1"] { background: transparent; color: 
 @media (max-width: 599px) { dialog.prism-ov-sheet[data-prism-w="1"] { width: 100vw; } }
 .prism-ov-popover { position: fixed; inset: auto; margin: 0; padding: 0; border: 1px solid rgba(128,128,128,.3); border-radius: 12px; background: Canvas; color: CanvasText; box-shadow: 0 10px 30px rgba(0,0,0,.2); max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; }
 .prism-ov-popover:not([popover]):not([data-open]) { display: none; }
+/* A bare popover (#287): no box of its own either, the content is the card. */
+.prism-ov-popover[data-prism-bare="1"] { background: transparent; color: inherit; border: 0; border-radius: 0; box-shadow: none; overflow: visible; }
 @keyframes prism-pop { from { opacity: 0; transform: scale(.97); } }
 @keyframes prism-sheet-up { from { transform: translateY(100%); } }
 @media (prefers-reduced-motion: reduce) { dialog.prism-overlay-box[open] { animation: none; } }

@@ -3144,9 +3144,10 @@ impl Overlay {
         self.overlay_config(|c| c.backdrop = Some(backdrop))
     }
 
-    /// A dialog that draws no box of its own (#166): no background,
-    /// border, corners, shadow or entry animation, so its content is the
-    /// whole panel, drawn by the app. With [`side`](Overlay::side) and
+    /// A dialog or popover that draws no box of its own (#166, #287): no
+    /// background, border, corners, arrow, shadow or entry animation, so
+    /// its content is the whole panel, drawn by the app (a menu's own
+    /// card). With [`side`](Overlay::side) and
     /// [`backdrop(Backdrop::Clear)`](Overlay::backdrop) a picker the app
     /// styles itself opens beside its anchor; the dialog stays modal
     /// (focus kept inside, Escape and a click outside close it).
@@ -3159,16 +3160,23 @@ impl Overlay {
     ///     .bare()
     /// ```
     ///
-    /// Web: the `<dialog>` without Prism's styles; macOS: a borderless,
-    /// transparent panel instead of a sheet or an `NSPopover`; iOS, iPadOS,
-    /// visionOS, tvOS: a clear card, shown without a cross-fade; Android: a
-    /// transparent dialog window without animation; Linux: a `GtkPopover`
-    /// without arrow or background, or an undecorated transparent window;
-    /// Windows: the content without the panel, its edge, shadow or
+    /// Web: the `<dialog>` or popover without Prism's styles; macOS: a
+    /// borderless, transparent panel instead of a sheet or an `NSPopover`;
+    /// iOS, iPadOS, visionOS: a dialog is a clear card, shown without a
+    /// cross-fade, a popover keeps its place and its taps without the
+    /// popover's background and arrow (tvOS: a clear card); Android: a
+    /// transparent window without animation; Linux: a `GtkPopover` without
+    /// arrow or background, or an undecorated transparent window; Windows:
+    /// the content without the panel or flyout, its edge, shadow or
     /// animation.
-    /// Sheets and popovers keep their platform's box.
+    /// Sheets keep their platform's box.
     pub fn bare(self) -> Self {
-        self.overlay_config(|c| c.bare = c.kind == crate::OverlayKind::Dialog)
+        self.overlay_config(|c| {
+            c.bare = matches!(
+                c.kind,
+                crate::OverlayKind::Dialog | crate::OverlayKind::Popover
+            )
+        })
     }
 
     /// The content area's size in points, instead of the platform's

@@ -739,9 +739,9 @@ fn a_bare_dialog_drops_prisms_box_and_stays_a_dialog() {
     assert_eq!(placed.anchored_side(), Some(PopoverSide::Trailing));
     // Centered, without its box.
     assert!(h.host.find(|n| n.config == "dialog bare").is_some());
-    // Sheets and popovers keep their platform's box (#166).
+    // Sheets keep their platform's box (#166); popovers drop it too (#287).
     assert!(!config("sheet").bare);
-    assert!(!config("popover").bare);
+    assert!(config("popover").bare);
 }
 
 struct Tasks {
