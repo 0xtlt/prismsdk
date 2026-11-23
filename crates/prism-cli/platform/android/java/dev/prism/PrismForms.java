@@ -24,6 +24,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputConnectionWrapper;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.AbsListView;
 import android.widget.AdapterView;
@@ -444,6 +446,24 @@ final class PrismForms {
             @Override public boolean dispatchTouchEvent(MotionEvent ev) {
                 PrismRich.touch(this, ev);
                 return PrismInput.acrossTouch(this, ev) || super.dispatchTouchEvent(ev);
+            }
+            // A soft keyboard's Backspace with the caret at the start deletes
+            // nothing and sends no key: reported as one, so an editor can join
+            // a block to the one before (#294).
+            @Override public InputConnection onCreateInputConnection(EditorInfo info) {
+                InputConnection ic = super.onCreateInputConnection(info);
+                if (ic == null) return null;
+                EditText field = this;
+                return new InputConnectionWrapper(ic, true) {
+                    @Override public boolean deleteSurroundingText(int before, int after) {
+                        if (before > 0 && after == 0) PrismInput.backspaceAtStart(field);
+                        return super.deleteSurroundingText(before, after);
+                    }
+                    @Override public boolean deleteSurroundingTextInCodePoints(int before, int after) {
+                        if (before > 0 && after == 0) PrismInput.backspaceAtStart(field);
+                        return super.deleteSurroundingTextInCodePoints(before, after);
+                    }
+                };
             }
         };
         PrismInput.filters(e, n, -1);

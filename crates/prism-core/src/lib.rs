@@ -923,7 +923,7 @@ impl Runtime {
         if across {
             self.across_key = Some((key.key.clone(), key.modifiers.bits()));
         }
-        across || self.reconciler.consumes_key(focused, &key.key, key.edges)
+        across || self.reconciler.consumes_key_event(focused, key)
     }
 
     /// Runs what a selection group's key, report or edit led to (#231).

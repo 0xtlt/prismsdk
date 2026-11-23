@@ -643,7 +643,81 @@ impl CaretEdges {
 /// from [`Div::consume_key_at`](crate::Div::consume_key_at)) takes `key`
 /// pressed with the caret at `edges` (#211). With no text field focused
 /// (`None`), an entry with an edge takes it too: there is no caret to move.
+///
+/// An entry with modifiers (`"cmd+b"`, #294) never matches here, where
+/// the modifiers held are unknown: see [`consume_entry_matches_event`].
 pub fn consume_entry_matches(entry: &str, key: &str, edges: Option<CaretEdges>) -> bool {
+    let (mods, entry) = consume_entry_modifiers(entry);
+    mods.is_none() && consume_entry_key_matches(entry, key, edges)
+}
+
+/// Whether a `consume_keys` entry takes the press `key` (#181, #211,
+/// #294): its key and edge as [`consume_entry_matches`] says, and an
+/// entry with modifiers (`"cmd+b"`, `"cmd+shift+z"`) only with exactly
+/// those modifiers held, `cmd` being ⌘ on Apple platforms and Ctrl
+/// elsewhere (as [`Modifiers::command`] says). An entry without
+/// modifiers takes the key whatever is held, as before.
+pub fn consume_entry_matches_event(entry: &str, key: &KeyEvent) -> bool {
+    let (mods, rest) = consume_entry_modifiers(entry);
+    if let Some(want) = mods {
+        let held = key.modifiers;
+        let command = held.command();
+        // The platform's other control key (⌃ on Apple, the Windows key
+        // elsewhere) is its own.
+        let other = if cfg!(target_vendor = "apple") {
+            held.control
+        } else {
+            held.meta
+        };
+        if want.command != command
+            || want.ctrl != other
+            || want.alt != held.alt
+            || want.shift != held.shift
+        {
+            return false;
+        }
+        // A letter with modifiers, whatever its case (⇧ makes it upper).
+        if rest.chars().count() == 1 && rest.eq_ignore_ascii_case(&key.key) {
+            return true;
+        }
+    }
+    consume_entry_key_matches(rest, &key.key, key.edges)
+}
+
+/// The modifiers of a `consume_keys` entry (`cmd+`, `ctrl+`, `alt+`,
+/// `shift+` before its key), and the rest.
+fn consume_entry_modifiers(entry: &str) -> (Option<EntryModifiers>, &str) {
+    let mut mods = EntryModifiers::default();
+    let mut rest = entry;
+    let mut any = false;
+    while let Some((prefix, after)) = rest.split_once('+') {
+        // `"+"` and `"cmd++"`: the key itself is a plus.
+        if after.is_empty() {
+            break;
+        }
+        match prefix {
+            "cmd" => mods.command = true,
+            "ctrl" => mods.ctrl = true,
+            "alt" => mods.alt = true,
+            "shift" => mods.shift = true,
+            _ => break,
+        }
+        any = true;
+        rest = after;
+    }
+    (any.then_some(mods), rest)
+}
+
+/// The modifiers a `consume_keys` entry names.
+#[derive(Clone, Copy, Default)]
+struct EntryModifiers {
+    command: bool,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+}
+
+fn consume_entry_key_matches(entry: &str, key: &str, edges: Option<CaretEdges>) -> bool {
     match entry.split_once('@') {
         None => entry == key,
         Some((k, edge)) => {

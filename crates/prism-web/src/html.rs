@@ -8,8 +8,6 @@ use std::fmt::Write;
 
 use prism_core::{Accessibility, Appearance, Backend, NodeId, NodeKind, Patch, Role};
 
-use crate::css::css;
-
 #[derive(Default)]
 struct HtmlNode {
     kind: Option<NodeKind>,
@@ -164,13 +162,13 @@ impl Backend for HtmlBackend {
                 }
                 Patch::SetStyle { id, style } => {
                     if let Some(n) = self.nodes.get_mut(id) {
-                        n.css = css(n.kind.unwrap_or(NodeKind::View), style);
+                        let (kind, island) = (n.kind.unwrap_or(NodeKind::View), n.island.is_some());
+                        n.css = crate::css::node_css(kind, island, style);
                         n.hscroll = style.scroll_axis == prism_core::ScrollAxis::Horizontal;
                         n.scrollbar = style.scrollbar;
                         n.group = style.group;
                         n.group_name = style.group_name.as_deref().map(str::to_string);
-                        n.states =
-                            crate::css::states_css(n.kind.unwrap_or(NodeKind::View), *id, style);
+                        n.states = crate::css::states_css(kind, island, *id, style);
                         n.inert = style.inert;
                         n.fixed_size = match (style.width, style.height) {
                             (prism_core::Length::Px(w), prism_core::Length::Px(h))

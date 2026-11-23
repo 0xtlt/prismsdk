@@ -551,8 +551,10 @@ impl Formatter for BasicFormatter {
 /// `prism.back`, `prism.close`, `prism.not_found`, `prism.no_route`,
 /// `prism.clear`, `prism.unsaved_title`, `prism.unsaved_message`,
 /// `prism.discard`, `prism.cancel`, `prism.files`, `prism.images` and
-/// `prism.all_files` keys (the last three name file dialogs' filters).
-const CHROME: &[(&str, [&str; 17])] = &[
+/// `prism.all_files` keys (the last three name file dialogs' filters), and
+/// the blocks of a rich text editor with `prism.heading`,
+/// `prism.list_item` and `prism.numbered_item` (#294).
+const CHROME: &[(&str, [&str; 20])] = &[
     (
         "en",
         [
@@ -573,6 +575,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "All files",
             "Expanded",
             "Collapsed",
+            "Heading {n}",
+            "List item",
+            "Item {n}",
         ],
     ),
     (
@@ -595,6 +600,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "Tous les fichiers",
             "Développé",
             "Réduit",
+            "Titre {n}",
+            "Élément de liste",
+            "Élément {n}",
         ],
     ),
     (
@@ -617,6 +625,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "Alle Dateien",
             "Erweitert",
             "Reduziert",
+            "Überschrift {n}",
+            "Listenelement",
+            "Element {n}",
         ],
     ),
     (
@@ -639,6 +650,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "Todos los archivos",
             "Expandido",
             "Contraído",
+            "Encabezado {n}",
+            "Elemento de lista",
+            "Elemento {n}",
         ],
     ),
     (
@@ -661,6 +675,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "Tutti i file",
             "Espanso",
             "Compresso",
+            "Titolo {n}",
+            "Elemento dell’elenco",
+            "Elemento {n}",
         ],
     ),
     (
@@ -683,6 +700,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "Todos os arquivos",
             "Expandido",
             "Recolhido",
+            "Título {n}",
+            "Item de lista",
+            "Item {n}",
         ],
     ),
     (
@@ -705,6 +725,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "Alle bestanden",
             "Uitgevouwen",
             "Samengevouwen",
+            "Kop {n}",
+            "Lijstitem",
+            "Item {n}",
         ],
     ),
     (
@@ -727,6 +750,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "كل الملفات",
             "موسّع",
             "مطوي",
+            "عنوان {n}",
+            "عنصر قائمة",
+            "العنصر {n}",
         ],
     ),
     (
@@ -749,6 +775,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "כל הקבצים",
             "מורחב",
             "מכווץ",
+            "כותרת {n}",
+            "פריט ברשימה",
+            "פריט {n}",
         ],
     ),
     (
@@ -771,6 +800,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "すべてのファイル",
             "展開",
             "折りたたみ",
+            "見出し{n}",
+            "リスト項目",
+            "項目{n}",
         ],
     ),
     (
@@ -793,6 +825,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "所有文件",
             "已展开",
             "已折叠",
+            "标题 {n}",
+            "列表项",
+            "第 {n} 项",
         ],
     ),
     (
@@ -815,6 +850,9 @@ const CHROME: &[(&str, [&str; 17])] = &[
             "모든 파일",
             "펼쳐짐",
             "접힘",
+            "제목 {n}",
+            "목록 항목",
+            "항목 {n}",
         ],
     ),
 ];
@@ -822,9 +860,11 @@ const CHROME: &[(&str, [&str; 17])] = &[
 /// A built-in Prism text: `back`, `close`, `not_found`, `no_route`,
 /// `clear`, `unsaved_title`, `unsaved_message`, `discard`, `cancel`,
 /// `reorder`, `reorder_hint`, `reorder_position` (`{n}` of `{count}`), a
-/// file dialog's filter: `files`, `images`, `all_files`, or a disclosure's
+/// file dialog's filter: `files`, `images`, `all_files`, a disclosure's
 /// state where the platform has no word of its own: `expanded`,
-/// `collapsed`.
+/// `collapsed`, or what a block of a rich text editor is (#294):
+/// `heading` (`{n}`: its level), `list_item`, `numbered_item` (`{n}`: its
+/// number).
 pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &str) -> String {
     if let Some(t) = translations.and_then(|t| t.lookup(locale, &format!("prism.{key}"))) {
         return t.to_string();
@@ -846,6 +886,9 @@ pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &s
         "all_files" => 14,
         "expanded" => 15,
         "collapsed" => 16,
+        "heading" => 17,
+        "list_item" => 18,
+        "numbered_item" => 19,
         _ => 3,
     };
     CHROME

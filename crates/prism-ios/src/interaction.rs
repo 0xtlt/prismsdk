@@ -365,6 +365,30 @@ thread_local! {
     static HELD_KEYS: RefCell<Vec<(String, Option<NodeId>)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Backspace in text view `view` with the caret at its start, from a soft
+/// keyboard: reported to the nodes listening to keys in its chain, like a
+/// hardware press (#294). A hardware press was reported already.
+#[cfg(any(target_os = "ios", target_os = "visionos"))]
+pub fn backspace_at_start(view: &objc2_ui_kit::UITextView) {
+    if HELD_KEYS.with(|h| h.borrow().iter().any(|(k, _)| k == "Backspace")) {
+        return;
+    }
+    let view: &UIView = view;
+    let Some(selection) = crate::forms::current_selection(view) else {
+        return;
+    };
+    if selection.start != 0 || selection.end != 0 || view.tag() <= 0 {
+        return;
+    }
+    if !chain_listens(Some(view.retain())) {
+        return;
+    }
+    let mut key = KeyEvent::new("Backspace");
+    key.selection = Some(selection);
+    key.edges = crate::forms::current_edges(view);
+    crate::imp::dispatch(UiEvent::Key(Some(view.tag() as NodeId), key));
+}
+
 /// The node a held key's press went to, or `None` if it was not reported.
 fn release_key(key: &str) -> Option<Option<NodeId>> {
     HELD_KEYS.with(|h| {
@@ -1599,6 +1623,54 @@ pub fn consumed_key_commands(responder: &UIResponder) -> Vec<Retained<objc2_ui_k
             out.push(command(&input, flags));
         }
     }
+    // Chords (`consume_keys(&["cmd+b"])`, #294): a letter, a digit or a
+    // named key with ⌘, ⌃ or ⌥ (and ⇧), unless a selection group's
+    // commands above have it already.
+    for (name, input, flags) in chord_inputs() {
+        if out.iter().any(|c| {
+            c.modifierFlags() == flags && c.input().is_some_and(|i| i.isEqualToString(&input))
+        }) {
+            continue;
+        }
+        let mut key = KeyEvent::new(name.clone());
+        key.modifiers = modifiers(flags);
+        key.selection = selection;
+        key.edges = edges;
+        if crate::imp::consumes_key_event(Some(focused), &key) {
+            out.push(command(&input, flags));
+        }
+    }
+    out
+}
+
+/// The chords a `consume_keys` entry can name (#294): letters, digits and
+/// the named keys, each with ⌘, ⌘⇧, ⌃, ⌥ or ⌥⇧.
+#[cfg(not(target_os = "tvos"))]
+fn chord_inputs() -> Vec<(String, Retained<NSString>, objc2_ui_kit::UIKeyModifierFlags)> {
+    use objc2_ui_kit::UIKeyModifierFlags as F;
+    let flags = [
+        F::Command,
+        F::Command | F::Shift,
+        F::Control,
+        F::Alternate,
+        F::Alternate | F::Shift,
+    ];
+    let mut keys: Vec<(String, Retained<NSString>)> = ('a'..='z')
+        .chain('0'..='9')
+        .map(|c| (c.to_string(), NSString::from_str(&c.to_string())))
+        .collect();
+    keys.extend(
+        command_inputs()
+            .into_iter()
+            .map(|(n, i)| (n.to_string(), i)),
+    );
+    keys.push(("Backspace".into(), NSString::from_str("\u{8}")));
+    let mut out = Vec::new();
+    for (name, input) in keys {
+        for f in flags {
+            out.push((name.clone(), input.clone(), f));
+        }
+    }
     out
 }
 
@@ -1639,6 +1711,8 @@ pub fn consumed_key(responder: &UIResponder, command: &objc2_ui_kit::UIKeyComman
     let Some(name) = command_inputs()
         .into_iter()
         .chain(across_inputs().into_iter().map(|(n, i, _)| (n, i)))
+        .map(|(n, i)| (n.to_string(), i))
+        .chain(chord_inputs().into_iter().map(|(n, i, _)| (n, i)))
         .find(|(_, i)| i.isEqualToString(&input))
         .map(|(n, _)| n)
     else {

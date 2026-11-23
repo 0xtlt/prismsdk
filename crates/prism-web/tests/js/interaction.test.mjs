@@ -315,6 +315,38 @@ test("consumed keys are reported, then kept from the focused field (#181)", () =
   assert.equal(fieldSaw, 2);
 });
 
+test("chords are taken only with their modifiers held (#294)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },
+    { op: "consume", id: 2, keys: ["cmd+b", "cmd+shift+z", "alt+ArrowUp"] },
+    { op: "create", id: 3, kind: "text_input" },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  const field = page.node(3);
+  let fieldSaw = 0;
+  field.addEventListener("keydown", () => fieldSaw++);
+  const key = (k, mods = {}) => {
+    const e = { type: "keydown", key: k, ...mods };
+    field.dispatchEvent(e);
+    return e;
+  };
+  // Not an Apple platform here: cmd is Ctrl.
+  const bold = key("b", { ctrlKey: true });
+  assert.equal(bold.defaultPrevented, true, "the browser's own shortcut does not run");
+  assert.equal(lastSent(page).key, "b");
+  assert.equal(lastSent(page).id, 2);
+  assert.equal(key("Z", { ctrlKey: true, shiftKey: true }).defaultPrevented, true, "whatever the case");
+  assert.equal(key("ArrowUp", { altKey: true }).defaultPrevented, true);
+  assert.equal(fieldSaw, 0);
+  // Without the chord, or with more held, the field types.
+  assert.equal(key("b").defaultPrevented, false);
+  assert.equal(key("b", { metaKey: true }).defaultPrevented, false);
+  assert.equal(key("B", { ctrlKey: true, shiftKey: true }).defaultPrevented, false);
+  assert.equal(key("ArrowUp").defaultPrevented, false);
+  assert.equal(fieldSaw, 4);
+});
+
 test("keys are taken from a field only at the caret edges declared (#211)", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },

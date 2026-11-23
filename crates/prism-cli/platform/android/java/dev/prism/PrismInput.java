@@ -721,6 +721,17 @@ final class PrismInput {
         return local && arrow && !(focused instanceof EditText);
     }
 
+    /**
+     * Backspace from a soft keyboard in field `e` with the caret at its start
+     * (#294): it deletes nothing, so it is reported like a hardware press.
+     */
+    static void backspaceAtStart(EditText e) {
+        if (e.getSelectionStart() != 0 || e.getSelectionEnd() != 0 || HELD.containsKey("Backspace")) return;
+        long now = android.os.SystemClock.uptimeMillis();
+        key(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL, 0), e);
+        key(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL, 0), e);
+    }
+
     /** Keys whose press was consumed, so their release is too (#181). */
     static final java.util.Set<String> CONSUMED_DOWN = new java.util.HashSet<>();
 

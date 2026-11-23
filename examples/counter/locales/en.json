@@ -392,7 +392,13 @@
     "undo": "Undo",
     "signed_in": "Signed in ({count} characters)",
     "error": "Show an error",
-    "toast_error": "Couldn’t reach the server"
+    "toast_error": "Couldn’t reach the server",
+    "editor": "Rich text: ⌘B, ⌘I, ⌘K, or “- ” and “## ” to start a list or a heading",
+    "editor_placeholder": "Write something…",
+    "editor_bold": "Bold",
+    "editor_italic": "Italic",
+    "editor_link": "Link",
+    "editor_sample": "## Release notes\n\nWrite **bold** and *italic* text, and [links](https://prismsdk.dev).\n\n- Enter starts a new item\n- Backspace at the start joins blocks"
   },
   "layout": {
     "heading": "Layout",

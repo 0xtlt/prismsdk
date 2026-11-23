@@ -529,12 +529,36 @@
   // `consume_key_at` (#211): "ArrowUp@first-line" takes the key only while
   // the focused field's caret is there, measured now, before the key acts.
   const EDGES = { start: "s", end: "e", "first-line": "f", "last-line": "l" };
-  function consumes(t, key) {
+  // An entry with modifiers (#294): "cmd+b" only with exactly those held,
+  // `cmd` being ⌘ on Apple platforms and Ctrl elsewhere (as shortcuts).
+  const ENTRY_MODS = ["cmd", "ctrl", "alt", "shift"];
+  function entryMods(k) {
+    const mods = new Set();
+    for (;;) {
+      const plus = k.indexOf("+");
+      if (plus <= 0 || plus === k.length - 1 || !ENTRY_MODS.includes(k.slice(0, plus))) break;
+      mods.add(k.slice(0, plus));
+      k = k.slice(plus + 1);
+    }
+    return [mods, k];
+  }
+  function modsMatch(mods, e) {
+    const cmd = !!(applePlatform ? e.metaKey : e.ctrlKey);
+    const ctrl = !!(applePlatform ? e.ctrlKey : e.metaKey);
+    return mods.has("cmd") === cmd && mods.has("ctrl") === ctrl
+      && mods.has("alt") === !!e.altKey && mods.has("shift") === !!e.shiftKey;
+  }
+  function consumes(t, e) {
+    const key = e.key;
     let edges;
     for (let n = t; n; n = n.parentElement) {
       if (!n._consume) continue;
       if (n._consume.has(key)) return true;
-      for (const k of n._consume) {
+      for (const entry of n._consume) {
+        const [mods, k] = entryMods(entry);
+        if (mods.size && !modsMatch(mods, e)) continue;
+        // A letter with modifiers, whatever its case (⇧ makes it upper).
+        if (k === key || (mods.size && k.length === 1 && k.toLowerCase() === key.toLowerCase())) return true;
         const at = k.indexOf("@");
         if (at <= 0 || k.slice(0, at) !== key) continue;
         if (edges === undefined) edges = editable(t) ? caretEdges(t) : null;
@@ -547,7 +571,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.isComposing || !e.key || e.prismShortcut) return;
     const t = e.target && e.target.closest ? e.target : null;
-    if (!t || !consumes(t, e.key)) return;
+    if (!t || !consumes(t, e)) return;
     reportKey(e);
     e.preventDefault();
     e.stopImmediatePropagation();

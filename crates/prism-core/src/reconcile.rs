@@ -1334,6 +1334,29 @@ impl Reconciler {
         false
     }
 
+    /// [`consumes_key`](Self::consumes_key) for a press whose modifiers
+    /// are known: entries with modifiers (`"cmd+b"`, #294) count too.
+    pub fn consumes_key_event(
+        &self,
+        focused: Option<NodeId>,
+        key: &crate::events::KeyEvent,
+    ) -> bool {
+        let mut next = focused;
+        while let Some(id) = next {
+            let Some(n) = self.nodes.get(&id) else {
+                return false;
+            };
+            if n.consume_keys
+                .iter()
+                .any(|k| crate::events::consume_entry_matches_event(k, key))
+            {
+                return true;
+            }
+            next = n.parent;
+        }
+        false
+    }
+
     fn key_handlers_of(
         &self,
         focused: Option<NodeId>,

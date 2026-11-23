@@ -230,6 +230,7 @@ async function main() {
     log(`${tab.path}: tab ${state.selected} "${state.title}" — ${JSON.stringify(state.text)}`);
 
     if (tab.path === "/") await clickPlusOne(cdp, evaluate, frames);
+    if (tab.path === "/components") await richTextEditor(cdp, evaluate);
   }
 
   // Switching tabs by clicking the tab bar, live (we are on the last tab).
@@ -245,6 +246,8 @@ async function main() {
     `!document.querySelectorAll("#prism-root [role=tabpanel]")[0].hidden`));
   log("tab bar: click → change → /");
 
+  await wheelOverHorizontalRow(cdp, evaluate);
+
   // Let late errors (async handlers) surface.
   await new Promise((r) => setTimeout(r, 300));
   if (errors.length) fail(`errors in the page:\n  ${errors.join("\n  ")}`);
@@ -258,6 +261,120 @@ async function click(cdp, { x, y }) {
   for (const type of ["mousePressed", "mouseReleased"]) {
     await cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
   }
+}
+
+/**
+ * The rich text editor of the Forms card (#294), typed into like a person
+ * would: Enter splits a block and moves the caret to the new one, ⌘B (Ctrl+B)
+ * bolds the selection, Backspace at a block's start joins it to the one
+ * before, "- " starts a list item, ⌘K links the selection (the example answers
+ * with a link at once). Its Markdown, shown under it, follows each edit.
+ */
+async function richTextEditor(cdp, evaluate) {
+  const ED = `[...document.querySelectorAll("[role=group]")].find((g) => (g.getAttribute("aria-label") || "").startsWith("Rich text"))`;
+  const FIELDS = `[...(${ED}).querySelectorAll("[contenteditable=true]")]`;
+  await until("the rich text editor", () => evaluate(`!!(${ED})`));
+  const markdown = () => evaluate(`(() => {
+    const texts = [...(${ED}).parentElement.querySelectorAll("*")].map((e) => e.textContent);
+    return texts.find((t) => t.startsWith("## ")) || "";
+  })()`);
+  const focused = () => evaluate(`${FIELDS}.indexOf(document.activeElement)`);
+  const caretIn = (i, at) => evaluate(`(() => {
+    const f = ${FIELDS}[${i}];
+    f.scrollIntoView({ block: "center" });
+    f.focus();
+    const off = ${at} < 0 ? f.textContent.length : ${at};
+    const w = document.createTreeWalker(f, NodeFilter.SHOW_TEXT);
+    let n, left = off, node = null, o = 0;
+    while ((n = w.nextNode())) { if (left <= n.length) { node = n; o = left; break; } left -= n.length; }
+    const r = document.createRange();
+    if (node) r.setStart(node, o); else r.setStart(f, f.childNodes.length);
+    r.collapse(true);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+  })()`);
+  const selectField = () => evaluate(`(() => {
+    const r = document.createRange();
+    r.selectNodeContents(document.activeElement);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+  })()`);
+  const press = async (key, code, modifiers = 0, text) => {
+    const vk = { Enter: 13, Backspace: 8 }[key] ?? key.toUpperCase().charCodeAt(0);
+    await cdp.send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", key, code, windowsVirtualKeyCode: vk, modifiers, text });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, modifiers });
+  };
+  const type = (text) => cdp.send("Input.insertText", { text });
+  const settle = () => new Promise((r) => setTimeout(r, 250));
+  const command = (await evaluate(`/Mac|iPhone|iPad/.test(navigator.platform)`)) ? 4 : 2;
+  const expect = (what, part) => until(what, async () => (await markdown()).includes(part));
+
+  await caretIn(1, -1);
+  await settle();
+  await type(" ok");
+  await expect("typing reaches the editor's Markdown", "prismsdk.dev). ok\n\n");
+  await press("Enter", "Enter", 0, "\r");
+  await until("Enter splits the block and focuses the new one", async () => (await focused()) === 2);
+  await type("new");
+  await expect("the new block holds the typed text", "ok\n\nnew\n\n");
+  await selectField();
+  await settle();
+  await press("b", "KeyB", command);
+  await expect("⌘B bolds the selection", "ok\n\n**new**\n\n");
+  await caretIn(2, 0);
+  await settle();
+  await press("Backspace", "Backspace");
+  await expect("Backspace at a block's start joins it to the one before", "ok**new**");
+  await until("the caret stays at the join", async () => (await focused()) === 1);
+  await press("Enter", "Enter", 0, "\r");
+  await until("Enter at the join splits there", async () => (await focused()) === 2);
+  await type("-");
+  await settle();
+  await type(" ");
+  await expect("\"- \" starts a list item", "ok\n\n- **new**\n");
+  await selectField();
+  await settle();
+  await press("k", "KeyK", command);
+  await expect("⌘K links the selection", "- [**new**](https://prismsdk.dev)\n");
+  log("rich text editor: type, Enter, ⌘B, Backspace join, \"- \" list, ⌘K link");
+}
+
+/**
+ * A vertical wheel over a horizontal scroll view scrolls the vertical one
+ * around it, and a horizontal one still scrolls the row (#293): the page's
+ * own `.prism-scroll` / `.prism-scroll-x` rules on a fixture laid over it.
+ */
+async function wheelOverHorizontalRow(cdp, evaluate) {
+  const at = await evaluate(`(() => {
+    const outer = document.createElement("div");
+    outer.className = "prism-scroll";
+    outer.id = "e2e-wheel";
+    outer.style.cssText = "position:fixed;left:0;top:0;width:400px;height:300px;z-index:2147483647;background:#fff;display:flex;flex-direction:column";
+    const space = (h) => { const d = document.createElement("div"); d.style.cssText = "flex-shrink:0;height:" + h + "px"; return d; };
+    const row = document.createElement("div");
+    row.className = "prism-scroll prism-scroll-x";
+    row.style.cssText = "display:flex;flex-direction:row;flex-shrink:0";
+    const line = document.createElement("div");
+    line.style.whiteSpace = "pre";
+    line.textContent = "a very long line ".repeat(80);
+    row.append(line);
+    outer.append(space(600), row, space(1200));
+    document.body.append(outer);
+    outer.scrollTop = 500;
+    const r = row.getBoundingClientRect();
+    return { x: r.left + 100, y: r.top + r.height / 2, top: outer.scrollTop };
+  })()`);
+  const wheel = (deltaX, deltaY) => cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: at.x, y: at.y, deltaX, deltaY });
+  await wheel(0, 200);
+  await until("a vertical wheel over the row scrolls the view around it", () =>
+    evaluate(`document.getElementById("e2e-wheel").scrollTop > ${at.top}`));
+  // The row moved up with it: bring it back under the pointer.
+  await evaluate(`document.getElementById("e2e-wheel").scrollTop = ${at.top}`);
+  await wheel(200, 0);
+  await until("a horizontal wheel over the row scrolls the row", () =>
+    evaluate(`document.querySelector("#e2e-wheel .prism-scroll-x").scrollLeft > 0`));
+  await evaluate(`document.getElementById("e2e-wheel").remove()`);
+  log("wheel: vertical over a horizontal row → the outer view, horizontal → the row");
 }
 
 /** Clicks the counter's "+1" like a user and waits for the new count. */

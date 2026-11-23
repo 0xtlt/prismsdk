@@ -16,9 +16,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 [hidden] { display: none !important; }
 :focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
 .prism-title { margin: 0; font: inherit; }
-.prism-scroll { overflow-y: auto; overscroll-behavior: contain; }
+/* A scroll view keeps the scroll on its own axis from chaining to the page
+   (no scroll of the page behind a list that reached its end), and only that
+   axis: a vertical wheel over a horizontal row scrolls the view around it
+   (#293), a horizontal swipe on it still never goes back in history. */
+.prism-scroll { overflow-y: auto; overscroll-behavior-y: contain; }
 /* Horizontal scroll views: a row whose items keep their size. */
-.prism-scroll-x { overflow-x: auto; overflow-y: hidden; }
+.prism-scroll-x { overflow-x: auto; overflow-y: hidden; overscroll-behavior-y: auto; overscroll-behavior-x: contain; }
 .prism-scroll-x > * { flex-shrink: 0 !important; }
 /* Scroll bars (#132). Hidden: none, the view still scrolls. Overlay: thin,
    shown while the pointer is over the view or it has the focus (browsers
