@@ -100,7 +100,7 @@ div()
         this.notice = Some(match e.error {
             DropError::NotAccepted => "Only images, please",
             DropError::Limits => "Too many files at once",
-            DropError::Busy | DropError::Failed => "The upload failed: try again",
+            _ => "The upload failed: try again",
         })
     }))
     .drop_hover(|s| s.bg(rgb(0xEEF2FF)))
