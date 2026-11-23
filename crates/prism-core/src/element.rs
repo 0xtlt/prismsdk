@@ -652,6 +652,9 @@ pub struct VNode {
     /// Deep link (`/todos/1`): navigates in the app, opens it from widgets,
     /// Live Activities and notifications.
     pub link: Option<String>,
+    /// Following [`link`](Self::link) leaves its screen alone in the stack
+    /// (`link_root`, #289) instead of pushing it.
+    pub link_root: bool,
     /// Long press (iOS, Android), right-click (macOS, Linux, Windows, web)
     /// menu.
     pub context_menu: Option<crate::menu::Menu>,
@@ -813,6 +816,7 @@ impl VNode {
             config: String::new(),
             a11y: Accessibility::default(),
             link: None,
+            link_root: false,
             context_menu: None,
             click_menu: None,
             key: None,
@@ -1245,6 +1249,14 @@ impl Text {
         self.0.link = Some(path.into());
         self
     }
+
+    /// A [`link`](Self::link) that leaves its screen alone in the stack
+    /// instead of pushing it ([`App::navigate_root`](crate::App::navigate_root), #289).
+    pub fn link_root(mut self, path: impl Into<String>) -> Self {
+        self.0.link = Some(path.into());
+        self.0.link_root = true;
+        self
+    }
 }
 
 /// A native push button with a title.
@@ -1308,6 +1320,20 @@ impl Div {
         self
     }
 
+    /// A [`link`](Self::link) that leaves its screen alone in the stack
+    /// instead of pushing it (#289): a sidebar's entries acting as tabs. In
+    /// the app it does [`App::navigate_root`](crate::App::navigate_root); on
+    /// the web it stays an `<a href>` (a new tab opens the page as usual).
+    ///
+    /// ```ignore
+    /// div().link_root("/orders").child(text("Orders"))
+    /// ```
+    pub fn link_root(mut self, path: impl Into<String>) -> Self {
+        self.0.link = Some(path.into());
+        self.0.link_root = true;
+        self
+    }
+
     /// A bar above the on-screen keyboard shared by every text field
     /// inside the container (#242): it shows while any of them has the
     /// focus (a field's own [`keyboard_toolbar`](TextInput::keyboard_toolbar)
@@ -1367,6 +1393,14 @@ impl Button {
     /// navigation in the app.
     pub fn link(mut self, path: impl Into<String>) -> Self {
         self.0.link = Some(path.into());
+        self
+    }
+
+    /// A [`link`](Self::link) that leaves its screen alone in the stack
+    /// instead of pushing it ([`Div::link_root`], #289).
+    pub fn link_root(mut self, path: impl Into<String>) -> Self {
+        self.0.link = Some(path.into());
+        self.0.link_root = true;
         self
     }
 

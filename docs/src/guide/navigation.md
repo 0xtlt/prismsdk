@@ -19,6 +19,7 @@ screen("Details").child(...)
 
 // Anywhere:
 cx.navigate("/todos/2");   cx.back();   cx.replace("/login");   cx.reset("/");
+cx.navigate_root("/orders");   // the stack holds only /orders (a sidebar entry)
 div().on_click(navigate_to("/todos/2"))   // handler helpers: navigate_to, go_back
 ```
 
@@ -52,6 +53,43 @@ Make a tab eager when its views must exist while hidden, or when switching to it
 Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. The most specific route that matches a path wins, whatever the order the routes were added in (feature modules can declare theirs in any order): segment by segment from the left, a static segment beats a `:param`, which beats a `*rest`, so `/todos/new` wins over `/todos/:id` and `/files` over `/files/*rest`. Two routes of the same shape (`/a/:x`, `/a/:y`) keep their order, the first added wins, and debug builds print a warning about the other. Unknown paths show a "Not found" screen (or `.not_found(...)`); on the web that page is answered with `404` (`cx.shows_not_found()` tells the app). A route that matches but finds no data answers `404` too with `cx.set_page_status(404)` during the first paint ([web](../platforms/web.md)). Opening a deep link puts `/` underneath so Back works.
 
 **Deep links on the web**: the screen under a deep link is not built until Back reaches it (the header's Back, browser Back, `cx.back()`). Opening `/orders/42` then loads and ships only that screen: on a dashboard whose `/` is a list, a deep link no longer pays for the list. The page holds an empty hidden placeholder in its place, so the stack's depth, the header's Back and the browser's history stay the same; Back builds `/` on the server and sends it, in the round trip it already takes. Native backends build it up front, since their Back shows it: iOS names it in the Back button and the swipe back reveals it.
+
+## A sidebar acting as tabs
+
+An app with its own sidebar (no tab bar) wants its entries to behave like tabs: following one leaves that screen alone in the stack instead of pushing it (#289).
+
+```rust
+div().link_root("/orders").child(text("Orders"))   // a sidebar entry
+cx.navigate_root("/customers");                    // from code
+cx.stack_depth()                                   // screens in the stack: 1 afterwards
+```
+
+Unlike `cx.reset(path)`, nothing is built underneath (no root screen: Back has nowhere to go, as on a tab's root), and in a tab bar app the other tabs keep their screens. When the stack already starts with `path`, that screen stays, state and all, and the screens over it are released. A sheet, if one is up, closes. On the web the link stays an `<a href>`, and the browser's history goes back to that entry.
+
+## Which screen is on top
+
+The screens under the top one stay mounted (Back shows them as they were), and so do the other tabs': they render again when a global they read changes. Something a screen sets beyond itself while rendering (the title, `set_unsaved_changes`) is then overwritten by the hidden ones. Guard it with `cx.is_top_screen()` (#288), and set it again when the screen comes back on top with `cx.on_screen_shown`:
+
+```rust
+impl Editor {
+    fn new(cx: &mut Context<Self>) -> Self {
+        // Built on top, revealed by Back, its tab selected, the sheet over it closed.
+        cx.on_screen_shown(|this, cx| cx.set_unsaved_changes(this.draft != this.saved));
+        Editor::default()
+    }
+}
+
+impl Render for Editor {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if cx.is_top_screen() {
+            cx.set_unsaved_changes(self.draft != self.saved);
+        }
+        screen("Edit").child(/* … */)
+    }
+}
+```
+
+The top screen is the sheet's top one while a sheet is up, else the selected tab's; a screen that becomes it renders again too. `is_top_screen` is true for the entities the screen created (`cx.new`) as well, and always true without a router. `cx.top_screen()` gives its `EntityId` (`Router::top_entity` on the router).
 
 ## The page's or window's title
 

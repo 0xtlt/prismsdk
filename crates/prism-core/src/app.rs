@@ -155,6 +155,12 @@ pub struct App {
     initial_path: String,
     navigator: Option<Entity<Router>>,
     nav_queue: Vec<NavOp>,
+    // --- The top screen (#288) ---
+    /// The router's visible screen as last settled ([`App::top_screen`]).
+    top_screen: Option<EntityId>,
+    /// What runs when an entity's screen becomes the top one
+    /// (`cx.on_screen_shown`), by entity.
+    screen_shown: IdMap<EntityId, Vec<Observer>>,
     globals: HashMap<TypeId, Box<dyn Any>>,
     /// The page request's status, set by the app (`cx.set_page_status`).
     pub(crate) page_status: Option<u16>,
@@ -252,6 +258,8 @@ impl Default for App {
             initial_path: "/".into(),
             navigator: None,
             nav_queue: Vec::new(),
+            top_screen: None,
+            screen_shown: IdMap::default(),
             globals: HashMap::new(),
             page_status: None,
             appearance: Appearance::System,
@@ -460,6 +468,17 @@ impl App {
         self.nav_queue.push(NavOp::Reset(path.into()));
     }
 
+    /// Leaves `path` alone in its stack (#289): sidebar entries that act
+    /// as tabs. Unlike [`reset`](App::reset), no root screen is built
+    /// underneath (Back has nowhere to go, as on a tab's root) and the
+    /// other tabs keep their screens; the screen stays as it is when the
+    /// stack already starts with `path`. The sheet, if any, closes. On the
+    /// web the browser's history goes back to that entry. A link does it
+    /// with [`link_root`](crate::Div::link_root).
+    pub fn navigate_root(&mut self, path: impl Into<String>) {
+        self.nav_queue.push(NavOp::Root(path.into()));
+    }
+
     /// Pushes the screen for `path`, handing it `state`: its route reads it
     /// with [`Params::state`](crate::Params::state) (a "Saved" notice, a
     /// draft, an object already loaded). Only that screen gets it; a reload
@@ -495,6 +514,72 @@ impl App {
     pub fn current_query(&self) -> Vec<(String, String)> {
         let path = self.current_path().unwrap_or("/");
         crate::router::parse_query(crate::router::split_query(path).1)
+    }
+
+    // --- The top screen (#288) ---
+
+    /// The router's visible screen: the sheet's top one while a sheet is
+    /// up, else the selected tab's. `None` without a router.
+    pub fn top_screen(&self) -> Option<EntityId> {
+        let router = self.navigator?;
+        // Being updated (building a screen): as last settled.
+        self.try_read(&router)
+            .map_or(self.top_screen, Router::top_entity)
+    }
+
+    /// The number of screens in the selected tab's stack (the stack
+    /// without a tab bar); 0 without a router. See [`Router::depth`].
+    pub fn stack_depth(&self) -> usize {
+        self.navigator
+            .and_then(|r| self.try_read(&r))
+            .map_or(0, Router::depth)
+    }
+
+    /// Whether `id` is the top screen or an entity it created (`cx.new`,
+    /// at any depth). Always true without a router: the root is the
+    /// only screen.
+    pub fn is_in_top_screen(&self, id: EntityId) -> bool {
+        if self.navigator.is_none() {
+            return true;
+        }
+        self.top_screen()
+            .is_some_and(|top| self.screen_entities(top).contains(&id))
+    }
+
+    /// `top` and the entities it created, at any depth.
+    fn screen_entities(&self, top: EntityId) -> Vec<EntityId> {
+        let mut all = vec![top];
+        let mut i = 0;
+        while let Some(&id) = all.get(i) {
+            if let Some(children) = self.children.get(&id) {
+                all.extend(children.iter().filter(|c| self.entities.contains_key(c)));
+            }
+            i += 1;
+        }
+        all
+    }
+
+    /// After navigating: when another screen is on top, it renders again
+    /// (Back revealed it unchanged, and it may set the title or the
+    /// unsaved state again) and its `on_screen_shown` handlers run.
+    fn settle_top_screen(&mut self) {
+        let Some(router) = self.navigator else {
+            return;
+        };
+        let Some(top) = self.try_read(&router).map(Router::top_entity) else {
+            return;
+        };
+        if top == self.top_screen {
+            return;
+        }
+        self.top_screen = top;
+        let Some(top) = top else { return };
+        for id in self.screen_entities(top) {
+            self.dirty.insert(id);
+            for f in self.screen_shown.get(&id).cloned().unwrap_or_default() {
+                f(self);
+            }
+        }
     }
 
     /// Path of the visible screen, if a router is active.
@@ -614,7 +699,9 @@ impl App {
             }
             if self.navigator.is_some_and(|n| n.id == id) {
                 self.navigator = None;
+                self.top_screen = None;
             }
+            self.screen_shown.remove(&id);
             let existed = self.entities.remove(&id).is_some();
             self.observers.remove(&id);
             self.dirty.remove(&id);
@@ -841,19 +928,27 @@ impl App {
     /// Delivers queued notifications to observers. Each entity's observers run
     /// at most once per flush, so observer cycles terminate.
     pub fn flush_effects(&mut self) {
-        if let Some(router) = self.navigator.filter(|r| self.contains(r.id())) {
-            let ops = std::mem::take(&mut self.nav_queue);
-            let navigated = !ops.is_empty();
-            for op in ops {
-                router.update(self, |r, cx| r.apply(op, cx));
+        // A screen shown may navigate in turn (a guard sending the user
+        // elsewhere): a few rounds, not an endless loop.
+        for _ in 0..8 {
+            if let Some(router) = self.navigator.filter(|r| self.contains(r.id())) {
+                let ops = std::mem::take(&mut self.nav_queue);
+                let navigated = !ops.is_empty();
+                for op in ops {
+                    router.update(self, |r, cx| r.apply(op, cx));
+                }
+                // Screens just built may have spawned tasks (a first
+                // load): start them now rather than at the next event.
+                if navigated && self.executor.has_ready() {
+                    crate::task::poll_tasks(self);
+                }
+            } else {
+                self.nav_queue.clear();
             }
-            // Screens just built may have spawned tasks (a first load):
-            // start them now rather than at the next event.
-            if navigated && self.executor.has_ready() {
-                crate::task::poll_tasks(self);
+            self.settle_top_screen();
+            if self.nav_queue.is_empty() {
+                break;
             }
-        } else {
-            self.nav_queue.clear();
         }
         let mut delivered = HashSet::new();
         while let Some(id) = self.pending.pop() {
@@ -930,6 +1025,38 @@ impl<T: 'static> Context<'_, T> {
                 });
             }
         })
+    }
+
+    /// Whether this entity's screen is the router's visible one (#288):
+    /// the top of the selected tab's stack, or of the sheet while one is
+    /// up. The screens under it (kept for Back) and the other tabs' stay
+    /// mounted and re-render too, when a global changes: guard what
+    /// reaches beyond the screen (`set_unsaved_changes`, the title) with
+    /// it. True for the screen and the entities it created (`cx.new`);
+    /// always true without a router.
+    pub fn is_top_screen(&self) -> bool {
+        self.app.is_in_top_screen(self.entity.id)
+    }
+
+    /// Runs `f` each time this entity's screen becomes the visible one
+    /// (#288): built on top, revealed by Back, its tab selected, the sheet
+    /// over it closed. The screen also renders again then.
+    ///
+    /// ```ignore
+    /// cx.on_screen_shown(|this: &mut Editor, cx| cx.set_unsaved_changes(this.dirty));
+    /// ```
+    pub fn on_screen_shown(&mut self, f: impl Fn(&mut T, &mut Context<T>) + 'static) {
+        let this = self.entity;
+        let observer: Observer = Rc::new(move |app: &mut App| {
+            if app.contains(this.id) {
+                app.update(&this, |t, cx| f(t, cx));
+            }
+        });
+        self.app
+            .screen_shown
+            .entry(this.id)
+            .or_default()
+            .push(observer);
     }
 
     /// Runs `f` whenever `other` is notified, then re-renders this entity.
