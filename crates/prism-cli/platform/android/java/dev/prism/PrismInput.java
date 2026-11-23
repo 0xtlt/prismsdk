@@ -1370,8 +1370,17 @@ final class PrismInput {
             PopupWindow p = new PopupWindow(n.host, Math.max(1, n.contentSize[0]), Math.max(1, n.contentSize[1]), !n.keepFocus);
             if (n.keepFocus) p.setInputMethodMode(PopupWindow.INPUT_METHOD_NEEDED);
             float r = 14 * d;
-            p.setBackgroundDrawable(surface(new float[]{r, r, r, r, r, r, r, r}));
-            p.setElevation(12 * d);
+            if (n.bareDialog) {
+                // No box of its own (#287): a transparent popup (a
+                // background still, so a touch outside reaches it), no
+                // elevation, no animation.
+                p.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+                p.setElevation(0);
+                p.setAnimationStyle(0);
+            } else {
+                p.setBackgroundDrawable(surface(new float[]{r, r, r, r, r, r, r, r}));
+                p.setElevation(12 * d);
+            }
             // `keepfocus` too (#182): not focusable, so the touch outside
             // still reaches the anchor's field while the popup closes.
             p.setOutsideTouchable(!(n.fixed || n.manual));

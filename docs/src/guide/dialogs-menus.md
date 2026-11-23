@@ -233,9 +233,9 @@ div()
 | Windows | a `Flyout` on that side | the smoke: clear, a dim (the default) or an acrylic blur | popovers and dialogs |
 | watchOS | `.sheet` | – | – |
 
-### A dialog without Prism's box
+### A dialog or popover without Prism's box
 
-A picker the app styles itself (its own background, corners, border and shadow) would otherwise sit inside Prism's dialog box. `.bare()` takes that box away: no background, border, corners, shadow or entry animation, so the content is the whole panel. The dialog stays modal: the focus stays inside, Escape and a click outside close it, with their `DismissReason`.
+A picker or menu the app styles itself (its own background, corners, border and shadow) would otherwise sit inside Prism's dialog or popover box. `.bare()` takes that box away: no background, border, corners, arrow, shadow or entry animation, so the content is the whole panel. A dialog stays modal: the focus stays inside, Escape and a click outside close it, with their `DismissReason`. A popover keeps its place beside the anchor and closes like any popover.
 
 ```rust
 dialog(div().bg(rgb(0x1c1c1e)).rounded(12.).shadow_lg().child(swatches))
@@ -246,16 +246,17 @@ dialog(div().bg(rgb(0x1c1c1e)).rounded(12.).shadow_lg().child(swatches))
     .on_dismiss(cx.listener(|this, _, _| this.picking = false))
 ```
 
-| | Bare dialog |
-|---|---|
-| Web | the `<dialog>` without Prism's background, border, radius, shadow or animation |
-| macOS | a borderless, transparent panel that takes the keys, instead of a sheet or an `NSPopover` |
-| iOS, iPadOS, visionOS, tvOS | a clear card without corners or edge, shown without a cross-fade |
-| Linux | a `GtkPopover` without arrow or background, or an undecorated window |
-| Android | a transparent dialog window, without animation |
-| Windows | the content without the panel, its edge, shadow or animation |
+| | Bare dialog | Bare popover |
+|---|---|---|
+| Web | the `<dialog>` without Prism's background, border, radius, shadow or animation | the popover without them |
+| macOS | a borderless, transparent panel that takes the keys, instead of a sheet or an `NSPopover` | the same panel beside the anchor (it takes the keys unless the popover leaves the focus to its anchor) |
+| iOS, iPadOS, visionOS | a clear card without corners or edge, shown without a cross-fade | the popover without its background, arrow or shadow |
+| tvOS | a clear card without corners or edge, shown without a cross-fade | the same |
+| Linux | a `GtkPopover` without arrow or background, or an undecorated window | a `GtkPopover` without arrow or background |
+| Android | a transparent dialog window, without animation | a transparent popup, without elevation or animation |
+| Windows | the content without the panel, its edge, shadow or animation | a `Flyout` without its background, border, shadow or animation |
 
-Sheets and popovers keep their platform's box; `.bare()` does nothing on them.
+Sheets keep their platform's box; `.bare()` does nothing on them.
 
 Toasts (and any `cx.add_layer` entity) stay above overlays on the web, macOS (a transparent child window), iOS, iPadOS, tvOS and visionOS (a pass-through window) and Windows (the layers' canvas above the panels). On Linux and Android, sheets and dialogs are separate windows, and on watchOS sheets cover the app: layers stay under them there. On the web, layers are in the server-rendered first paint too (see [Web](../platforms/web.md#layers-in-the-first-paint)).
 

@@ -675,8 +675,9 @@ pub struct OverlayConfig {
     pub width: u32,
     /// The content area's height in points (`0`: fit the content).
     pub height: u32,
-    /// A dialog that draws no box of its own: no background, border,
-    /// corners, shadow or entry animation; its content is the panel. See
+    /// A dialog or popover that draws no box of its own: no background,
+    /// border, corners, arrow, shadow or entry animation; its content is
+    /// the panel. See
     /// [`Overlay::bare`](crate::Overlay::bare).
     pub bare: bool,
     /// A keyboard bar that serves only the text field just before it (a
