@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 #if os(macOS) || os(iOS) || os(visionOS)
 /// Implemented in Rust (prism-macos, prism-ios): kind 0 / 1, accepted files
 /// left / came over the node; kind 2, files dropped (`path\tname\tmime\tsize`
-/// per line).
+/// per line); kind 3, some could not be copied (`failed\tdropped`).
 @_silgen_name("prism_drop_event")
 func prismRustDropEvent(_ node: UInt64, _ kind: Int32, _ files: UnsafePointer<CChar>?)
 
@@ -21,11 +21,16 @@ private func prismFileType(_ url: URL) -> UTType {
     UTType(filenameExtension: url.pathExtension) ?? .data
 }
 
-/// Reports the copies of the dropped files, on the main thread.
-private func prismReportDrop(_ node: UInt64, _ lines: [String]) {
+/// Reports the copies of the dropped files, then how many of the
+/// `dropped` ones could not be copied (#290), on the main thread.
+private func prismReportDrop(_ node: UInt64, _ lines: [String], dropped: Int) {
     DispatchQueue.main.async {
-        if lines.isEmpty { return }
-        lines.joined(separator: "\n").withCString { prismRustDropEvent(node, 2, $0) }
+        if !lines.isEmpty {
+            lines.joined(separator: "\n").withCString { prismRustDropEvent(node, 2, $0) }
+        }
+        if lines.count < dropped {
+            "\(dropped - lines.count)\t\(dropped)".withCString { prismRustDropEvent(node, 3, $0) }
+        }
     }
 }
 
@@ -57,7 +62,7 @@ public func prismDropPerform(_ node: UInt64, _ info: UnsafeRawPointer, _ types: 
     DispatchQueue.global(qos: .userInitiated).async {
         prismReportDrop(node, urls.compactMap { url in
             prismKeep(url).map { prismDescribe($0, name: url.lastPathComponent) }
-        })
+        }, dropped: urls.count)
     }
     return true
 }
@@ -114,9 +119,11 @@ private final class PrismDropDelegate: NSObject, UIDropInteractionDelegate {
         let group = DispatchGroup()
         let lock = NSLock()
         var lines: [String] = []
+        var dropped = 0
         for item in session.items {
             let provider = item.itemProvider
             guard let type = accepted(provider) else { continue }
+            dropped += 1
             group.enter()
             // The file is deleted when the handler returns: copy it there.
             provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in
@@ -131,7 +138,9 @@ private final class PrismDropDelegate: NSObject, UIDropInteractionDelegate {
                 }
             }
         }
-        group.notify(queue: .global(qos: .userInitiated)) { prismReportDrop(self.node, lines) }
+        group.notify(queue: .global(qos: .userInitiated)) {
+            prismReportDrop(self.node, lines, dropped: dropped)
+        }
     }
 }
 

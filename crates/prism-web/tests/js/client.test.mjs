@@ -1052,6 +1052,19 @@ test("files dropped on a drop target go up, only those it accepts (#111)", async
     { t: "upload_chunk", drop: 1, file: 0, data: "AQID" },
     { t: "drop_end", drop: 1 },
   ]);
+  // Only files it does not take: the server tells the app (#290).
+  page.ws.sent.length = 0;
+  drag("drop", zone, [txt]);
+  await settle();
+  assert.deepEqual(page.ws.sent.filter((m) => m.t.startsWith("drop")), [
+    { t: "drop_start", drop: 2, node: 2, files: [] },
+  ]);
+  // Refused by the server: the bytes stay in the browser, no end.
+  page.ws.sent.length = 0;
+  drag("drop", zone, [png]);
+  page.ws.deliver({ t: "drop_stop", drop: 3 });
+  await settle();
+  assert.deepEqual(page.ws.sent.map((m) => m.t), ["drop_start"]);
   // No longer a drop target: drops are left alone.
   page.ws.deliver({ t: "patch", p: [{ op: "drop", id: 2, types: null }] });
   assert.equal(drag("drop", zone, [png]).defaultPrevented, false);

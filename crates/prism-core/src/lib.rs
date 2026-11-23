@@ -103,9 +103,9 @@ pub use element::{cover_crop, picture_position, picture_source};
 pub use element::{picture_data, svg};
 pub use events::{
     CaretEdge, CaretEdges, DragEvent, DragOverEvent, DragOverPhase, DragPayload, DragPhase,
-    DragPreview, DropEvent, DropPoint, DropProgress, FileDropEvent, GesturePhase, HoverEvent,
-    KeyEvent, LayoutEvent, MagnifyEvent, Modifiers, Point, PointerButton, PointerEvent,
-    PointerPhase, Rect, WheelEvent,
+    DragPreview, DropError, DropErrorEvent, DropEvent, DropPoint, DropProgress, FileDropEvent,
+    GesturePhase, HoverEvent, KeyEvent, LayoutEvent, MagnifyEvent, Modifiers, Point, PointerButton,
+    PointerEvent, PointerPhase, Rect, WheelEvent,
 };
 pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
@@ -555,13 +555,31 @@ impl Runtime {
             }
             UiEvent::DropFiles(id, files) => {
                 if let Some((accept, h)) = self.reconciler.drop_files_handler(id) {
+                    let dropped = files.len();
                     let files: Vec<_> = files
                         .into_iter()
                         .filter(|f| accept.accepts(&f.name, &f.mime))
                         .collect();
                     if !files.is_empty() {
                         h(&FileDropEvent { files }, &mut self.app);
+                    } else if dropped > 0
+                        && let Some(h) = self.reconciler.drop_error_handler(id)
+                    {
+                        let reason = "no dropped file is of a type the target takes".into();
+                        let error = crate::events::DropError::NotAccepted;
+                        h(
+                            &crate::events::DropErrorEvent { error, reason },
+                            &mut self.app,
+                        );
                     }
+                }
+            }
+            UiEvent::DropFailed(id, error, reason) => {
+                if let Some(h) = self.reconciler.drop_error_handler(id) {
+                    h(
+                        &crate::events::DropErrorEvent { error, reason },
+                        &mut self.app,
+                    );
                 }
             }
             UiEvent::Island(id, name, detail) => {
@@ -1263,11 +1281,11 @@ pub mod prelude {
     pub use crate::bar_button;
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
-        DragEvent, DragOverEvent, DragOverPhase, DragPayload, DragPhase, DragPreview, DropEvent,
-        DropProgress, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, LayoutEvent, MagnifyEvent,
-        Modifiers, PickFiles, Point, PointerButton, PointerEvent, PointerPhase, PopoverAlign,
-        PopoverSide, Rect, WheelEvent, checkbox, dialog, keyboard_toolbar, popover, radio_group,
-        sheet, time_picker, time_picker_opt,
+        DragEvent, DragOverEvent, DragOverPhase, DragPayload, DragPhase, DragPreview, DropError,
+        DropErrorEvent, DropEvent, DropProgress, FileDropEvent, GesturePhase, HoverEvent, KeyEvent,
+        LayoutEvent, MagnifyEvent, Modifiers, PickFiles, Point, PointerButton, PointerEvent,
+        PointerPhase, PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog,
+        keyboard_toolbar, popover, radio_group, sheet, time_picker, time_picker_opt,
     };
     // Anchored overlays without a dim (#79).
     pub use crate::Backdrop;

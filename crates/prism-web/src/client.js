@@ -6872,6 +6872,9 @@
   // Only files the target accepts are sent; a drop elsewhere on a page with
   // drop targets does not make the browser open the file.
   let drops = 0, dropTargets = 0;
+  // The drops uploading, each `true` once the server refused it (#290):
+  // its bytes then stay in the browser.
+  const dropping = new Map();
   const draggingFiles = (e) => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
   /** `PickFiles::accepts`: MIME types (`image/*`) or extensions (`.pdf`); none: any file. */
   function accepts(types, name, mime) {
@@ -6910,18 +6913,24 @@
       if (!el._dropTypes || !draggingFiles(e)) return;
       e.preventDefault(); e.stopPropagation();
       depth = 0; over(false);
-      const files = [...(e.dataTransfer.files || [])].filter((f) => accepts(el._dropTypes, f.name, f.type));
-      if (files.length) dropFiles(id, files);
+      const all = [...(e.dataTransfer.files || [])];
+      const files = all.filter((f) => accepts(el._dropTypes, f.name, f.type));
+      if (all.length) dropFiles(id, files);
     });
   }
   async function dropFiles(node, files) {
     const key = { drop: ++drops };
+    // None the target takes: the server tells the app (#290).
+    if (!files.length) return send({ t: "drop_start", ...key, node, files: [] });
+    dropping.set(key.drop, false);
+    const stopped = () => dropping.get(key.drop) === true;
     try {
-      await sendFiles({ t: "drop_start", ...key, node }, key, files, () => false);
-      send({ t: "drop_end", ...key });
+      await sendFiles({ t: "drop_start", ...key, node }, key, files, stopped);
+      if (!stopped()) send({ t: "drop_end", ...key });
     } catch (e) {
-      send({ t: "drop_end", ...key, err: String((e && e.message) || e) });
+      if (!stopped()) send({ t: "drop_end", ...key, err: String((e && e.message) || e) });
     }
+    dropping.delete(key.drop);
   }
   for (const type of ["dragover", "drop"]) {
     addEventListener(type, (e) => {
@@ -7298,6 +7307,7 @@
         return;
       }
       case "device": return device(msg);
+      case "drop_stop": if (dropping.has(msg.drop)) dropping.set(msg.drop, true); return;
       case "browser_id": return renewBrowserId(msg);
       case "activity": return showActivity(msg.id, msg.c);
       case "activity_end": {

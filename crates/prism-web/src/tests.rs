@@ -1837,6 +1837,18 @@ fn a_dragged_payload_reaches_the_target_the_page_found() {
     );
 }
 
+/// #290: a data directory that cannot take files is caught at startup
+/// (`router` says so on stderr), not at each refused drop.
+#[test]
+fn an_unwritable_data_dir_is_caught() {
+    let (app, dir) = web_app(counter_init(), "datadir");
+    assert!(app.data_dir_writable().is_ok());
+    // Under a file: no directory can be made there.
+    std::fs::write(dir.join("plain"), b"").unwrap();
+    let app = app.data_dir(dir.join("plain").join("data"));
+    assert!(app.data_dir_writable().is_err());
+}
+
 /// #111: files dropped on a drop target reach its handler, checked by the
 /// server (the target exists, accepts them, at most their size).
 #[test]
@@ -1844,6 +1856,7 @@ fn dropped_files_reach_the_drop_target() {
     struct Zone {
         got: String,
         progress: String,
+        error: String,
     }
     impl Render for Zone {
         fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1861,9 +1874,14 @@ fn dropped_files_reach_the_drop_target() {
                         .on_drop_progress(cx.listener(|this, e: &DropProgress, _| {
                             this.progress = format!("{}/{}", e.sent, e.total);
                         }))
+                        // Refused or cut off (#290).
+                        .on_drop_error(cx.listener(|this, e: &DropErrorEvent, _| {
+                            this.error = format!("{:?}: {}", e.error, e.reason);
+                        }))
                         .drop_hover(|s| s.bg(rgb(0xeeeeff)))
                         .child(text(self.got.clone()))
-                        .child(text(self.progress.clone())),
+                        .child(text(self.progress.clone()))
+                        .child(text(self.error.clone())),
                 )
                 .child(text("elsewhere"))
         }
@@ -1872,6 +1890,7 @@ fn dropped_files_reach_the_drop_target() {
         let root = cx.new_entity(|_| Zone {
             got: "…".into(),
             progress: "-".into(),
+            error: "ok".into(),
         });
         cx.set_root(root);
     });
@@ -1884,6 +1903,7 @@ fn dropped_files_reach_the_drop_target() {
     let zone = drop["id"].as_u64().unwrap();
     let got = op_with_text(&reset["p"], "…");
     let progress = op_with_text(&reset["p"], "-");
+    let error = op_with_text(&reset["p"], "ok");
     let other = op_with_text(&reset["p"], "elsewhere");
     let png = json!([{ "name": "cat.png", "mime": "image/png", "size": 3 }]);
     // Refused: not a drop target, a type it does not take, too many bytes.
@@ -1894,6 +1914,13 @@ fn dropped_files_reach_the_drop_target() {
     page.send(json!({ "t": "drop_start", "drop": 2, "node": zone, "files": txt }));
     page.send(json!({ "t": "upload_chunk", "drop": 2, "file": 0, "data": "aGk=" }));
     page.send(json!({ "t": "drop_end", "drop": 2 }));
+    // The app hears why, the page stops sending (#290).
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": error, "text":
+            "NotAccepted: a dropped file is of a type the target does not take" }] })
+    );
+    assert_eq!(page.next(), json!({ "t": "drop_stop", "drop": 2 }));
     page.send(json!({ "t": "drop_start", "drop": 3, "node": zone, "files": png }));
     // An accepted drop starts reporting its progress (#199).
     assert_eq!(
@@ -1902,6 +1929,11 @@ fn dropped_files_reach_the_drop_target() {
     );
     page.send(json!({ "t": "upload_chunk", "drop": 3, "file": 0, "data": "AQIDBA==" }));
     page.send(json!({ "t": "drop_end", "drop": 3 }));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": error, "text":
+            "Failed: the files did not arrive whole" }] })
+    );
     // Accepted: progress, then the handler gets the file.
     page.send(json!({ "t": "drop_start", "drop": 4, "node": zone, "files": png }));
     page.send(json!({ "t": "upload_chunk", "drop": 4, "file": 0, "data": "AQID" }));
@@ -4503,6 +4535,31 @@ fn clipboard_items_go_to_the_page() {
     let out = s.take_outbox();
     assert_eq!(out[0]["call"], "read_clipboard_item");
     assert!(s.uploads.has(crate::uploads::Key::Call(4)));
+}
+
+/// #290: a drop target marked `group()` restyles its children while files
+/// are over it, through the attribute the client sets.
+#[test]
+fn group_drop_hover_follows_the_drop_target() {
+    use crate::css;
+    let label = Style::default()
+        .opacity(0.5)
+        .group_drop_hover(|s| s.opacity(1.))
+        .group_drop_hover_named("zone", |s| s.opacity(0.8))
+        .resolve(Default::default());
+    let rules = css::states_css(NodeKind::View, 7, &label);
+    assert!(
+        rules.contains(
+            r#"[data-group][data-prism-drop] [data-pid="7"]:not(:where([data-group]:not([data-prism-drop]) *)){opacity:unset !important;}"#
+        ),
+        "{rules}"
+    );
+    assert!(
+        rules.contains(
+            r#"[data-gn="zone"][data-prism-drop] [data-pid="7"]{opacity:0.8 !important;}"#
+        ),
+        "{rules}"
+    );
 }
 
 /// #212: refinements follow the named group they name, sizes included.

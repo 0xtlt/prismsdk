@@ -555,7 +555,7 @@ fn decorations(w: &mut String, kind: NodeKind, s: &Style) {
 /// The selector of `node` while its nearest `group()` ancestor is in
 /// `state` (#273), with the specificity of `[data-group]:state node`.
 fn nearest_group(node: &str, state: &str) -> String {
-    format!("[data-group]:{state} {node}:not(:where([data-group]:not(:{state}) *))")
+    format!("[data-group]{state} {node}:not(:where([data-group]:not({state}) *))")
 }
 
 /// The interaction refinements of node `id` as CSS rules (pseudo-classes
@@ -588,6 +588,7 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
             Interaction::GroupHover => (format!("{group}:hover {node}"), true),
             Interaction::GroupFocusWithin => (format!("{group}:focus-within {node}"), false),
             Interaction::GroupActive => (format!("{group}:active {node}"), false),
+            Interaction::GroupDropHover => (format!("{group}[data-prism-drop] {node}"), false),
             _ => return None,
         };
         Some((selector, media, st))
@@ -602,9 +603,11 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
             // The nearest group only (#273): these states reach every
             // ancestor of the element in them, so the nearest group is in
             // one exactly when no group ancestor is out of it.
-            Interaction::GroupHover => (nearest_group(&node, "hover"), true),
-            Interaction::GroupFocusWithin => (nearest_group(&node, "focus-within"), false),
-            Interaction::GroupActive => (nearest_group(&node, "active"), false),
+            Interaction::GroupHover => (nearest_group(&node, ":hover"), true),
+            Interaction::GroupFocusWithin => (nearest_group(&node, ":focus-within"), false),
+            Interaction::GroupActive => (nearest_group(&node, ":active"), false),
+            // The group is the drop target files are over (#290).
+            Interaction::GroupDropHover => (nearest_group(&node, "[data-prism-drop]"), false),
             // Set by the client while accepted files are over it (#111).
             Interaction::DropHover => (format!("{node}[data-prism-drop]"), false),
             // Resolved by the server (the disabled refinement is applied).

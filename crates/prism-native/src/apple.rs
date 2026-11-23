@@ -428,10 +428,13 @@ pub mod drops {
         Hover(NodeId, bool),
         /// Files were dropped: their copies.
         Files(NodeId, Vec<PickedFile>),
+        /// Dropped files could not be copied (#290): the details.
+        Failed(NodeId, String),
     }
 
     /// `kind` 0 / 1: files left / came over `node`; 2: dropped, `files`
-    /// one per line (`path\tname\tmime\tsize`).
+    /// one per line (`path\tname\tmime\tsize`); 3: some could not be
+    /// copied, `files` is `failed\tdropped`.
     ///
     /// # Safety
     /// `files` is null or a valid C string.
@@ -441,6 +444,14 @@ pub mod drops {
             2 if !files.is_null() => {
                 let text = unsafe { CStr::from_ptr(files) }.to_string_lossy();
                 Some(DropReport::Files(node, parse(&text)))
+            }
+            3 if !files.is_null() => {
+                let text = unsafe { CStr::from_ptr(files) }.to_string_lossy();
+                let (failed, dropped) = text.split_once('\t')?;
+                Some(DropReport::Failed(
+                    node,
+                    prism_core::DropError::unread(failed.parse().ok()?, dropped.parse().ok()?),
+                ))
             }
             _ => None,
         }

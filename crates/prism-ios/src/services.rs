@@ -277,6 +277,15 @@ pub extern "C" fn prism_drop_event(node: u64, kind: i32, files: *const c_char) {
     match unsafe { prism_native::apple::drops::report(node, kind, files) } {
         Some(DropReport::Files(id, files)) => dispatch2::DispatchQueue::main()
             .exec_async(move || crate::imp::dispatch(prism_core::UiEvent::DropFiles(id, files))),
+        Some(DropReport::Failed(id, reason)) => {
+            dispatch2::DispatchQueue::main().exec_async(move || {
+                crate::imp::dispatch(prism_core::UiEvent::DropFailed(
+                    id,
+                    prism_core::DropError::Failed,
+                    reason,
+                ))
+            })
+        }
         Some(DropReport::Hover(id, on)) => {
             crate::imp::set_interaction(id, prism_core::Interaction::DropHover, on)
         }

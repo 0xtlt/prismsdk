@@ -443,16 +443,36 @@ final class PrismInput {
         }
         new Thread(() -> {
             JSONArray files = new JSONArray();
+            int unread = 0, refused = 0;
             for (android.net.Uri u : uris) {
                 JSONObject f = PrismDevice.copy(u, true);
-                if (f != null && accepts(types, f.optString("name"), f.optString("mime"))) files.put(f);
+                if (f == null) unread++;
+                else if (accepts(types, f.optString("name"), f.optString("mime"))) files.put(f);
+                else refused++;
             }
             if (grant != null) grant.release();
-            if (files.length() == 0) return;
+            // What did not reach the app, and why (#290).
+            String error = null, reason = null;
+            if (unread > 0) {
+                error = "failed";
+                reason = unread + " of " + uris.size() + " dropped files could not be read";
+            } else if (files.length() == 0 && refused > 0) {
+                error = "not_accepted";
+                reason = "no dropped file is of a type the target takes";
+            }
+            final String err = error, why = reason;
+            if (files.length() == 0 && err == null) return;
             PrismHost.main.post(() -> {
-                JSONObject ev = PrismHost.event("drop", n.id);
-                try { ev.put("files", files); } catch (JSONException ignored) {}
-                PrismHost.send(ev);
+                if (files.length() > 0) {
+                    JSONObject ev = PrismHost.event("drop", n.id);
+                    try { ev.put("files", files); } catch (JSONException ignored) {}
+                    PrismHost.send(ev);
+                }
+                if (err != null) {
+                    JSONObject ev = PrismHost.event("drop_error", n.id);
+                    try { ev.put("error", err); ev.put("reason", why); } catch (JSONException ignored) {}
+                    PrismHost.send(ev);
+                }
             });
         }, "prism-drop").start();
     }

@@ -589,7 +589,7 @@ impl Live {
                     let key = crate::uploads::Key::Call(id);
                     let result = match self.services.uploads.finish(&self.app, key, failed) {
                         Some(Ok(files)) => Ok(prism_core::DeviceValue::Files(files)),
-                        Some(Err(e)) => Err(prism_core::DeviceError::Failed(e)),
+                        Some(Err(e)) => Err(prism_core::DeviceError::Failed(e.why)),
                         None => device_result(&v),
                     };
                     rt.device_reply(id, result)
@@ -694,23 +694,53 @@ impl Live {
                 ) else {
                     return Vec::new();
                 };
-                let accepted = self.encoder.drop_targets.get(&node).is_some_and(|accept| {
-                    files.iter().all(|f| {
-                        let s = |k: &str| f.get(k).and_then(Value::as_str).unwrap_or("");
-                        accept.accepts(s("name"), s("mime"))
-                    })
+                // Not a drop target of the page: nothing to tell.
+                let Some(accept) = self.encoder.drop_targets.get(&node) else {
+                    return Vec::new();
+                };
+                let accepted = files.iter().all(|f| {
+                    let s = |k: &str| f.get(k).and_then(Value::as_str).unwrap_or("");
+                    accept.accepts(s("name"), s("mime"))
                 });
+                use prism_core::DropError;
                 let uploads = &mut self.services.uploads;
-                if accepted && !files.is_empty() && uploads.expect_drop(drop) {
+                let refused = if files.is_empty() || !accepted {
+                    crate::uploads::Refusal {
+                        kind: DropError::NotAccepted,
+                        why: "a dropped file is of a type the target does not take".into(),
+                    }
+                } else if !uploads.expect_drop(drop) {
+                    crate::uploads::Refusal {
+                        kind: DropError::Limits,
+                        why: format!(
+                            "too many drops uploading at once (at most {})",
+                            crate::uploads::MAX_DROPS
+                        ),
+                    }
+                } else {
                     let key = crate::uploads::Key::Drop(drop);
                     if let Some((sent, total)) = uploads.start(&self.app, &self.sid, key, files) {
                         self.drops.insert(drop, node);
                         // Its first progress, as the upload starts (#199).
                         return rt.dispatch(prism_core::UiEvent::DropProgress(node, sent, total));
                     }
-                    uploads.finish(&self.app, key, true);
-                }
-                Vec::new()
+                    match uploads.finish(&self.app, key, true) {
+                        Some(Err(r)) => r,
+                        _ => crate::uploads::Refusal {
+                            kind: DropError::Failed,
+                            why: "the drop could not start".into(),
+                        },
+                    }
+                };
+                // Refused (#290): the page stops sending, the app hears why.
+                self.services
+                    .outbox
+                    .push(json!({ "t": "drop_stop", "drop": drop }));
+                rt.dispatch(prism_core::UiEvent::DropFailed(
+                    node,
+                    refused.kind,
+                    refused.why,
+                ))
             }
             Some("drop_end") => {
                 let Some(drop) = v.get("drop").and_then(Value::as_u64) else {
@@ -719,11 +749,26 @@ impl Live {
                 let Some(node) = self.drops.remove(&drop) else {
                     return Vec::new();
                 };
-                let failed = v.get("err").is_some();
+                let err = v.get("err").map(|e| e.as_str().unwrap_or("").to_string());
                 let key = crate::uploads::Key::Drop(drop);
-                match self.services.uploads.finish(&self.app, key, failed) {
+                let failed = |why: String| {
+                    prism_core::UiEvent::DropFailed(node, prism_core::DropError::Failed, why)
+                };
+                match self.services.uploads.finish(&self.app, key, err.is_some()) {
                     Some(Ok(files)) if !files.is_empty() => {
                         rt.dispatch(prism_core::UiEvent::DropFiles(node, files))
+                    }
+                    // The browser could not read the files (#290).
+                    None if err.is_some() => {
+                        let why = err.filter(|e| !e.is_empty());
+                        let why = why.map_or_else(
+                            || "the browser could not send the files".to_string(),
+                            |e| format!("the browser could not send the files: {e}"),
+                        );
+                        rt.dispatch(failed(why))
+                    }
+                    Some(Err(r)) => {
+                        rt.dispatch(prism_core::UiEvent::DropFailed(node, r.kind, r.why))
                     }
                     _ => Vec::new(),
                 }

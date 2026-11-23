@@ -1488,9 +1488,10 @@ impl<W: Widgets> NativeRenderer<W> {
         e.states.declared = style.clone();
         let mut used = style.states.used();
         if style.is_group() {
-            // A group reports its states for its descendants' refinements.
+            // A group reports its states for its descendants' refinements
+            // (a drop target its drop hover, #290).
             use prism_core::Interaction as I;
-            for i in [I::Hover, I::Active, I::FocusWithin] {
+            for i in [I::Hover, I::Active, I::FocusWithin, I::DropHover] {
                 used = used.with(i, true);
             }
         }

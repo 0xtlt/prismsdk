@@ -213,6 +213,7 @@ pub(crate) fn state_rules(
                 Interaction::GroupHover => format!("{group}:hover {node}"),
                 Interaction::GroupFocusWithin => format!("{group}:focus-within {node}"),
                 Interaction::GroupActive => format!("{group}:active {node}"),
+                Interaction::GroupDropHover => format!("{group}:drop(active) {node}"),
                 _ => return None,
             },
             st,
@@ -227,7 +228,10 @@ pub(crate) fn state_rules(
             Interaction::FocusWithin => format!("{node}:focus-within"),
             // Anonymous group states follow the nearest group only (#273),
             // which GTK CSS cannot select: prism-native resolves them.
-            Interaction::GroupHover | Interaction::GroupFocusWithin | Interaction::GroupActive => {
+            Interaction::GroupHover
+            | Interaction::GroupFocusWithin
+            | Interaction::GroupActive
+            | Interaction::GroupDropHover => {
                 return None;
             }
             // Set by GtkDropTarget while accepted files are over it (#111).

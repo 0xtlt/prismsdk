@@ -1636,7 +1636,7 @@ fn s16_uploads_past_the_limits_are_refused_before_anything_is_stored() {
         up.expect(id, max);
         assert_eq!(up.start(&app, sid, Key::Call(id), files), None, "{files:?}");
         match up.finish(&app, Key::Call(id), true) {
-            Some(Err(why)) => why,
+            Some(Err(why)) => why.why,
             other => panic!("{other:?}"),
         }
     };
@@ -1664,7 +1664,7 @@ fn s16_uploads_past_the_limits_are_refused_before_anything_is_stored() {
     up2.expect(1, None);
     assert_eq!(up2.start(&app, other, Key::Call(1), &[f("b.txt", 6)]), None);
     assert!(
-        matches!(up2.finish(&app, Key::Call(1), false), Some(Err(why)) if why.contains("try again later"))
+        matches!(up2.finish(&app, Key::Call(1), false), Some(Err(why)) if why.kind == prism_core::DropError::Busy && why.why.contains("try again later"))
     );
     // Cancelled: what arrived is deleted, its bytes given back.
     assert_eq!(up.chunk(Key::Call(6), 0, "aGVs"), Some((3, 6)));

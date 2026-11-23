@@ -265,9 +265,19 @@ fn remote_ops_and_input_events() {
             }]
         )
     );
+    // What did not reach the app (#290).
+    assert_eq!(
+        ev(json!({"t": "drop_error", "id": 3, "error": "failed", "reason": "1 of 2"})),
+        UiEvent::DropFailed(3, prism_core::DropError::Failed, "1 of 2".into())
+    );
+    assert!(parse_input_event(&json!({"t": "drop_error", "id": 3, "error": "odd"})).is_none());
     assert_eq!(
         prism_core::Interaction::from_name("drop_hover"),
         Some(prism_core::Interaction::DropHover)
+    );
+    assert_eq!(
+        prism_core::Interaction::from_name("group_drop_hover"),
+        Some(prism_core::Interaction::GroupDropHover)
     );
     assert_eq!(
         ev(json!({"t": "click", "id": 4, "x": 1.5, "y": 2})),

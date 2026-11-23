@@ -298,27 +298,64 @@ fn dropped(id: NodeId, a: &DragEventArgs, accept: PickFiles) -> Result<()> {
     let queue = DispatcherQueue::GetForCurrentThread()?;
     op.SetCompleted(&AsyncOperationCompletedHandler::new(move |op, _| {
         let Some(op) = op.as_ref() else { return Ok(()) };
-        let paths: Vec<String> = items_of(op)?
+        let files: Vec<_> = items_of(op)?
             .into_iter()
-            .filter(|(name, _, file)| *file && accept.accepts(name, &mime_of(name)))
+            .filter(|(_, _, file)| *file)
+            .collect();
+        let any = !files.is_empty();
+        let paths: Vec<String> = files
+            .into_iter()
+            .filter(|(name, _, _)| accept.accepts(name, &mime_of(name)))
             .map(|(_, path, _)| path)
             .collect();
-        let queue = queue.clone();
+        let to_ui = queue.clone();
+        let refuse = move |error: prism_core::DropError, reason: String| {
+            let _ = to_ui.TryEnqueue(&DispatcherQueueHandler::new(move || {
+                dispatch(UiEvent::DropFailed(id, error, reason.clone()));
+                Ok(())
+            }));
+        };
         let Some(dir) = FOLDER.get() else {
+            refuse(
+                prism_core::DropError::Failed,
+                "no folder to copy the dropped files to".into(),
+            );
             return Ok(());
         };
+        // None of a type the target takes (#290).
+        if any && paths.is_empty() {
+            refuse(
+                prism_core::DropError::NotAccepted,
+                "no dropped file is of a type the target takes".into(),
+            );
+            return Ok(());
+        }
+        let queue = queue.clone();
         std::thread::spawn(move || {
+            let dropped = paths.len();
             let files: Vec<PickedFile> = paths
                 .into_iter()
                 .filter_map(|p| copy_dropped(Path::new(&p), dir))
                 .collect();
-            if files.is_empty() {
+            // Some could not be copied (#290).
+            let unread = dropped - files.len();
+            if dropped == 0 {
                 return;
             }
             let _ = queue.TryEnqueue(&DispatcherQueueHandler::new(move || {
-                let e = UiEvent::DropFiles(id, files.clone());
-                trace(|| format!("{e:?}"));
-                dispatch(e);
+                if !files.is_empty() {
+                    let e = UiEvent::DropFiles(id, files.clone());
+                    trace(|| format!("{e:?}"));
+                    dispatch(e);
+                }
+                if unread > 0 {
+                    let reason = prism_core::DropError::unread(unread, dropped);
+                    dispatch(UiEvent::DropFailed(
+                        id,
+                        prism_core::DropError::Failed,
+                        reason,
+                    ));
+                }
                 Ok(())
             }));
         });

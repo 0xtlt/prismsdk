@@ -382,6 +382,16 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
             id?,
             picked_files(v.get("files")?.as_array()?),
         )),
+        // Dropped files that did not reach the app (#290):
+        // `{"t":"drop_error","id","error":"failed","reason"}`.
+        "drop_error" => Some(prism_core::UiEvent::DropFailed(
+            id?,
+            prism_core::DropError::from_name(v.get("error")?.as_str()?)?,
+            v.get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        )),
         _ => None,
     }
 }
