@@ -7,6 +7,12 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.1.3 (2026-11-23)
+
+A rich text editor, keyboard chords an element can keep from its fields,
+and two web fixes: the wheel over a horizontal scroll view, and the
+typography of islands' hosts.
+
 ### Added
 
 - UI: `ui::rich_text_input(doc)`, a rich text editor (#294): paragraphs,
