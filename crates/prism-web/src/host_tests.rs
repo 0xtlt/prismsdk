@@ -468,6 +468,34 @@ fn foreign_origins_are_refused_unless_allowed() {
         HeaderValue::from_static("app.example.com"),
     );
     assert_eq!(app.accept_socket(&proxied), Ok(()));
+    // Traefik forwards a WebSocket's own scheme (#286): `wss` is the page's
+    // `https`, `ws` its `http`, never the other one.
+    for (proto, origin, ok) in [
+        ("wss", "https://app.example.com", true),
+        ("WSS", "https://app.example.com", true),
+        ("ws", "http://app.example.com", true),
+        ("ws", "https://app.example.com", false),
+        ("wss", "http://app.example.com", false),
+    ] {
+        let mut h = headers(origin, "127.0.0.1:3000");
+        h.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("app.example.com"),
+        );
+        h.insert("x-forwarded-proto", HeaderValue::from_str(proto).unwrap());
+        let want = if ok {
+            Ok(())
+        } else {
+            Err(StatusCode::FORBIDDEN)
+        };
+        assert_eq!(app.accept_socket(&h), want, "{proto} {origin}");
+        h.remove("x-forwarded-proto");
+        h.insert(
+            "forwarded",
+            HeaderValue::from_str(&format!("proto={proto};host=app.example.com")).unwrap(),
+        );
+        assert_eq!(app.accept_socket(&h), want, "Forwarded {proto} {origin}");
+    }
     // Not a browser: no Origin.
     assert_eq!(app.accept_socket(&HeaderMap::new()), Ok(()));
     // A refused session ends at once and says why.
