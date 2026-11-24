@@ -1238,3 +1238,65 @@ fn z_index_leaves_tabs_in_their_order() {
     let tabs = h.w().of_kind(NodeKind::Tab);
     assert_eq!(h.w().children[&bar], tabs);
 }
+
+/// 50 rows of 20.
+fn rows() -> impl Iterator<Item = prism_core::Text> {
+    (0..50).map(|i| text(format!("row {i}")))
+}
+
+#[test]
+fn a_flex_1_list_in_a_column_sized_by_its_content_takes_its_rows_height() {
+    // As in browsers (#298): the plain column takes its content's height,
+    // the list included; it used to get none natively.
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .child(text("search"))
+                .child(scroll().flex_1().children(rows())),
+        )
+    });
+    let f = h.layout(400., 300.);
+    let list = f.of_kind(NodeKind::Scroll)[0];
+    assert_eq!(f.frame(list), (0., 20., 400., 1000.));
+}
+
+#[test]
+fn a_flex_1_list_still_fills_a_growing_or_sized_column() {
+    // A column that grows into the window, or has a height: the list
+    // takes what is left and scrolls.
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .flex_1()
+                .child(text("search"))
+                .child(scroll().flex_1().children(rows())),
+        )
+    });
+    let f = h.layout(400., 300.);
+    let list = f.of_kind(NodeKind::Scroll)[0];
+    assert_eq!(f.frame(list), (0., 20., 400., 280.));
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .h(200.)
+                .child(text("search"))
+                .child(scroll().flex_1().children(rows())),
+        )
+    });
+    let f = h.layout(400., 300.);
+    let list = f.of_kind(NodeKind::Scroll)[0];
+    assert_eq!(f.frame(list), (0., 20., 400., 180.));
+    // A row's columns stretch to the row's height (a split view).
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .flex_row()
+                .flex_1()
+                .child(div().child(scroll().flex_1().children(rows())))
+                .child(text("detail")),
+        )
+    });
+    let f = h.layout(400., 300.);
+    let list = f.of_kind(NodeKind::Scroll)[0];
+    assert_eq!(f.frame(list).3, 300.);
+}

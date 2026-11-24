@@ -5,7 +5,7 @@ use std::rc::Rc;
 use prism_core::{
     App, Backend, ClickEvent, Context, DeviceCall, DragPhase, FluentBuilder, IntoElement, KeyEvent,
     NodeKind, ParentElement, PickFiles, Point, PointerPhase, Render, Styled, UiEvent, dialog, div,
-    popover, sheet, text,
+    popover, screen, scroll, sheet, stack, text,
 };
 use prism_native::Widgets;
 use prism_native::remote::{RemoteWidgets, device, parse_input_event};
@@ -31,6 +31,19 @@ impl Render for Screen {
             // content, its width kept inside a 400 wide window.
             2 => dialog(content).size(520., 200.),
             3 => sheet(content).size(120., 100.),
+            // A screen whose list is `scroll().flex_1()` in a column sized
+            // by its content (#298).
+            4 => sheet(
+                screen("Pick").child(
+                    div()
+                        .child(text("Search"))
+                        .child(scroll().flex_1().child(text("Row 1")).child(text("Row 2"))),
+                ),
+            ),
+            // A navigation stack as the content (#298).
+            5 => sheet(stack().child(screen("Pick").child(text("Inside")))),
+            // A scroll view as the content.
+            6 => sheet(scroll().child(text("Row 1")).child(text("Row 2"))),
             _ => sheet(content),
         };
         div()
@@ -90,6 +103,47 @@ fn an_overlay_takes_the_size_the_app_asks_for() {
     let f = h.layout(400., 600.);
     let ov = f.of_kind(NodeKind::Overlay)[0];
     assert_eq!(f.content[&ov], (300., 400.));
+}
+
+#[test]
+fn a_flex_1_list_in_a_sheet_shows_its_rows() {
+    let mut h = Harness::root(|| Screen {
+        kind: 4,
+        open: true,
+    });
+    let f = h.layout(400., 600.);
+    let list = f.of_kind(NodeKind::Scroll)[0];
+    assert_eq!(f.frame(list).3, 40.);
+    assert_eq!(f.frame(f.by_text("Row 2")).3, 20.);
+}
+
+#[test]
+fn a_stack_as_an_overlay_content_lays_its_screens_out() {
+    let mut h = Harness::root(|| Screen {
+        kind: 5,
+        open: true,
+    });
+    let f = h.layout(400., 600.);
+    let inside = f.by_text("Inside");
+    assert!(
+        f.frames.contains_key(&inside),
+        "the screen's content was never laid out"
+    );
+    assert!(f.frame(inside).2 > 0.);
+}
+
+#[test]
+fn a_scroll_view_as_an_overlay_content_gets_its_content_size() {
+    let mut h = Harness::root(|| Screen {
+        kind: 6,
+        open: true,
+    });
+    let f = h.layout(400., 600.);
+    let list = f.of_kind(NodeKind::Scroll)[0];
+    assert!(
+        f.content.contains_key(&list),
+        "the scroll view never got its content size"
+    );
 }
 
 struct Bar;

@@ -3520,6 +3520,18 @@ fn font(style: &Style) -> Retained<NSFont> {
     })
 }
 
+/// The font of a timer: the style's font, always with tabular digits so the
+/// countdown doesn't jitter as it ticks.
+fn timer_font(style: &Style) -> Retained<NSFont> {
+    crate::label::ns_font(&prism_native::text::FontSpec {
+        family: style.font_family.clone(),
+        size: style.font_size,
+        weight: style.font_weight,
+        italic: style.italic,
+        tabular: true,
+    })
+}
+
 fn alignment(a: TextAlign) -> NSTextAlignment {
     match a {
         TextAlign::Left => NSTextAlignment::Left,
@@ -4018,10 +4030,9 @@ impl Widgets for AppKit {
                 ));
             }
             View::Timer(l) => {
-                l.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-                    style.font_size as f64,
-                    font_weight(style),
-                )));
+                // The style's font (family, weight, italic), its digits a
+                // fixed width while the countdown ticks.
+                l.setFont(Some(&timer_font(style)));
                 l.setTextColor(Some(
                     &style.text_color.map_or_else(NSColor::labelColor, ns_color),
                 ));

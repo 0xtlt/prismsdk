@@ -466,6 +466,31 @@ define_class!(
     }
 );
 
+define_class!(
+    /// A `scroll()`: passes touches to its content at once, so a quick tap
+    /// shows a `.active(|s| …)` press (#302), and still scrolls when a touch
+    /// that began on a control (a button, a field) turns into a drag.
+    #[unsafe(super(UIScrollView, UIView, UIResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismScrollView"]
+    pub struct ScrollView;
+
+    impl ScrollView {
+        #[unsafe(method(touchesShouldCancelInContentView:))]
+        fn touches_should_cancel(&self, _view: &UIView) -> bool {
+            true
+        }
+    }
+);
+
+/// A new `scroll()` view (see [`ScrollView`]).
+fn new_scroll(mtm: MainThreadMarker) -> Retained<UIScrollView> {
+    let s: Retained<ScrollView> = unsafe { msg_send![ScrollView::alloc(mtm), init] };
+    let s = s.into_super();
+    s.setDelaysContentTouches(false);
+    s
+}
+
 /// Fills, then strokes, each path with UIKit Bézier paths.
 fn draw_paths(paths: &[prism_core::Path]) {
     use objc2_ui_kit::UIBezierPath;
@@ -1954,10 +1979,6 @@ pub(crate) fn ui_color(c: Color) -> Retained<UIColor> {
     unsafe { UIColor::colorWithDynamicProvider(&provider) }
 }
 
-fn font_weight(style: &Style) -> objc2_ui_kit::UIFontWeight {
-    crate::label::ui_weight(style.font_weight)
-}
-
 fn symbol_weight(style: &Style) -> objc2_ui_kit::UIImageSymbolWeight {
     symbol_weight_for(style.font_weight)
 }
@@ -1987,6 +2008,18 @@ fn font(style: &Style) -> Retained<UIFont> {
         weight: style.font_weight,
         italic: style.italic,
         tabular: style.tabular_numbers,
+    })
+}
+
+/// The font of a timer: the style's font, always with tabular digits so the
+/// countdown doesn't jitter as it ticks.
+fn timer_font(style: &Style) -> Retained<UIFont> {
+    crate::label::ui_font(&prism_native::text::FontSpec {
+        family: style.font_family.clone(),
+        size: style.font_size,
+        weight: style.font_weight,
+        italic: style.italic,
+        tabular: true,
     })
 }
 
@@ -2042,7 +2075,7 @@ impl Widgets for UiKit {
             }
             NodeKind::Tab => View::Tab(UIView::new(mtm)),
             NodeKind::Scroll => {
-                let s = UIScrollView::new(mtm);
+                let s = new_scroll(mtm);
                 s.setAlwaysBounceVertical(true);
                 s.setKeyboardDismissMode(UIScrollViewKeyboardDismissMode::OnDrag);
                 // UIKit insets content under bars (screens let a leading scroll
@@ -2364,12 +2397,9 @@ impl Widgets for UiKit {
             View::Progress(p) => p.setProgressTintColor(text_color.as_deref()),
             View::Label(l) => crate::label::set_style(l, style),
             View::Timer(l) => {
-                // Digits keep a fixed width while the countdown ticks.
-                let f = UIFont::monospacedDigitSystemFontOfSize_weight(
-                    style.font_size as f64,
-                    font_weight(style),
-                );
-                unsafe { l.setFont(Some(&f)) };
+                // The style's font (family, weight, italic), its digits a
+                // fixed width while the countdown ticks.
+                unsafe { l.setFont(Some(&timer_font(style))) };
                 unsafe { l.setTextColor(Some(&text_color.unwrap_or_else(UIColor::labelColor))) };
                 l.setTextAlignment(alignment(style.text_align));
                 crate::label::set_insets(l, style.padding);

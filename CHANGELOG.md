@@ -7,6 +7,26 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Fixed
+
+- Native layout: a `scroll().flex_1()` (or any `flex_1` element) in a
+  column sized by its content takes its content's height, as in browsers
+  (#298). A sheet whose list sat under a search field in a plain column
+  showed no rows on iOS (and every native backend) while the web showed
+  them. A column that grows (`flex_1`) or has a height still gives the
+  list what is left, and the list scrolls.
+- Native backends: a sheet, popover or dialog whose content is a
+  `stack()` (or tabs) lays its screens out (#298). The sheet showed only
+  the stack's title. One whose content is a `scroll()` now gets its
+  scroll extent.
+- iOS, macOS: `timer()` uses the style's font: `font_family`,
+  `font_mono()`, italic and weight (#301). It always showed the system
+  font. Its digits keep a fixed width.
+- iOS: a quick tap shows the `.active(|s| …)` press of an element inside
+  a `scroll()` (#302). Scroll views pass touches to their content at once
+  and still scroll when a touch that began on a button or field turns
+  into a drag. A press shows for at least 100 ms.
+
 ## 0.1.4 (2026-11-24)
 
 Fixes to the rich text editor: blocks grow with their text, and links

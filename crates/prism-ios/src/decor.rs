@@ -70,6 +70,10 @@ thread_local! {
     /// Pointer shapes, and clickable nodes (pointer hover effect).
     static CURSORS: RefCell<HashMap<NodeId, Cursor>> = RefCell::new(HashMap::new());
     static CLICKABLE: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
+    /// When each pressed node's press began, and the press's number (see
+    /// `press`).
+    static PRESSES: RefCell<HashMap<NodeId, (std::time::Instant, u64)>> =
+        RefCell::new(HashMap::new());
     static TARGET: RefCell<Option<Retained<InteractionTarget>>> = const { RefCell::new(None) };
     /// iPad pointer interactions by node.
     #[cfg(target_os = "ios")]
@@ -597,6 +601,7 @@ pub fn destroy(id: NodeId) {
     }
     BORDERS.with(|b| b.borrow_mut().retain(|_, (v, _)| v.tag() as NodeId != id));
     STATES.with(|s| s.borrow_mut().remove(&id));
+    PRESSES.with(|s| s.borrow_mut().remove(&id));
     CURSORS.with(|s| s.borrow_mut().remove(&id));
     CLICKABLE.with(|s| s.borrow_mut().remove(&id));
     #[cfg(target_os = "ios")]
@@ -650,14 +655,55 @@ pub fn tv_focus(id: NodeId, on: bool) {
 }
 
 /// A container was touched (`true`) or the touch ended or was cancelled:
-/// reports presses like `UIControl` highlighting (delayed in scroll views,
-/// cancelled when they scroll). Called by `interaction::ContainerView`.
+/// reports presses like `UIControl` highlighting (cancelled when a scroll
+/// view starts scrolling). A press shows for at least [`MIN_PRESS`], so a
+/// quick tap is seen (#302). Called by `interaction::ContainerView`.
 #[cfg_attr(target_os = "tvos", allow(dead_code))]
 pub fn press(id: NodeId, on: bool) {
-    if wants(id, Interaction::Active) {
-        report(id, Interaction::Active, on);
+    if !wants(id, Interaction::Active) {
+        return;
     }
+    let now = std::time::Instant::now();
+    if on {
+        PRESSES.with(|p| {
+            let mut p = p.borrow_mut();
+            let n = p.get(&id).map_or(0, |&(_, n)| n + 1);
+            p.insert(id, (now, n));
+        });
+        report(id, Interaction::Active, true);
+        return;
+    }
+    let Some((since, n)) = PRESSES.with(|p| p.borrow().get(&id).copied()) else {
+        report(id, Interaction::Active, false);
+        return;
+    };
+    let shown = now.duration_since(since);
+    if shown >= MIN_PRESS {
+        PRESSES.with(|p| p.borrow_mut().remove(&id));
+        report(id, Interaction::Active, false);
+        return;
+    }
+    let when = dispatch2::DispatchTime::try_from(MIN_PRESS - shown)
+        .unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ = dispatch2::DispatchQueue::main().after(when, move || {
+        // A new press since keeps the state on.
+        let current = PRESSES.with(|p| {
+            let mut p = p.borrow_mut();
+            let current = p.get(&id).is_some_and(|&(_, m)| m == n);
+            if current {
+                p.remove(&id);
+            }
+            current
+        });
+        if current && wants(id, Interaction::Active) {
+            report(id, Interaction::Active, false);
+        }
+    });
 }
+
+/// How long a press shows at least: a tap's touches can begin and end in
+/// the same frame.
+const MIN_PRESS: std::time::Duration = std::time::Duration::from_millis(100);
 
 define_class!(
     /// Hover recognizers, button presses and the iPad pointer's styles.
