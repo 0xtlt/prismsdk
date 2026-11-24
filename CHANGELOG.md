@@ -7,6 +7,12 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.1.4 (2026-11-24)
+
+Fixes to the rich text editor: blocks grow with their text, and links
+get a color of their own (the theme's accent, or `link_color`). Also fixes
+an abort in iOS debug builds on text fields with `autocomplete`.
+
 ### Added
 
 - UI: `RichTextInput::link_color(color)` (#299). The editor's links are
