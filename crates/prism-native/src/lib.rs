@@ -592,6 +592,9 @@ pub struct NativeRenderer<W: Widgets> {
     /// Screens of each stack. Screens are separate layout roots: their size
     /// comes from the platform's navigation container, not from flexbox.
     stack_screens: IdMap<NodeId, Vec<NodeId>>,
+    /// Nodes with a zero flex basis: `0%` or `0px` depending on their
+    /// parent, settled before each layout (`sync_zero_basis`, #298).
+    zero_basis: IdSet<NodeId>,
     env: RenderEnvironment,
     /// Every length is multiplied by this (TVs: bigger than phone sizes).
     zoom: f32,
@@ -655,6 +658,7 @@ impl<W: Widgets> NativeRenderer<W> {
             root: None,
             insets: Insets::default(),
             stack_screens: IdMap::default(),
+            zero_basis: IdSet::default(),
             env: RenderEnvironment {
                 text_scale: 1.,
                 ..Default::default()
@@ -911,6 +915,7 @@ impl<W: Widgets> NativeRenderer<W> {
             ..Default::default()
         };
         let _ = self.taffy.set_style(self.viewport, viewport_style);
+        self.sync_zero_bases();
         // Tables size their columns from their cells first (#284).
         self.measure_tables();
         self.shift_root_fixed();
@@ -1004,9 +1009,10 @@ impl<W: Widgets> NativeRenderer<W> {
                 .taffy
                 .layout(layout)
                 .map_or((0., 0.), |l| (l.size.width, l.size.height));
+            // A stack or tab bar as the content lays its screens out (#298).
             self.in_area(content, vp, |r| {
                 r.set_frame(content, vp.x, vp.y, size.0, size.1);
-                r.place_children(content);
+                r.place_inside(content);
             });
             self.widgets.set_content_size(&view, size.0, size.1);
         }
@@ -1367,7 +1373,79 @@ impl<W: Widgets> NativeRenderer<W> {
                 left: LengthPercentage::length(p.left + i.left),
             };
         }
+        let zero = e.style.flex_basis == Length::Px(0.);
         let _ = self.taffy.set_style(e.layout, style);
+        // Its parent decides what a zero flex basis is (#298).
+        if zero {
+            self.zero_basis.insert(id);
+        } else {
+            self.zero_basis.remove(&id);
+        }
+    }
+
+    /// Settles every zero flex basis against the tree as it is now.
+    fn sync_zero_bases(&mut self) {
+        let ids: Vec<NodeId> = self.zero_basis.iter().copied().collect();
+        for id in ids {
+            self.sync_zero_basis(id);
+        }
+    }
+
+    /// A zero flex basis (`flex_1`, `scroll()`) in a column sized by its
+    /// content (no height, no growth, in a column) is `0%`, which taffy
+    /// treats as the item's content size there, as browsers size such a
+    /// column (#298): a `scroll().flex_1()` under a search field in a plain
+    /// column shows its rows instead of getting no height. In a container
+    /// of known size, `0%` is zero, as before.
+    fn sync_zero_basis(&mut self, id: NodeId) {
+        let Some(e) = self.nodes.get(&id) else {
+            self.zero_basis.remove(&id);
+            return;
+        };
+        let layout = e.layout;
+        let by_content = self
+            .taffy
+            .parent(layout)
+            .is_some_and(|p| self.sized_by_content(p));
+        let basis = if by_content {
+            Dimension::percent(0.)
+        } else {
+            Dimension::length(0.)
+        };
+        if let Ok(mut style) = self.taffy.style(layout).cloned()
+            && style.flex_basis != basis
+        {
+            style.flex_basis = basis;
+            let _ = self.taffy.set_style(layout, style);
+        }
+    }
+
+    /// Whether the flex container `node` takes its height from its content:
+    /// a column without a height or growth, itself in a column (in a row,
+    /// stretching gives it the row's height).
+    fn sized_by_content(&self, node: taffy::NodeId) -> bool {
+        let column = |n: taffy::NodeId| {
+            self.taffy.style(n).is_ok_and(|s| {
+                s.display == taffy::Display::Flex
+                    && matches!(
+                        s.flex_direction,
+                        taffy::FlexDirection::Column | taffy::FlexDirection::ColumnReverse
+                    )
+            })
+        };
+        let scroll = self
+            .by_layout
+            .get(&node)
+            .and_then(|id| self.nodes.get(id))
+            .is_some_and(|e| e.kind == NodeKind::Scroll);
+        !scroll
+            && column(node)
+            && self.taffy.parent(node).is_some_and(column)
+            && self.taffy.style(node).is_ok_and(|s| {
+                s.size.height == Dimension::auto()
+                    && s.flex_grow == 0.
+                    && s.position == taffy::Position::Relative
+            })
     }
 
     /// Places `id` inside a parent `parent_width` wide (mirrored in RTL),
@@ -1404,6 +1482,12 @@ impl<W: Widgets> NativeRenderer<W> {
             y += h * ty / 100.;
         }
         self.set_frame(id, x, y, w, h);
+        self.place_inside(id);
+    }
+
+    /// Lays out what `id` holds once its frame is set: an overlay's content,
+    /// a stack's or tab bar's screens, or its flexbox children.
+    fn place_inside(&mut self, id: NodeId) {
         match self.stack_screens.get(&id).cloned() {
             Some(contents)
                 if self
@@ -2109,6 +2193,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.widgets.destroy(&e.view);
                         self.by_layout.remove(&e.layout);
                         self.stack_screens.remove(id);
+                        self.zero_basis.remove(id);
                         self.overlays.remove(id);
                         self.areas.remove(id);
                         self.under_bars.remove(id);
