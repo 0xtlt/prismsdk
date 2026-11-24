@@ -7,6 +7,24 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- UI: `RichTextInput::link_color(color)` (#299). The editor's links are
+  drawn in the theme's accent by default, not only underlined. The
+  document keeps no color for them.
+- Spans: `text_color_value()` and `no_text_color()`.
+
+### Fixed
+
+- UI: each block of a `rich_text_input` takes its text's height (#296).
+  The editor grows with its content, or scrolls when the app caps its
+  height. Before, the blocks shared the editor's minimum height, so a
+  long text showed as an empty-looking box.
+- iOS: a text field with `autocomplete` no longer aborts debug builds
+  (`-[PrismField setTextContentType:]: method not found`, #297). The
+  content type is sent unchecked, like the field's other text input
+  traits.
+
 ## 0.1.3 (2026-11-23)
 
 A rich text editor, keyboard chords an element can keep from its fields,

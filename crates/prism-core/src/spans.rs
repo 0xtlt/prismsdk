@@ -217,6 +217,11 @@ impl Span {
         self.run.is_object()
     }
 
+    /// Its text color, if it sets one.
+    pub fn text_color_value(&self) -> Option<Color> {
+        self.run.color
+    }
+
     /// Its underline's color, if it sets one (#221).
     pub fn underline_color_value(&self) -> Option<Color> {
         self.run.underline_color
@@ -386,6 +391,11 @@ impl Span {
     /// Text color (adaptive colors follow dark mode).
     pub fn text_color(mut self, c: Color) -> Self {
         self.run.color = Some(c);
+        self
+    }
+    /// The paragraph's text color again (#299).
+    pub fn no_text_color(mut self) -> Self {
+        self.run.color = None;
         self
     }
     /// Background behind the run (highlights, inline code).
