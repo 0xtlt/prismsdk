@@ -15,7 +15,7 @@ WebAssembly, runs wasm-bindgen and serves it as `<prism-island-NAME>`.
 
 ```toml
 [dependencies]
-prism-island = { package = "prismsdk-island", version = "0.1" }
+prism-island = { package = "prismsdk-island", version = "0.2" }
 ```
 
 Part of [Prism](https://prismsdk.dev). Guide: [https://prismsdk.dev/](https://prismsdk.dev/) · API: [docs.rs/prismsdk-island](https://docs.rs/prismsdk-island)

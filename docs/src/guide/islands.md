@@ -62,7 +62,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-prism-island = { package = "prismsdk-island", version = "0.1" }
+prism-island = { package = "prismsdk-island", version = "0.2" }
 web-sys = { version = "0.3", features = ["HtmlCanvasElement", "CanvasRenderingContext2d", "MouseEvent"] }
 ```
 

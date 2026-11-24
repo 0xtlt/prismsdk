@@ -7,6 +7,17 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.2.0 (2026-11-24)
+
+Layout fixes for native backends. A `flex_1` list in a column sized by
+its content now takes its rows' height, as in browsers: a sheet whose list
+sat under a search field opened empty on iOS. Sheets whose content is a
+navigation stack lay out their screens. A screen's leading scroll view
+runs under the side safe area. Also: `timer()` takes the style's font on
+Apple platforms, and a quick tap shows `.active()` inside an iOS scroll
+view. The minor version goes up because native layouts that relied on
+such a list getting no height now show it.
+
 ### Fixed
 
 - Native layout: a `scroll().flex_1()` (or any `flex_1` element) in a
