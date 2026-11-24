@@ -727,3 +727,24 @@ fn arrows_at_a_blocks_edges_are_the_editors() {
         RichSelection::caret(RichPosition::new(0, 3))
     );
 }
+
+#[test]
+fn links_are_drawn_in_the_accent_and_the_document_keeps_no_color() {
+    let mut h = harness("see [the docs](https://docs.example)", false);
+    let field = h.by_name("ed-1");
+    let accent = crate::Theme::default().accent;
+    let runs = prism_core::decode_runs(&h.host.get(field).runs);
+    let link = runs.iter().find(|r| r.href.is_some()).expect("a link run");
+    assert_eq!(link.color, Some(accent));
+    assert!(runs.iter().all(|r| r.href.is_some() || r.color.is_none()));
+    // The field reports the runs it shows: typing keeps the link, not its color.
+    let mut typed = runs.clone();
+    typed[0].text = "read ".into();
+    h.dispatch(UiEvent::RichInput(field, prism_core::encode_runs(&typed)));
+    assert_eq!(
+        editor(&h).value().to_markdown(),
+        "read [the docs](https://docs.example)"
+    );
+    let block = &editor(&h).value().blocks[0];
+    assert!(block.spans.iter().all(|s| s.text_color_value().is_none()));
+}

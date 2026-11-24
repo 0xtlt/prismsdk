@@ -139,6 +139,12 @@ pub struct RichTextInput {
     on_change: Option<Handler<RichTextChange>>,
     on_link_request: Option<Handler<LinkRequest>>,
     style: Option<Rc<dyn Fn(Style) -> Style>>,
+    /// The color links are drawn in ([`link_color`](Self::link_color);
+    /// `None`: the theme's accent).
+    link_color: Option<Color>,
+    /// The color the last render drew links in: the fields report it back
+    /// in their runs, and the document does not keep it.
+    shown_link_color: Option<Color>,
     reports: Vec<Report>,
     hooked: bool,
 }
@@ -168,6 +174,8 @@ pub fn rich_text_input(value: RichText) -> RichTextInput {
         on_change: None,
         on_link_request: None,
         style: None,
+        link_color: None,
+        shown_link_color: None,
         reports: Vec::new(),
         hooked: false,
     };
@@ -238,6 +246,14 @@ impl RichTextInput {
     /// for a document without a frame.
     pub fn style(mut self, f: impl Fn(Style) -> Style + 'static) -> Self {
         self.style = Some(Rc::new(f));
+        self
+    }
+
+    /// The color links are drawn in (#299), unless a link's run sets its
+    /// own: the theme's [`accent`](crate::Theme::accent) by default. The
+    /// document does not keep it (its links have no color of their own).
+    pub fn link_color(mut self, color: Color) -> Self {
+        self.link_color = Some(color);
         self
     }
 
@@ -658,7 +674,7 @@ impl RichTextInput {
         };
         let old_len = self.value.blocks[i].len();
         let old_text = self.value.blocks[i].text();
-        let mut spans = e.spans.clone();
+        let mut spans = self.without_link_color(&e.spans);
         let new_len: usize = spans.iter().map(Span::len).sum();
         // Marks chosen at the caret (⌘B with nothing selected) style what is typed there.
         if let Some(p) = self.pending.filter(|p| p.at.block == i)
@@ -991,6 +1007,35 @@ impl RichTextInput {
     }
 }
 
+impl RichTextInput {
+    /// The runs a field reported, without the color its links were drawn in.
+    fn without_link_color(&self, spans: &[Span]) -> Vec<Span> {
+        spans
+            .iter()
+            .map(|s| match self.shown_link_color {
+                Some(c) if s.href().is_some() && s.text_color_value() == Some(c) => {
+                    s.clone().no_text_color()
+                }
+                _ => s.clone(),
+            })
+            .collect()
+    }
+}
+
+/// `spans` with their links drawn in `color`, unless they set their own.
+fn with_link_color(spans: &[Span], color: Color) -> Vec<Span> {
+    spans
+        .iter()
+        .map(|s| {
+            if s.href().is_some() && s.text_color_value().is_none() {
+                s.clone().text_color(color)
+            } else {
+                s.clone()
+            }
+        })
+        .collect()
+}
+
 /// The first `c` in `spans`, in characters.
 fn spans_char(spans: &[Span], c: char) -> Option<usize> {
     let mut at = 0;
@@ -1025,6 +1070,8 @@ impl prism_core::Render for RichTextInput {
         self.hook(cx);
         self.sync_keys();
         let t = Theme::of(cx);
+        let link_color = self.link_color.unwrap_or(t.accent);
+        self.shown_link_color = Some(link_color);
         let label = if self.label.is_empty() {
             self.placeholder.clone()
         } else {
@@ -1059,14 +1106,13 @@ impl prism_core::Render for RichTextInput {
                     .replace("{n}", &number.to_string()),
                 BlockKind::Paragraph => String::new(),
             };
-            let mut field = rich_input(block.spans.clone())
+            let mut field = rich_input(with_link_color(&block.spans, link_color))
                 .id(self.field_id(key))
                 .text_size(size)
                 .text_color(t.text)
                 .p(0.)
                 .border(0.)
                 .bg(Color::TRANSPARENT)
-                .flex_1()
                 .accessibility_label(label.clone())
                 .when(!hint.is_empty(), |f| f.accessibility_hint(hint))
                 .when(empty && i == 0, |f| f.placeholder(self.placeholder.clone()))
@@ -1105,10 +1151,14 @@ impl prism_core::Render for RichTextInput {
                 BlockKind::Numbered => Some(format!("{number}.")),
                 _ => None,
             };
+            // Each block takes its text's height and never shrinks below it,
+            // so the editor grows with its text, or scrolls when the app caps
+            // its height (#296).
             let row = match marker {
                 Some(m) => div()
                     .flex_row()
                     .items_start()
+                    .flex_shrink_0()
                     .gap(4.)
                     .child(
                         text(m)
@@ -1117,9 +1167,9 @@ impl prism_core::Render for RichTextInput {
                             .min_w(px((size * 1.4).round()))
                             .accessibility_hidden(),
                     )
-                    .child(field)
+                    .child(field.flex_1().min_w(px(0.)))
                     .into_element(),
-                None => field.into_element(),
+                None => field.w_full().flex_shrink_0().into_element(),
             };
             rows.push(row);
         }

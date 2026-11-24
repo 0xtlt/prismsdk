@@ -659,6 +659,20 @@ fn set_int(obj: &AnyObject, sel: Sel, value: isize) {
     }
 }
 
+/// A text field's content type (`autocomplete`, #203), sent unchecked
+/// like the other traits (#297); `None` clears it.
+pub fn set_text_content_type(field: &AnyObject, kind: Option<&NSString>) {
+    unsafe {
+        let send: unsafe extern "C-unwind" fn(&AnyObject, Sel, *const NSString) =
+            std::mem::transmute(objc2::ffi::objc_msgSend as *const ());
+        send(
+            field,
+            sel!(setTextContentType:),
+            kind.map_or(std::ptr::null(), |k| k as *const NSString),
+        );
+    }
+}
+
 fn set_bool(obj: &AnyObject, sel: Sel, value: bool) {
     unsafe {
         let send: unsafe extern "C-unwind" fn(&AnyObject, Sel, objc2::runtime::Bool) =

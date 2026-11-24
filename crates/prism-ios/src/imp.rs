@@ -3708,7 +3708,10 @@ impl Widgets for UiKit {
             .find(|(n, _)| n == "autocomplete")
             .map(|(_, v)| v.to_ascii_lowercase());
         let kind = value.as_deref().and_then(text_content_type);
-        objc2_ui_kit::UITextInputTraits::setTextContentType(&**field, kind);
+        // Unchecked: UIKit forwards the trait, so objc2's debug check
+        // refuses a typed send to the field (#297).
+        let field: &objc2::runtime::AnyObject = field;
+        crate::forms::set_text_content_type(field, kind);
     }
 
     /// `cx.scroll_by` / `cx.scroll_to` (#193): the content offset, kept
