@@ -19,6 +19,11 @@ bumps the minor version). Every crate of the workspace shares one version.
   `stack()` (or tabs) lays its screens out (#298). The sheet showed only
   the stack's title. One whose content is a `scroll()` now gets its
   scroll extent.
+- Native backends: a screen's leading `scroll()` runs under the side safe
+  area too (#303), as it already did under the bars: it spans the
+  screen's width, its scroll indicator at the edge (iPhone Duo's status
+  column, landscape cutouts), and its content is inset by the side
+  insets.
 - iOS, macOS: `timer()` uses the style's font: `font_family`,
   `font_mono()`, italic and weight (#301). It always showed the system
   font. Its digits keep a fixed width.

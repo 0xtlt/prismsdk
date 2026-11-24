@@ -253,8 +253,10 @@ fn stack_screens_get_the_platform_safe_area_unless_they_scroll() {
     h.rerender();
     let f = h.layout(400., 800.);
     let s = f.of_kind(NodeKind::Scroll)[0];
-    // The scroll view runs under the bars (top/bottom insets dropped).
-    assert_eq!(f.frame(s), (5., 0., 395., 800. - HEADER));
+    // The scroll view runs under the bars (top/bottom insets dropped) and
+    // to the screen's sides (#303), its content inset by the side insets.
+    assert_eq!(f.frame(s), (0., 0., 400., 800. - HEADER));
+    assert_eq!(f.frame(f.by_text("row")), (5., 0., 395., 20.));
 }
 
 /// A card centred in a full-height column of a scroll view (#76), with a

@@ -635,12 +635,15 @@ pub struct NativeRenderer<W: Widgets> {
 }
 
 /// What the platform insets a scroll view's content by, at the top and the
-/// bottom, because it runs under the bars of `screen`.
+/// bottom, because it runs under the bars of `screen`; and the side safe
+/// area it runs under, its content inset by it (#303).
 #[derive(Clone, Copy, PartialEq)]
 struct UnderBars {
     screen: NodeId,
     top: f32,
     bottom: f32,
+    left: f32,
+    right: f32,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -1212,6 +1215,8 @@ impl<W: Widgets> NativeRenderer<W> {
                 screen,
                 top: (vp.insets.top - p.top).max(0.),
                 bottom: (vp.insets.bottom - p.bottom).max(0.),
+                left: vp.insets.left,
+                right: vp.insets.right,
             });
             (s, guess)
         });
@@ -1230,6 +1235,7 @@ impl<W: Widgets> NativeRenderer<W> {
                     screen,
                     top: (vp.insets.top - top).max(0.),
                     bottom: (vp.insets.bottom - (vp.height - bottom)).max(0.),
+                    ..guess
                 };
                 if real != guess {
                     self.set_under_bars(screen, Some((scroll, real)));
@@ -1251,7 +1257,8 @@ impl<W: Widgets> NativeRenderer<W> {
     /// its layout padding takes them in (`sync_layout_style`).
     fn set_under_bars(&mut self, screen: NodeId, scroll: Option<(NodeId, UnderBars)>) {
         // No bar to run under (Android, macOS, a screen without a safe area).
-        let scroll = scroll.filter(|(_, u)| u.top > 0. || u.bottom > 0.);
+        let scroll =
+            scroll.filter(|(_, u)| u.top > 0. || u.bottom > 0. || u.left > 0. || u.right > 0.);
         let stale: Vec<NodeId> = self
             .under_bars
             .iter()
@@ -1362,6 +1369,17 @@ impl<W: Widgets> NativeRenderer<W> {
         if let Some(u) = self.under_bars.get(&id) {
             style.padding.top = LengthPercentage::length(zoomed.padding.top + u.top);
             style.padding.bottom = LengthPercentage::length(zoomed.padding.bottom + u.bottom);
+            // It reaches the screen's sides through the side safe area
+            // (its indicator at the edge), its content inset by it (#303).
+            style.padding.left = LengthPercentage::length(zoomed.padding.left + u.left);
+            style.padding.right = LengthPercentage::length(zoomed.padding.right + u.right);
+            let (m, auto) = (zoomed.margin, zoomed.margin_auto);
+            if !auto[3] {
+                style.margin.left = LengthPercentageAuto::length(m.left - u.left);
+            }
+            if !auto[1] {
+                style.margin.right = LengthPercentageAuto::length(m.right - u.right);
+            }
         }
         // A root stack handles the safe area itself (navigation bar, screens).
         if self.root == Some(id) && !is_managed(e.kind) {
