@@ -7,6 +7,19 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.5.0 (2026-11-25)
+
+The web's history follows the path: browser Back and Forward reopen the
+screen each entry showed, a deep link is one entry, and
+`Screen::on_back_request` can hold the browser's Back for unsaved changes
+(#324). `copy_text` says whether it worked, and `copy_on_click` copies
+during the click so Safari takes it (#323). Widgets keep `min_w`, `min_h`
+and `nowrap` on every platform (#321), a click anywhere in a
+`rich_text_input` places the caret (#322), and iOS bundles require arm64
+(ITMS-90502, #325).
+**Breaking:** `NavigateEvent` has a `depth`, and `UiEvent` and `Patch`
+have new variants.
+
 ### Added
 
 - `copy_text` says whether it worked (#323): `cx.copy_text(text).await`
