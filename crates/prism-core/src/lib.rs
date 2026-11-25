@@ -45,6 +45,7 @@ pub mod selection_across;
 pub mod shape;
 pub mod spans;
 pub mod storage;
+pub mod store;
 mod style;
 pub mod surfaces;
 pub mod svg;
@@ -142,6 +143,7 @@ pub use spans::{
     normalize_spans, restyle_spans, span, spans_text, splice_spans, split_spans,
 };
 pub use storage::{FileStorage, MemoryStorage, Storage};
+pub use store::{Buyer, Checkout, Product, Purchase, PurchaseOutcome, Store, TestStore};
 pub use style::*;
 pub use surfaces::WidgetAction;
 pub use surfaces::{
@@ -1247,15 +1249,15 @@ pub mod prelude {
         DeviceKind, DismissReason, Entity, FluentBuilder, FocusEvent, Handler, Haptic, InputEvent,
         IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
         NotificationAction, NotificationResponse, Orientation, Params, ParentElement, Path,
-        Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
-        PushMessage, PushService, PushSubscription, RemoteCaret, Render, ReorderList,
-        ReorderOptions, ReturnKey, Role, Router, SaveFile, SavedFile, ScrollEvent, SecureOptions,
-        SelectionEvent, Share, Styled, SwipeDirection, SystemAction, Transition, Translations,
-        Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
-        WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker,
-        date_picker_opt, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
-        relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
-        timer, toggle,
+        Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, Product,
+        PurchaseOutcome, PushEvent, PushMessage, PushService, PushSubscription, RemoteCaret,
+        Render, ReorderList, ReorderOptions, ReturnKey, Role, Router, SaveFile, SavedFile,
+        ScrollEvent, SecureOptions, SelectionEvent, Share, Styled, SwipeDirection, SystemAction,
+        Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig,
+        WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls, adaptive,
+        button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to, picker,
+        picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner, text,
+        text_area, text_input, timer, toggle,
     };
     // One selection across several text fields (#231).
     pub use crate::{EditAcross, EditCause, SelectionAcross, SelectionPoint, text_flow};

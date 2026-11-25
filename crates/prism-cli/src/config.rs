@@ -36,6 +36,9 @@
 //! wns_remote_id = "…"           # Windows (MSIX): the Entra app's object id (a GUID)
 //! wns_app_id = "…"              # Windows (MSIX): the Entra app's application (client) id
 //!
+//! [store]                     # in-app purchases through the platform's store (#306)
+//! enabled = true                # Android: bundles Google Play Billing (Apple's StoreKit needs nothing)
+//!
 //! [ios]
 //! team = "ABCDE12345"           # Apple team for real devices
 //! simulator = "iPhone 17"       # default simulator
@@ -108,6 +111,9 @@ pub struct Project {
     /// `[push] enabled = true`: the APNs environment (`development` unless
     /// `apns_environment = "production"`).
     pub push: Option<String>,
+    /// `[store] enabled = true`: in-app purchases through the platform's
+    /// store; Android builds bundle Google Play Billing (#306).
+    pub store: bool,
     /// `[push] google_services`: Firebase's `google-services.json` (FCM on Android).
     pub google_services: Option<PathBuf>,
     /// `[push] vapid_public_key`: the web app's VAPID key.
@@ -330,6 +336,7 @@ impl Project {
             push: get("push.enabled")
                 .filter(|v| v == "true")
                 .map(|_| get("push.apns_environment").unwrap_or_else(|| "development".into())),
+            store: get("store.enabled").is_some_and(|v| v == "true"),
             google_services: get("push.google_services").map(|g| crate::resolve(root, &g)),
             vapid_public_key: get("push.vapid_public_key"),
             wns_remote_id: get("push.wns_remote_id")

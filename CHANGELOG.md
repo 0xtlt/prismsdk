@@ -7,6 +7,41 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- In-app purchases (#306): one-time unlocks (non-consumables) through
+  the platform's store. `cx.store_products(ids)` gives names and prices,
+  localized; `cx.purchase(id)` / `purchase_with(Purchase::new(id).account_token(uuid))`
+  answers `Purchased`, `Pending` or `Cancelled`; `cx.restore_purchases()`;
+  `cx.owns(id)` and `cx.entitlements()` answer at launch (the store's last
+  answer is kept between runs), in render and in widgets;
+  `cx.on_entitlements` hears purchases made elsewhere, refunds and
+  approved Ask to Buy. Capability: `purchases`.
+- Apple platforms: StoreKit 2 (verified transactions, finished;
+  `Transaction.updates`; `AppStore.sync()` to restore; the purchase sheet
+  on the app's scene or window).
+- Android: Google Play Billing 9.1.0, bundled with Prism.toml
+  `[store] enabled = true` (fetched from Google's Maven, locked in
+  `android-deps.lock`). Purchases are acknowledged; the app reads them
+  again each time it comes back.
+- The app's own store: `trait Store`, set with `Application::store` or
+  `cx.set_store`. On the web it sells through the host's payment
+  provider: the checkout page opens in a popup and comes back to the
+  server (`/_prism/store/return`, a one-time state per session), and
+  `prism_web::entitlements_changed(buyer_id)` updates the buyer's live
+  sessions from a webhook. `TestStore` sells at once, from code or a
+  StoreKit configuration file (`.storekit`), for tests and debug builds.
+
+### Changed
+
+- Android builds: the Maven resolver (`android-deps.py`) applies version
+  constraints as Gradle does: those of the libraries' Gradle module
+  metadata (androidx.lifecycle's artifacts at one version) and the Kotlin
+  Gradle plugin's (kotlin-stdlib-jdk7/jdk8 at kotlin-stdlib's version).
+  Without them, Play Billing next to the car library brought the same
+  classes twice and the build failed. Car builds now bundle kotlin-stdlib
+  1.8.22 (was 1.7.10), as Gradle would.
+
 ## 0.2.0 (2026-11-24)
 
 Layout fixes for native backends. A `flex_1` list in a column sized by

@@ -69,7 +69,9 @@
       "indigo": "نيلي",
       "blue": "أزرق",
       "green": "أخضر",
-      "orange": "برتقالي"
+      "orange": "برتقالي",
+      "pink": "وردي",
+      "teal": "أزرق مخضر"
     }
   },
   "tabs": {
@@ -365,6 +367,20 @@
     "background": "صامتة",
     "hint": "أرسل إشعارًا من خادمك باستخدام prism-push، أو في محاكي iOS: xcrun simctl push booted dev.prism.counter push/hello.apns",
     "activity": "رمز النشاط المباشر: {token}"
+  },
+  "pro": {
+    "title": "Counter Pro",
+    "owned": "مفعّل",
+    "buy": "افتح الميزة مقابل {price}",
+    "buying": "جارٍ فتح المتجر…",
+    "restore": "استعادة المشتريات",
+    "thanks": "شكرًا! أصبح الوردي والأزرق المخضر ضمن ألوان التمييز.",
+    "pending": "بانتظار الموافقة (طلب الشراء) أو الدفع.",
+    "restored": "تمت استعادة عملية الشراء.",
+    "nothing": "لا شيء لاستعادته في هذا الحساب.",
+    "missing": "Counter Pro غير موجود في هذا المتجر.",
+    "unavailable": "المشتريات غير متاحة هنا.",
+    "error": "لم يُجب المتجر: {error}"
   },
   "forms": {
     "heading": "النماذج",

@@ -281,6 +281,7 @@ public func prismDeviceMotionStart(_ id: UInt64, _ interval: Double) {
 
 @_cdecl("prism_device_stop")
 public func prismDeviceStop(_ id: UInt64) {
+    PrismPurchases.stop(id)
     if let l = PrismLocation.active.removeValue(forKey: id) { l.manager.stopUpdatingLocation() }
     #if os(iOS) || os(visionOS) || os(watchOS)
     motionManagers.removeValue(forKey: id)?.stopDeviceMotionUpdates()

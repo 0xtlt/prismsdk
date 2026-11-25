@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Merges libraries' AndroidManifest.xml entries without Gradle (used by
-android-run.sh for the Firebase SDK).
+android-run.sh for the Firebase SDK and Google Play Billing).
 
     android-manifest-merge.py <application id> <unpacked aar dir> ...
 
-Prints the libraries' `<uses-permission>` lines, then a line `--`, then their
-`<application>` children: components with the same class are merged (their
-meta-data and intent filters combined, as Gradle's merger does), `${applicationId}`
-is replaced, and `tools:` attributes are dropped.
+Prints the libraries' manifest-level entries (`<permission>`, `<uses-permission>`,
+`<queries>`), then a line `--`, then their `<application>` children: components
+with the same class are merged (their meta-data and intent filters combined,
+as Gradle's merger does), `${applicationId}` is replaced, and `tools:`
+attributes are dropped.
 """
 import os
 import sys
@@ -20,6 +21,9 @@ NAME = f"{{{ANDROID}}}name"
 
 app_id, dirs = sys.argv[1], sys.argv[2:]
 permissions, components, order = [], {}, []
+# Declared permissions (androidx.core's for its not-exported receivers) and
+# package visibility (Play's billing service), once each.
+declared, queries = [], []
 
 
 def clean(el):
@@ -42,6 +46,10 @@ for d in dirs:
         name = p.get(NAME)
         if name and name not in permissions:
             permissions.append(name)
+    for el, seen in [(e, declared) for e in root.findall("permission")] + [(e, queries) for e in root.findall("queries")]:
+        xml = ET.tostring(el, encoding="unicode").replace(f' xmlns:android="{ANDROID}"', "").strip()
+        if xml not in seen:
+            seen.append(xml)
     app = root.find("application")
     if app is None:
         continue
@@ -61,8 +69,12 @@ for d in dirs:
                 merged.append(c)
                 seen.add(ET.tostring(c))
 
+for xml in declared:
+    print("  " + xml)
 for p in permissions:
     print(f'  <uses-permission android:name="{p}"/>')
+for xml in queries:
+    print("  " + xml)
 print("--")
 for key in order:
     xml = ET.tostring(components[key], encoding="unicode")

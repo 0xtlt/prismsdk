@@ -11,11 +11,13 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
         .collect();
     entries.sort();
     for path in entries {
-        let hidden = path
+        // Dot files, and the bytecode Python leaves next to a script run from
+        // the source tree.
+        let skipped = path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with('.'));
-        if hidden {
+            .is_some_and(|n| n.starts_with('.') || n == "__pycache__");
+        if skipped {
             continue;
         }
         if path.is_dir() {

@@ -125,7 +125,40 @@ final class PrismDevice {
             case "authenticate": case "auth_redirect": case "web_auth": case "apple_sign_in": case "webauthn":
                 PrismSecurity.call(id, c.optString("call"), c);
                 break;
+            case "store_products": case "purchase": case "store_entitlements": case "restore_purchases":
+            case "watch_entitlements":
+                billing(id, c.optString("call"), c);
+                break;
             default: fail(id, "unavailable", false);
+        }
+    }
+
+    // --- In-app purchases (#306) -------------------------------------------------------------
+
+    /** Google Play Billing, when the build bundles it (Prism.toml [store]). */
+    static Class<?> billingClass() {
+        try {
+            return Class.forName("dev.prism.PrismBilling");
+        } catch (ClassNotFoundException e) {
+            return null;
+        }
+    }
+
+    /** Calls PrismBilling's static `name`: whether it is bundled and answered. */
+    static boolean billingStatic(String name, Class<?>[] types, Object... args) {
+        Class<?> b = billingClass();
+        if (b == null) return false;
+        try {
+            Object r = b.getMethod(name, types).invoke(null, args);
+            return !(r instanceof Boolean) || (Boolean) r;
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
+    }
+
+    static void billing(long id, String call, JSONObject c) {
+        if (!billingStatic("call", new Class<?>[]{long.class, String.class, JSONObject.class}, id, call, c)) {
+            fail(id, "unavailable", call.startsWith("watch_"));
         }
     }
 
@@ -297,6 +330,7 @@ final class PrismDevice {
     }
 
     static void stop(long id) {
+        billingStatic("stop", new Class<?>[]{long.class}, id);
         Object s = streams.remove(id);
         if (s instanceof LocationListener) {
             ((LocationManager) ctx().getSystemService(Context.LOCATION_SERVICE)).removeUpdates((LocationListener) s);

@@ -23,6 +23,7 @@ mod selection;
 mod selection_across;
 mod spawn;
 mod storage;
+mod store;
 #[path = "../../src/temp_dir.rs"]
 mod temp_dir;
 mod typography;

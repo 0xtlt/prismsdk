@@ -32,6 +32,12 @@ pub(crate) enum Inbound {
     /// Another page of the browser renewed its id (S10): the browser has
     /// the new one, this session still runs on the old one. It reconnects.
     BrowserRenewed,
+    /// A checkout page came back (to `/_prism/store/return`) for call `id`
+    /// (#306).
+    StoreReturn(u64, String),
+    /// The host says the purchases of this buyer changed
+    /// ([`entitlements_changed`](crate::entitlements_changed)).
+    EntitlementsChanged(String),
 }
 
 /// The live sessions of this process, by browser id: (session key, inbox).
@@ -71,6 +77,20 @@ pub(crate) fn browser_renewed(sid: &str) {
     for (_, inbox) in live_sessions().remove(sid).unwrap_or_default() {
         let _ = inbox.send(Inbound::BrowserRenewed);
     }
+}
+
+/// Sends `make()` to every live session of this process; returns how many
+/// took it.
+pub(crate) fn tell_sessions(make: impl Fn() -> Inbound) -> usize {
+    let inboxes: Vec<mpsc::Sender<Inbound>> = live_sessions()
+        .values()
+        .flatten()
+        .map(|(_, inbox)| inbox.clone())
+        .collect();
+    inboxes
+        .into_iter()
+        .filter(|inbox| inbox.send(make()).is_ok())
+        .count()
 }
 
 /// What one waiting message costs besides its text (its queue slot): a
@@ -417,6 +437,20 @@ impl Live {
                     }
                     self.runtime
                         .device_reply(id, Ok(prism_core::DeviceValue::Done))
+                }
+                // A checkout page came back (#306): the app's store looks
+                // at the URL. Absolute, as the return URL.
+                Ok(Inbound::StoreReturn(id, url)) => {
+                    self.services.server_answers.remove(&id);
+                    let url = format!("{}{}{url}", self.services.origin, self.services.base);
+                    self.runtime
+                        .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url))))
+                }
+                // A webhook: this session reads its entitlements again if
+                // its buyer is the one.
+                Ok(Inbound::EntitlementsChanged(buyer)) => {
+                    self.runtime.app.entitlements_changed(Some(&buyer));
+                    self.tick()
                 }
                 // The page reconnects with the browser's new id.
                 Ok(Inbound::BrowserRenewed) => {
@@ -1482,6 +1516,9 @@ impl PlatformServices for WebServices {
             // navigator.credentials (#94); a browser without it answers
             // « unavailable ».
             passkeys: true,
+            // No store in a browser: the app's own (`cx.set_store`, #306)
+            // sells, and `App::capabilities` says so then.
+            purchases: false,
         }
     }
 
@@ -2131,6 +2168,62 @@ impl WebServices {
                 // Apple's web sign-in is OAuth: use prism::oauth with its endpoints.
                 self.reply(id, Err(E::Unavailable));
                 None
+            }
+            // No store in a browser (#306): the app's own (`cx.set_store`)
+            // answers these in prism-core, without the backend.
+            C::StoreProducts(_)
+            | C::Purchase(_)
+            | C::StoreEntitlements
+            | C::RestorePurchases
+            | C::WatchEntitlements => {
+                self.reply(id, Err(E::Unavailable));
+                None
+            }
+            // Where the app store's checkout page comes back (#306). Not
+            // during the first paint: there is no page to open it from.
+            C::StoreReturnUrl => {
+                let r = match self.inbox {
+                    Some(_) => Ok(V::Text(Some(crate::store::return_url(
+                        &self.origin,
+                        &self.base,
+                    )))),
+                    None => Err(E::Unavailable),
+                };
+                self.reply(id, r);
+                None
+            }
+            // The checkout page in a popup; its return answers (#306).
+            C::StoreCheckout { url, return_url } => {
+                if !crate::store::checkout_url_allowed(&url) {
+                    self.reply(id, Err(E::Failed("not a checkout URL (https only)".into())));
+                    return None;
+                }
+                let state = crate::store::return_state(&return_url, &self.origin, &self.base);
+                match (state, self.inbox.clone()) {
+                    (Some(state), Some(tx)) => {
+                        if !crate::security::wait_for_checkout(state, tx, self.sign_ins, id) {
+                            self.reply(id, Err(E::Failed("too many checkouts at once".into())));
+                            return None;
+                        }
+                        self.server_answers.insert(id);
+                    }
+                    _ => {
+                        self.reply(
+                            id,
+                            Err(E::Failed("the return URL is not this app's".into())),
+                        );
+                        return None;
+                    }
+                }
+                let provider = url
+                    .split_once("://")
+                    .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+                    .unwrap_or_default()
+                    .to_string();
+                Some(json!({
+                    "t": "device", "id": id, "call": "store_checkout",
+                    "url": url, "provider": provider,
+                }))
             }
             C::AuthRedirect(_) => {
                 let uri = format!("{}{}/_prism/auth/callback", self.origin, self.base);

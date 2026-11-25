@@ -58,6 +58,9 @@ icon = "icon.png"             # 1024×1024 PNG
 location = "Shows todos near you."
 camera = "Takes a photo for a todo."
 
+[store]                       # in-app purchases (see In-app purchases)
+enabled = true                # Android: bundles Google Play Billing
+
 [ios]
 team = "ABCDE12345"           # Apple team for real devices
 simulator = "iPhone 17"       # default simulator

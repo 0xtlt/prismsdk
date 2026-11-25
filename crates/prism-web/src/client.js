@@ -7018,13 +7018,17 @@
     d.showModal();
     bOk.focus();
   }
-  function webAuth(msg, reply) {
+  /**
+   * A sign-in (`prism-auth`) or a checkout page (`prism-checkout`, #306) in
+   * a popup: the server answers when it comes back to the app.
+   */
+  function webAuth(msg, reply, name = "prism-auth") {
     const url = msg.url == null ? null : safeUrl(msg.url);
     if (url == null) return reply({ err: "not a sign-in URL" });
     const open = () => {
       const w = Math.min(520, screen.width), h = Math.min(680, screen.height);
       const features = `popup,width=${w},height=${h},left=${Math.round((screen.width - w) / 2)},top=${Math.round((screen.height - h) / 2)}`;
-      const popup = window.open(url, "prism-auth", features);
+      const popup = window.open(url, name, features);
       if (!popup) return false;
       // The server answers when the provider redirects; a closed popup before
       // that is a cancel (the server ignores it once answered).
@@ -7251,6 +7255,7 @@
         }
         case "set_cookie": return setCookie(msg, reply);
         case "web_auth": return webAuth(msg, reply);
+        case "store_checkout": return webAuth(msg, reply, "prism-checkout");
         case "webauthn": return webauthn(msg, reply);
         case "webauthn_rp": return webauthnRp(msg, reply);
         default: return reply({ err: "unavailable" });

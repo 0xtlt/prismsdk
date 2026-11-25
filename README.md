@@ -150,6 +150,10 @@ System surfaces described with the same elements as the UI: widgets, Live Activi
 
 APNs, FCM, Web Push and UnifiedPush tokens and messages in the app, and `prism-push` to send them from your server. → [Remote push notifications](docs/src/guide/push.md)
 
+## In-app purchases
+
+One-time unlocks through StoreKit 2 and Google Play Billing, and through your own payment provider on the web (a webhook unlocks the user's open pages). `TestStore` sells from a `.storekit` file in debug builds, without App Store Connect. → [In-app purchases](docs/src/guide/purchases.md)
+
 ## In the car (CarPlay, Android Auto, Android Automotive)
 
 Car screens from the platforms' templates (lists, grids, panes, tabs), rebuilt when the app changes. → [In the car](docs/src/guide/car.md)
@@ -223,7 +227,7 @@ Real WinUI 3 controls (Windows App SDK, self-contained: its runtime goes next to
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input` (secure, keyboards, submit), `text_area`, `toggle`, `slider`, `picker`, `date_picker`, `spinner`, `scroll`, `picture`, `shape`, `scene3d`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
-Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, remote push (APNs, FCM, Web Push, UnifiedPush) with a server-side sender, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, charts (also in widgets), async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
+Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, remote push (APNs, FCM, Web Push, UnifiedPush) with a server-side sender, in-app purchases (StoreKit 2, Google Play Billing, the app's own store on the web), background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, charts (also in widgets), async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
 Platforms: web, macOS, iOS/iPadOS and Android (phones, tablets) are supported; tvOS, watchOS, visionOS, Linux (GTK 4), Windows, Wear OS, Android TV and car screens are previews (see [Platforms in 0.1](#platforms-in-01)).
 
 ## License

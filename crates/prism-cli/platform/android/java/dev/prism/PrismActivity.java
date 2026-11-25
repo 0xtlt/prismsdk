@@ -173,7 +173,12 @@ public class PrismActivity extends Activity {
         PrismHost.send(e);
     }
 
-    @Override protected void onResume() { super.onResume(); lifecycle("active"); PrismSecurity.resumed(); }
+    @Override protected void onResume() {
+        super.onResume();
+        lifecycle("active");
+        PrismSecurity.resumed();
+        PrismDevice.billingStatic("resumed", new Class<?>[0]);
+    }
     @Override protected void onPause() { super.onPause(); lifecycle("inactive"); }
     @Override protected void onStop() { super.onStop(); lifecycle("background"); }
 

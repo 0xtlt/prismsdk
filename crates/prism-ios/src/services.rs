@@ -108,6 +108,9 @@ impl IosServices {
                 passkeys: prism_native::apple::passkeys_available(),
                 drop_files: cfg!(not(target_os = "tvos")),
                 drag_and_drop: cfg!(not(target_os = "tvos")),
+                // StoreKit 2 (PrismPurchases.swift, #306); parental controls
+                // answer `Denied` when buying.
+                purchases: true,
             },
             controller,
         }

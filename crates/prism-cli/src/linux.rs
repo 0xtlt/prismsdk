@@ -231,6 +231,7 @@ pub(crate) mod tests {
             apple_sign_in: false,
             associated_domains: Vec::new(),
             push: None,
+            store: false,
             google_services: None,
             vapid_public_key: None,
             wns_remote_id: None,

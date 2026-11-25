@@ -60,6 +60,9 @@ impl AndroidServices {
                     Some("unifiedpush") => Some(prism_core::PushService::UnifiedPush),
                     _ => None,
                 },
+                // Google Play Billing (#306, PrismBilling.java): bundled with
+                // Prism.toml [store], and the Play Store on the device.
+                purchases: has("billing"),
                 // android.webkit.WebView (#62, PrismWeb.java).
                 web_view: true,
                 // View.OnDragListener (#111): files from another app.

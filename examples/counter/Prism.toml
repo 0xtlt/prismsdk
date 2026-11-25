@@ -28,6 +28,11 @@ apns_environment = "development"
 # (or PRISM_VAPID_PUBLIC_KEY).
 # vapid_public_key = "B…"
 
+[store]
+# In-app purchases (Counter Pro, purchases.rs): Android builds bundle Google
+# Play Billing. Debug builds sell through Products.storekit instead.
+enabled = true
+
 [ios]
 # iCloud key-value storage for cx.cloud_storage() (devices: the App ID needs iCloud).
 icloud = true

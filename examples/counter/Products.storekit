@@ -1,0 +1,43 @@
+{
+  "identifier" : "5E4B8A1C",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "2.99",
+      "familyShareable" : true,
+      "internalID" : "6740000001",
+      "localizations" : [
+        {
+          "description" : "Two more accent colors.",
+          "displayName" : "Counter Pro",
+          "locale" : "en_US"
+        },
+        {
+          "description" : "Deux couleurs d’accent de plus.",
+          "displayName" : "Counter Pro",
+          "locale" : "fr"
+        }
+      ],
+      "productID" : "dev.prism.counter.pro",
+      "referenceName" : "Counter Pro",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

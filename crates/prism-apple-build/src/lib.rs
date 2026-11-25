@@ -324,6 +324,8 @@ fn build_swift(dirs: &[&str], module: &str) {
         // Videos (PrismVideo.swift, #207).
         "AVFoundation",
         "AVKit",
+        // In-app purchases (PrismPurchases.swift, #306).
+        "StoreKit",
     ] {
         if frameworks.join(format!("{fw}.framework")).exists()
             && !(fw == "ActivityKit" && sdk == "macosx")

@@ -27,6 +27,8 @@
 #   PRISM_GOOGLE_SERVICES  Firebase's google-services.json: FCM, with the Firebase
 #                      SDK fetched from Google's Maven and bundled (opt-in)
 #   PRISM_VAPID_PUBLIC_KEY  given to UnifiedPush distributors that require VAPID
+#   PRISM_STORE=1      in-app purchases (Prism.toml [store]): Google Play Billing,
+#                      fetched from Google's Maven and bundled (PrismBilling)
 #   PRISM_ANDROID_KEYSTORE, PRISM_ANDROID_KEYSTORE_PASS, PRISM_ANDROID_KEY_ALIAS
 #                      signing key for store builds (default: the debug key);
 #                      PRISM_ANDROID_KEY_PASS if the key's password differs
@@ -194,7 +196,9 @@ fi
 GSERVICES="${PRISM_GOOGLE_SERVICES:-}"
 [[ -n "$GSERVICES" && ! -f "$GSERVICES" ]] && { echo "PRISM_GOOGLE_SERVICES: $GSERVICES not found" >&2; exit 1; }
 [[ -n "$GSERVICES" ]] && PRISM_PUSH="${PRISM_PUSH:-1}"
-LIB_JARS="" LIB_RES=() LIB_PKGS="" ROOTS=() FCM_DIRS=()
+# In-app purchases (PRISM_STORE): Google Play Billing, fetched the same way.
+STORE="${PRISM_STORE:-}"
+LIB_JARS="" LIB_RES=() LIB_PKGS="" ROOTS=() MERGE_DIRS=()
 if [[ "$CAR" == 1 ]]; then
   ROOTS+=(androidx.car.app:app:1.7.0)
   [[ "$AUTOMOTIVE" == 1 ]] && ROOTS+=(androidx.car.app:app-automotive:1.7.0)
@@ -202,6 +206,7 @@ if [[ "$CAR" == 1 ]]; then
   printf '<automotiveApp><uses name="template"/></automotiveApp>\n' > "$OUT/res/xml/automotive_app_desc.xml"
 fi
 [[ -n "$GSERVICES" ]] && ROOTS+=(com.google.firebase:firebase-messaging:26.0.2)
+[[ "$STORE" == 1 ]] && ROOTS+=(com.android.billingclient:billing:9.1.0)
 if [[ ${#ROOTS[@]} -gt 0 ]]; then
   CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/prism/maven"
   mkdir -p "$OUT/libres"
@@ -212,7 +217,7 @@ if [[ ${#ROOTS[@]} -gt 0 ]]; then
         zip="$OUT/libres/${b//./_}.zip"
         "$BUILD_TOOLS/aapt2" compile --dir "$a" -o "$zip"
         LIB_RES+=(-R "$zip") LIB_PKGS="${LIB_PKGS:+$LIB_PKGS:}$b" ;;
-      aar) FCM_DIRS+=("$a") ;;
+      aar) MERGE_DIRS+=("$a") ;;
     esac
   done < <(python3 "$(dirname "$0")/android-deps.py" "$CACHE" "${ROOTS[@]}" | python3 -c '
 import json, os, sys
@@ -222,8 +227,11 @@ for e in json.load(sys.stdin):
     res, package = e["res"], e["package"]
     if res and package:
         print(f"res\t{res}\t{package}")
-    # Firebase / Play services manifests (components, permissions) to merge.
-    if package and e["id"].startswith(("com.google.firebase:", "com.google.android.gms:", "com.google.android.datatransport:")) and e["jars"]:
+    # Firebase / Play services / Play Billing manifests (components,
+    # permissions, package visibility) to merge; androidx.core declares the
+    # permission of its not-exported receivers (ContextCompat).
+    if package and e["id"].startswith(("com.google.firebase:", "com.google.android.gms:", "com.google.android.datatransport:",
+                                       "com.android.billingclient:", "androidx.core:core:")) and e["jars"]:
         first = e["jars"][0]
         print("aar\t" + os.path.dirname(first) + "\t")
 ')
@@ -360,8 +368,8 @@ if [[ "$CAR" == 1 ]]; then
     <meta-data android:name=\"com.google.android.gms.car.application\" android:resource=\"@xml/automotive_app_desc\"/>"
   fi
 fi
-# Remote push: the UnifiedPush connector (PrismPush.Receiver), FCM's service
-# and the Firebase libraries' own entries.
+# Remote push: the UnifiedPush connector (PrismPush.Receiver), FCM's service;
+# the libraries' own entries (Firebase, Play Billing).
 PUSH_PERMS="" PUSH_QUERIES="" PUSH_APP=""
 if [[ -n "${PRISM_PUSH:-}" ]]; then
   # Finds distributors (Android 11+ package visibility).
@@ -379,14 +387,17 @@ if [[ -n "${PRISM_PUSH:-}" ]]; then
     <meta-data android:name=\"prism.vapid\" android:value=\"$PRISM_VAPID_PUBLIC_KEY\"/>"
 fi
 if [[ -n "$GSERVICES" ]]; then
-  MERGED="$(python3 "$(dirname "$0")/android-manifest-merge.py" "$APP_ID" "${FCM_DIRS[@]}")"
-  PUSH_PERMS="$(sed '/^--$/,$d' <<< "$MERGED")"
   PUSH_APP="$PUSH_APP
     <service android:name=\"dev.prism.PrismFcm\" android:exported=\"false\">
       <intent-filter><action android:name=\"com.google.firebase.MESSAGING_EVENT\"/></intent-filter>
     </service>
     <!-- A token only when the app calls register_for_push. -->
-    <meta-data android:name=\"firebase_messaging_auto_init_enabled\" android:value=\"false\"/>
+    <meta-data android:name=\"firebase_messaging_auto_init_enabled\" android:value=\"false\"/>"
+fi
+if [[ ${#MERGE_DIRS[@]} -gt 0 ]]; then
+  MERGED="$(python3 "$(dirname "$0")/android-manifest-merge.py" "$APP_ID" "${MERGE_DIRS[@]}")"
+  PUSH_PERMS="$(sed '/^--$/,$d' <<< "$MERGED")"
+  PUSH_APP="$PUSH_APP
 $(sed '1,/^--$/d' <<< "$MERGED")"
 fi
 cat > "$OUT/AndroidManifest.xml" <<XML
@@ -458,6 +469,7 @@ rm -rf "$OUT/classes" && mkdir -p "$OUT/classes"
 SOURCES=("$PLATFORM/android/java" "$OUT/gen")
 [[ "$CAR" == 1 ]] && SOURCES+=("$PLATFORM/android/car" "$OUT/rjava")
 [[ -n "$GSERVICES" ]] && SOURCES+=("$PLATFORM/android/fcm")
+[[ "$STORE" == 1 ]] && SOURCES+=("$PLATFORM/android/billing")
 javac --release 17 -nowarn -classpath "$ANDROID_JAR$LIB_JARS" -d "$OUT/classes" $(find "${SOURCES[@]}" -name '*.java')
 "$BUILD_TOOLS/d8" --min-api "$MIN_SDK" --lib "$ANDROID_JAR" --output "$STAGE" \
   $(find "$OUT/classes" -name '*.class') ${LIB_JARS//:/ }

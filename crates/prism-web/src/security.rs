@@ -499,9 +499,19 @@ pub(crate) const REDIRECT_TTL: Duration = Duration::from_secs(10 * 60);
 const REDIRECTS_PER_SESSION: usize = 8;
 const REDIRECTS: usize = 4096;
 
+/// What a session waits for under a `state`: a sign-in's redirect
+/// (`/_prism/auth/callback`) or a checkout page coming back
+/// (`/_prism/store/return`, #306). Each path completes only its own kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Redirect {
+    SignIn,
+    Checkout,
+}
+
 /// A session's call waiting for a provider's redirect.
 struct Waiting {
     tx: mpsc::Sender<crate::session::Inbound>,
+    kind: Redirect,
     /// The session ([`session_key`]) and its call.
     session: u64,
     id: u64,
@@ -532,6 +542,26 @@ pub(crate) fn wait_for_redirect(
     session: u64,
     id: u64,
 ) -> bool {
+    wait_for(Redirect::SignIn, state, tx, session, id)
+}
+
+/// Like [`wait_for_redirect`], for a checkout page coming back (#306).
+pub(crate) fn wait_for_checkout(
+    state: String,
+    tx: mpsc::Sender<crate::session::Inbound>,
+    session: u64,
+    id: u64,
+) -> bool {
+    wait_for(Redirect::Checkout, state, tx, session, id)
+}
+
+fn wait_for(
+    kind: Redirect,
+    state: String,
+    tx: mpsc::Sender<crate::session::Inbound>,
+    session: u64,
+    id: u64,
+) -> bool {
     let now = Instant::now();
     let mut w = waiting();
     w.retain(|_, p| now.duration_since(p.since) < REDIRECT_TTL);
@@ -545,6 +575,7 @@ pub(crate) fn wait_for_redirect(
         state,
         Waiting {
             tx,
+            kind,
             session,
             id,
             since,
@@ -569,7 +600,21 @@ pub(crate) fn take_redirect(
     state: &str,
     now: Instant,
 ) -> Option<(mpsc::Sender<crate::session::Inbound>, u64)> {
-    let p = waiting().remove(state)?;
+    take(Redirect::SignIn, state, now)
+}
+
+/// The call of `kind` waiting on `state`, once. A call of the other kind
+/// stays where it is: a checkout's return never completes a sign-in.
+pub(crate) fn take(
+    kind: Redirect,
+    state: &str,
+    now: Instant,
+) -> Option<(mpsc::Sender<crate::session::Inbound>, u64)> {
+    let mut w = waiting();
+    if w.get(state)?.kind != kind {
+        return None;
+    }
+    let p = w.remove(state)?;
     (now.duration_since(p.since) < REDIRECT_TTL).then_some((p.tx, p.id))
 }
 
@@ -600,7 +645,7 @@ pub(crate) fn redirect_page(query: &str, nonce: Option<&crate::CspNonce>) -> Str
 }
 
 /// A query string's parameters, decoded (`+` is a space).
-fn query_map(q: &str) -> HashMap<String, String> {
+pub(crate) fn query_map(q: &str) -> HashMap<String, String> {
     q.split('&')
         .filter_map(|kv| {
             let (k, v) = kv.split_once('=')?;

@@ -2,3 +2,6 @@
 .prism-data/
 # mdBook output (mise run docs)
 /docs/book
+# Python bytecode (android-deps.py run from the source tree)
+__pycache__/
+*.pyc
