@@ -7,6 +7,19 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.3.0 (2026-11-25)
+
+In-app purchases (StoreKit 2, Google Play Billing, the app's own store on
+the web), frame callbacks for app code (`cx.frames`, `cx.on_next_frame`)
+driven by each platform's display link, a `VirtualList` that code can
+scroll, and `[app] orientations` to lock an app to portrait. iOS apps start
+~1 s sooner: AuthenticationServices, PhotosUI and StoreKit are linked only
+when the app asks for them. Android scrolls a long list from code at a
+fraction of the CPU, the right distance, and inside its bounds.
+**Breaking on Apple platforms:** Sign in with Apple, `oauth` sign-in,
+passkeys, the photo picker and in-app purchases need prismsdk's `sign-in`,
+`photo-picker` and `purchases` features.
+
 ### Added
 
 - In-app purchases (#306): one-time unlocks (non-consumables) through
@@ -17,7 +30,7 @@ bumps the minor version). Every crate of the workspace shares one version.
   answer is kept between runs), in render and in widgets;
   `cx.on_entitlements` hears purchases made elsewhere, refunds and
   approved Ask to Buy. Capability: `purchases`.
-- Apple platforms: StoreKit 2 (verified transactions, finished;
+- Apple platforms: StoreKit 2, with prismsdk's `purchases` feature (verified transactions, finished;
   `Transaction.updates`; `AppStore.sync()` to restore; the purchase sheet
   on the app's scene or window).
 - Android: Google Play Billing 9.1.0, bundled with Prism.toml
