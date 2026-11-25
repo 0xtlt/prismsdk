@@ -90,6 +90,10 @@ pub struct Capabilities {
     /// Passkeys of the app's own relying party (`webauthn_create`,
     /// `webauthn_get`, #94).
     pub passkeys: bool,
+    /// In-app purchases (`purchase`, `owns`, #306): the platform's store
+    /// (StoreKit, Google Play Billing) or the app's own
+    /// ([`App::set_store`](crate::App::set_store)).
+    pub purchases: bool,
 }
 
 /// Work the app asked the platform to do. Backends drain these with
@@ -2048,7 +2052,10 @@ type WidgetConfigurations = Rc<dyn Fn(&str) -> Vec<WidgetConfig>>;
 impl App {
     /// What the current platform supports (set by the backend).
     pub fn capabilities(&self) -> Capabilities {
-        self.surfaces.capabilities
+        let mut caps = self.surfaces.capabilities;
+        // The app's own store sells wherever it runs.
+        caps.purchases |= self.store().is_some();
+        caps
     }
 
     /// Called by backends at startup with what the platform supports.
@@ -2337,6 +2344,8 @@ impl App {
         }
         let sheets = self.take_stylesheet_requests();
         self.surfaces.requests.extend(sheets);
+        // After the widgets: their drawing may ask what the user owns.
+        self.store_watch_request();
         std::mem::take(&mut self.surfaces.requests)
     }
 

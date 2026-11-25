@@ -122,6 +122,8 @@ public final class PrismHost {
             // Remote push: "fcm", "unifiedpush", or none (PrismPush).
             String push = PrismPush.service(c);
             if (push != null) o.put("push", push);
+            // In-app purchases: Play Billing bundled, and the Play Store here (PrismBilling).
+            o.put("billing", PrismDevice.billingStatic("available", new Class<?>[]{android.content.Context.class}, c));
         } catch (JSONException ignored) {
         }
         return o;

@@ -24,6 +24,7 @@ mod islands;
 mod layout;
 mod media;
 mod menus;
+mod purchases;
 mod push;
 mod report;
 mod scene;
@@ -70,65 +71,69 @@ impl WebHead for Application {
 
 /// Starts the app (every platform).
 pub fn run() {
-    Application::new()
+    let app = Application::new()
         .title("Prism")
         .size(460., 720.)
         .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
         .window_chrome(window_chrome())
-        .web_head()
-        .run(|cx| {
-            strings::install(cx);
-            background::install(cx);
-            push::install(cx);
-            let theme = load_theme(cx);
-            ui::set_theme(cx, theme);
-            let store = cx.new_entity(|cx| Store::load(cx));
-            widgets::register(cx, store);
-            car::register(cx, store);
-            menus::install(cx, store);
-            let focus = focus::install(cx, store);
-            Router::new()
-                // Titles follow the language (recomputed on every render).
-                // Tabs render on their first selection; `.eager()` after a
-                // tab renders it up front.
-                .tab_with(strings::tabs_todos, "checklist", "/")
-                .tab_with(strings::tabs_focus, "timer", "/focus")
-                .tab_with(strings::tabs_components, "square.grid.2x2", "/components")
-                .tab_with(strings::tabs_settings, "gearshape", "/settings")
-                .route("/", move |cx, _| cx.new_entity(|cx| Home::new(store, cx)))
-                .route("/todos/new", move |cx, _| {
-                    cx.new_entity(|_| NewTodo {
-                        store,
-                        title: String::new(),
-                    })
+        .web_head();
+    // Debug builds sell through Products.storekit (purchases.rs).
+    #[cfg(debug_assertions)]
+    let app = app.store(purchases::test_store());
+    app.run(|cx| {
+        strings::install(cx);
+        background::install(cx);
+        push::install(cx);
+        let theme = load_theme(cx);
+        ui::set_theme(cx, theme);
+        let store = cx.new_entity(|cx| Store::load(cx));
+        widgets::register(cx, store);
+        car::register(cx, store);
+        menus::install(cx, store);
+        let focus = focus::install(cx, store);
+        Router::new()
+            // Titles follow the language (recomputed on every render).
+            // Tabs render on their first selection; `.eager()` after a
+            // tab renders it up front.
+            .tab_with(strings::tabs_todos, "checklist", "/")
+            .tab_with(strings::tabs_focus, "timer", "/focus")
+            .tab_with(strings::tabs_components, "square.grid.2x2", "/components")
+            .tab_with(strings::tabs_settings, "gearshape", "/settings")
+            .route("/", move |cx, _| cx.new_entity(|cx| Home::new(store, cx)))
+            .route("/todos/new", move |cx, _| {
+                cx.new_entity(|_| NewTodo {
+                    store,
+                    title: String::new(),
                 })
-                .route("/todos/:id", move |cx, p| {
-                    let id = p.parse("id").unwrap_or(0);
-                    cx.new_entity(|cx| TodoDetail::new(store, id, cx))
+            })
+            .route("/todos/:id", move |cx, p| {
+                let id = p.parse("id").unwrap_or(0);
+                cx.new_entity(|cx| TodoDetail::new(store, id, cx))
+            })
+            .route("/components", |cx, _| cx.new_entity(Gallery::new))
+            .route("/settings", |cx, _| {
+                cx.new_entity(|cx| Settings {
+                    security: cx.new(security::SecurityDemo::new),
+                    pro: cx.new(purchases::ProCard::new),
                 })
-                .route("/components", |cx, _| cx.new_entity(Gallery::new))
-                .route("/settings", |cx, _| {
-                    cx.new_entity(|cx| Settings {
-                        security: cx.new(security::SecurityDemo::new),
-                    })
-                })
-                .route("/focus", move |_, _| focus)
-                .route("/components/list", |cx, _| cx.new_entity(LongList::new))
-                .route("/components/table", |cx, _| {
-                    cx.new_entity(|_| timetable::TimetableScreen)
-                })
-                .route("/components/media", |cx, _| {
-                    cx.new_entity(media::MediaDemo::new)
-                })
-                .route("/components/islands", |cx, _| {
-                    cx.new_entity(islands::IslandsDemo::new)
-                })
-                .route("/push", |cx, _| cx.new_entity(|_| push::PushScreen))
-                .route("/components/report", |cx, p| {
-                    cx.new_entity(|cx| report::Report::new(p, cx))
-                })
-                .build(cx)
-        });
+            })
+            .route("/focus", move |_, _| focus)
+            .route("/components/list", |cx, _| cx.new_entity(LongList::new))
+            .route("/components/table", |cx, _| {
+                cx.new_entity(|_| timetable::TimetableScreen)
+            })
+            .route("/components/media", |cx, _| {
+                cx.new_entity(media::MediaDemo::new)
+            })
+            .route("/components/islands", |cx, _| {
+                cx.new_entity(islands::IslandsDemo::new)
+            })
+            .route("/push", |cx, _| cx.new_entity(|_| push::PushScreen))
+            .route("/components/report", |cx, p| {
+                cx.new_entity(|cx| report::Report::new(p, cx))
+            })
+            .build(cx)
+    });
 }
 
 /// A screen with the theme's background and a scrollable body.
@@ -1093,6 +1098,7 @@ impl Render for Gallery {
 
 struct Settings {
     security: Entity<security::SecurityDemo>,
+    pro: Entity<purchases::ProCard>,
 }
 
 /// A translated name.
@@ -1103,6 +1109,12 @@ const ACCENTS: [(Label, u32); 4] = [
     (strings::settings_accents_blue, 0x0A84FF),
     (strings::settings_accents_green, 0x2E9E5B),
     (strings::settings_accents_orange, 0xE8730C),
+];
+
+/// Unlocked by Counter Pro (purchases.rs).
+const PRO_ACCENTS: [(Label, u32); 2] = [
+    (strings::settings_accents_pink, 0xD6336C),
+    (strings::settings_accents_teal, 0x0C8599),
 ];
 
 impl Render for Settings {
@@ -1118,9 +1130,15 @@ impl Render for Settings {
         // Phones: one column. Tablets and up: a two-column grid whose
         // cards in a row are as tall as each other.
         let grid = div().gap(20.).md(|s| s.grid().cols(2));
+        // Counter Pro's two colors, once bought (purchases.rs).
+        let mut accents = ACCENTS.to_vec();
+        if cx.owns(purchases::PRO) {
+            accents.extend(PRO_ACCENTS);
+        }
         screen.child(
             body.child(
                 grid.child(self.security)
+                    .child(self.pro)
                     .child(
                         ui::card()
                             .child(ui::heading(strings::settings_appearance(cx)))
@@ -1140,8 +1158,8 @@ impl Render for Settings {
                     .child(
                         ui::card()
                             .child(ui::heading(strings::settings_accent(cx)))
-                            .child(div().flex_row().gap(12.).children(ACCENTS.iter().map(
-                                |&(name, hex)| {
+                            .child(div().flex_row().flex_wrap().gap(12.).children(
+                                accents.iter().map(|&(name, hex)| {
                                     let selected = t.accent == rgb(hex);
                                     div()
                                         .size(px(40.))
@@ -1158,8 +1176,8 @@ impl Render for Settings {
                                                 })
                                             },
                                         ))
-                                },
-                            ))),
+                                }),
+                            )),
                     )
                     .child(language_card(cx))
                     .child(push::card(cx)),

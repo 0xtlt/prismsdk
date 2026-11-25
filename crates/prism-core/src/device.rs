@@ -745,6 +745,36 @@ pub enum DeviceCall {
     /// ([`AsyncApp::renew_browser_id`](crate::AsyncApp::renew_browser_id)).
     /// Answers `Done`; natively there is no browser id: `Done` at once.
     RenewBrowserId,
+
+    // --- In-app purchases (see crate::store, #306) ---
+    /// The store's products among these ids: answers `Text`, a JSON array
+    /// ([`Product::list_from_json`](crate::store::Product::list_from_json)).
+    StoreProducts(Vec<String>),
+    /// Buys a product with the store's sheet: answers `Text` `purchased` or
+    /// `pending` ([`PurchaseOutcome::name`](crate::store::PurchaseOutcome::name)),
+    /// `Err(Cancelled)` when the user cancels.
+    Purchase(crate::store::Purchase),
+    /// What the user owns now (verified): answers `Text`, a JSON array of
+    /// product ids.
+    StoreEntitlements,
+    /// Restores purchases (StoreKit's `AppStore.sync`), then answers like
+    /// [`StoreEntitlements`](DeviceCall::StoreEntitlements).
+    RestorePurchases,
+    /// A stream: [`DeviceEvent::Entitlements`] with what the user owns, at
+    /// once and whenever it changes.
+    WatchEntitlements,
+    /// The web: a URL of the server a checkout page comes back to (`Text`),
+    /// with a state of its own. Natively `Unavailable`.
+    StoreReturnUrl,
+    /// The web: opens the app's store's checkout page `url` in a popup and
+    /// answers the URL it came back to (`Text`), under `return_url`;
+    /// `Err(Cancelled)` if the user closed it. Natively `Unavailable`.
+    StoreCheckout {
+        /// The checkout page.
+        url: String,
+        /// The URL it comes back to ([`StoreReturnUrl`](DeviceCall::StoreReturnUrl)).
+        return_url: String,
+    },
 }
 
 /// A backend's answer to a [`DeviceCall`].
@@ -854,6 +884,8 @@ pub enum DeviceEvent {
         /// Bytes of every picked file.
         total: u64,
     },
+    /// What the user owns now, by product id (in-app purchases, #306).
+    Entitlements(Vec<String>),
 }
 
 /// Picked files being sent to the app, for [`App::cancel_upload`]: the
@@ -885,7 +917,7 @@ impl UploadProgress {
     }
 }
 
-type StreamHandler = Rc<dyn Fn(&DeviceEvent, &mut App)>;
+pub(crate) type StreamHandler = Rc<dyn Fn(&DeviceEvent, &mut App)>;
 
 /// Device state kept by the [`App`].
 #[derive(Default)]
@@ -907,6 +939,11 @@ impl App {
             .requests
             .push(crate::PlatformRequest::Device { id, call });
         id
+    }
+
+    /// Delivers the events of stream `id` to `handler`.
+    pub(crate) fn device_stream(&mut self, id: u64, handler: StreamHandler) {
+        self.device.streams.insert(id, handler);
     }
 
     /// For backends: the answer to call `id`.
@@ -943,7 +980,9 @@ impl App {
             Rc::new(move |e, app| match e {
                 DeviceEvent::Location(l) => f(&Ok(*l), app),
                 DeviceEvent::Error(err) => f(&Err(err.clone()), app),
-                DeviceEvent::Motion(_) | DeviceEvent::Upload { .. } => {}
+                DeviceEvent::Motion(_)
+                | DeviceEvent::Upload { .. }
+                | DeviceEvent::Entitlements(_) => {}
             }),
         );
         Watch(id)
@@ -962,7 +1001,9 @@ impl App {
             Rc::new(move |e, app| match e {
                 DeviceEvent::Motion(m) => f(&Ok(*m), app),
                 DeviceEvent::Error(err) => f(&Err(err.clone()), app),
-                DeviceEvent::Location(_) | DeviceEvent::Upload { .. } => {}
+                DeviceEvent::Location(_)
+                | DeviceEvent::Upload { .. }
+                | DeviceEvent::Entitlements(_) => {}
             }),
         );
         Watch(id)

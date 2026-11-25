@@ -146,9 +146,25 @@ pub struct Application {
     web: WebSetup,
     /// Smallest widths of the `Medium`, `Expanded` and `Large` size classes.
     breakpoints: Option<[f32; 3]>,
+    /// The app's own store (#306), set in every window and web session.
+    store: AppStore,
     /// The app's own locale, or the ones it supports (#229).
     locale: Option<prism_core::Locale>,
     supported_locales: Vec<prism_core::Locale>,
+}
+
+/// The store of [`Application::store`].
+#[derive(Clone, Default)]
+struct AppStore(Option<Arc<dyn prism_core::Store>>);
+
+impl std::fmt::Debug for AppStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "AppStore(..)"
+        } else {
+            "AppStore(None)"
+        })
+    }
 }
 
 /// What [`Application::web`] does to the web app.
@@ -281,6 +297,26 @@ impl Application {
         self
     }
 
+    /// Sells through `store` instead of the platform's store (#306), in
+    /// every window and web session ([`App::set_store`]): on the web, where
+    /// there is no store otherwise, the host's payment provider (it reads
+    /// the signed-in user from the request's context); a [`TestStore`] in
+    /// debug builds, on any platform.
+    ///
+    /// ```ignore
+    /// let app = Application::new();
+    /// #[cfg(debug_assertions)]
+    /// let app = app.store(TestStore::storekit(include_str!("../Products.storekit")).unwrap());
+    /// app.run(|cx| cx.new_entity(Home::new));
+    /// ```
+    ///
+    /// The App Store and Google Play require their own payment system for
+    /// digital goods: on Apple platforms and Android, ship without it.
+    pub fn store(mut self, store: impl prism_core::Store) -> Self {
+        self.store = AppStore(Some(Arc::new(store)));
+        self
+    }
+
     /// Web server port (default 3000, `PRISM_PORT` overrides).
     pub fn port(mut self, port: u16) -> Self {
         self.config.port = port;
@@ -322,11 +358,15 @@ impl Application {
     ) -> prism_web::WebApp {
         let breakpoints = self.breakpoints;
         let (locale, supported) = (self.locale.clone(), self.supported_locales.clone());
+        let store = self.store.0.clone();
         let init: AppInit = Arc::new(move |app: &mut App| {
             if let Some(b) = breakpoints {
                 app.set_breakpoints(b);
             }
             app.apply_app_locale(locale.as_ref(), &supported);
+            if let Some(store) = &store {
+                app.set_store(store.clone());
+            }
             let root = init(app);
             app.set_root(root);
         });
@@ -338,11 +378,15 @@ impl Application {
     pub fn run<V: Render>(self, init: impl Fn(&mut App) -> Entity<V> + Send + Sync + 'static) {
         let breakpoints = self.breakpoints;
         let (locale, supported) = (self.locale.clone(), self.supported_locales.clone());
+        let store = self.store.0.clone();
         let init: AppInit = Arc::new(move |app: &mut App| {
             if let Some(b) = breakpoints {
                 app.set_breakpoints(b);
             }
             app.apply_app_locale(locale.as_ref(), &supported);
+            if let Some(store) = &store {
+                app.set_store(store.clone());
+            }
             let root = init(app);
             app.set_root(root);
         });

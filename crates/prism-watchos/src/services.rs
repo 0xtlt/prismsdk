@@ -51,6 +51,8 @@ impl WatchServices {
                 web_auth: true,
                 // WKApplication.registerForRemoteNotifications (watchOS 6+).
                 push: prism_native::apple::push::service(),
+                // StoreKit 2 (PrismPurchases.swift, #306).
+                purchases: true,
                 ..Default::default()
             },
             ops: Vec::new(),

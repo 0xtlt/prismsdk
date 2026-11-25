@@ -65,7 +65,9 @@
       "indigo": "Indigo",
       "blue": "Blue",
       "green": "Green",
-      "orange": "Orange"
+      "orange": "Orange",
+      "pink": "Pink",
+      "teal": "Teal"
     }
   },
   "tabs": {
@@ -341,6 +343,20 @@
     "background": "Silent",
     "hint": "Send one from your server with prism-push, or in the iOS Simulator: xcrun simctl push booted dev.prism.counter push/hello.apns",
     "activity": "Live Activity token: {token}"
+  },
+  "pro": {
+    "title": "Counter Pro",
+    "owned": "Unlocked",
+    "buy": "Unlock for {price}",
+    "buying": "Opening the store…",
+    "restore": "Restore purchases",
+    "thanks": "Thanks! Pink and teal are in the accent colors.",
+    "pending": "Waiting for approval (Ask to Buy) or the payment.",
+    "restored": "Your purchase is restored.",
+    "nothing": "Nothing to restore on this account.",
+    "missing": "Counter Pro is not in this store.",
+    "unavailable": "Purchases are not available here.",
+    "error": "The store did not answer: {error}"
   },
   "forms": {
     "heading": "Forms",

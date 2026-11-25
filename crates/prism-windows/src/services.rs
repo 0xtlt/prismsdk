@@ -334,6 +334,16 @@ impl WinServices {
             DeviceCall::Reconnect => {}
             // No browser id natively: nothing to renew.
             DeviceCall::RenewBrowserId => reply(id, Ok(DeviceValue::Done)),
+            // No store here (#306): the Microsoft Store's `StoreContext`
+            // needs an app the Store distributes; an app sells through its
+            // own (`cx.set_store`), which never reaches the backend.
+            DeviceCall::StoreProducts(_)
+            | DeviceCall::Purchase(_)
+            | DeviceCall::StoreEntitlements
+            | DeviceCall::RestorePurchases
+            | DeviceCall::WatchEntitlements
+            | DeviceCall::StoreReturnUrl
+            | DeviceCall::StoreCheckout { .. } => reply(id, Err(DeviceError::Unavailable)),
             // Haptics and sharing answer nothing, as on Apple platforms.
             DeviceCall::Haptic(h) => {
                 if may(self.found.haptics) {

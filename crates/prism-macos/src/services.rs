@@ -115,6 +115,10 @@ impl MacServices {
                 // NSDraggingDestination (#111).
                 // ASAuthorizationPlatformPublicKeyCredentialProvider (#94).
                 passkeys: prism_native::apple::passkeys_available(),
+                // StoreKit 2 (PrismPurchases.swift, #306): products and
+                // purchases need an app the Mac App Store signed (or
+                // TestFlight's sandbox).
+                purchases: true,
                 drop_files: true,
                 drag_and_drop: true,
             },

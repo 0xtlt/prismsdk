@@ -525,6 +525,10 @@ fn apple_command(
     if let Some(g) = &p.google_services {
         cmd.env("PRISM_GOOGLE_SERVICES", g);
     }
+    // In-app purchases: Google Play Billing in Android builds.
+    if p.store {
+        cmd.env("PRISM_STORE", "1");
+    }
     if let Some(key) = &p.vapid_public_key {
         cmd.env("PRISM_VAPID_PUBLIC_KEY", key);
     }

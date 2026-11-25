@@ -55,6 +55,9 @@ mod security_tests;
 #[cfg(feature = "server")]
 mod server;
 mod session;
+mod store;
+#[cfg(test)]
+mod store_tests;
 #[cfg(test)]
 mod table_tests;
 #[cfg(test)]
@@ -79,6 +82,7 @@ pub use islands::ModuleUrls;
 #[cfg(feature = "server")]
 pub use server::serve;
 pub use session::{Encoder, Session};
+pub use store::entitlements_changed;
 
 use prism_core::{AppConfig, AppInit};
 

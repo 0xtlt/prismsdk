@@ -1553,6 +1553,21 @@ pub mod device {
             DeviceCall::Reconnect => json!({ "call": "reconnect" }),
             // No browser id natively (`renew_browser_id` never sends it).
             DeviceCall::RenewBrowserId => json!({ "call": "renew_browser_id" }),
+            // In-app purchases (#306): Google Play Billing (PrismBilling).
+            // Products answer `text` (a JSON array), a purchase `text`
+            // `purchased` / `pending`, entitlements `text` (a JSON array of
+            // ids); the watch sends `entitlements` events.
+            DeviceCall::StoreProducts(ids) => json!({ "call": "store_products", "ids": ids }),
+            DeviceCall::Purchase(p) => json!({
+                "call": "purchase", "product": p.product, "account": p.account_token,
+            }),
+            DeviceCall::StoreEntitlements => json!({ "call": "store_entitlements" }),
+            DeviceCall::RestorePurchases => json!({ "call": "restore_purchases" }),
+            DeviceCall::WatchEntitlements => json!({ "call": "watch_entitlements" }),
+            // A checkout page coming back to the server is a web thing.
+            DeviceCall::StoreReturnUrl | DeviceCall::StoreCheckout { .. } => {
+                json!({ "call": "unavailable" })
+            }
         };
         body["op"] = json!("device");
         body["id"] = json!(id);
@@ -1628,10 +1643,17 @@ pub mod device {
         Ok(DeviceValue::Done)
     }
 
-    /// A `device_event` of a stream: an error, a location or motion.
+    /// A `device_event` of a stream: an error, a location, what the user
+    /// owns (`entitlements`, product ids) or motion.
     pub fn event(v: &Value) -> DeviceEvent {
         if let Some(err) = v.get("err").and_then(Value::as_str) {
             DeviceEvent::Error(DeviceError::from_message(err))
+        } else if let Some(ids) = v.get("entitlements").and_then(Value::as_array) {
+            DeviceEvent::Entitlements(
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect(),
+            )
         } else if let Some(l) = v.get("location").and_then(location) {
             DeviceEvent::Location(l)
         } else {
@@ -1667,6 +1689,43 @@ mod apple_tests {
 
 #[cfg(test)]
 mod scene_tests {
+    #[test]
+    fn purchases_speak_play_billing_json() {
+        use prism_core::{DeviceCall, DeviceError, DeviceEvent, Purchase};
+        let sent = super::device::call(3, DeviceCall::StoreProducts(vec!["pro".into()]));
+        assert_eq!(sent["call"], "store_products");
+        assert_eq!(sent["ids"], serde_json::json!(["pro"]));
+        let sent = super::device::call(
+            4,
+            DeviceCall::Purchase(
+                Purchase::new("pro").account_token("8b2f0c1e-0000-4000-8000-000000000001"),
+            ),
+        );
+        assert_eq!(sent["call"], "purchase");
+        assert_eq!(sent["product"], "pro");
+        assert_eq!(sent["account"], "8b2f0c1e-0000-4000-8000-000000000001");
+        assert!(
+            super::device::call(5, DeviceCall::Purchase(Purchase::new("pro")))["account"].is_null()
+        );
+        for (call, name) in [
+            (DeviceCall::StoreEntitlements, "store_entitlements"),
+            (DeviceCall::RestorePurchases, "restore_purchases"),
+            (DeviceCall::WatchEntitlements, "watch_entitlements"),
+            (DeviceCall::StoreReturnUrl, "unavailable"),
+        ] {
+            assert_eq!(super::device::call(6, call)["call"], name);
+        }
+        let owned = super::device::event(&serde_json::json!({ "entitlements": ["pro", "themes"] }));
+        assert!(matches!(owned, DeviceEvent::Entitlements(ids) if ids == ["pro", "themes"]));
+        // Play's named errors keep their name.
+        let failed =
+            super::device::event(&serde_json::json!({ "err": "NETWORK_ERROR\u{1f}offline" }));
+        assert!(
+            matches!(failed, DeviceEvent::Error(DeviceError::Platform { ref name, .. }) if name == "NETWORK_ERROR"),
+            "{failed:?}"
+        );
+    }
+
     #[test]
     fn scene_taps_parse() {
         let v = serde_json::json!({"t": "scene_tap", "id": 4, "node": "cube", "part": "lid", "instance": 2, "point": [1., 2., 3.]});

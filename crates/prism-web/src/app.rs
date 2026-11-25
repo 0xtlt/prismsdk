@@ -482,6 +482,18 @@ impl WebApp {
             set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
             set(&mut r, header::CACHE_CONTROL, "no-store");
             r
+        } else if path == "/_prism/store/return" {
+            // A checkout page came back (#306): hand it to its session.
+            let mut r = Response::new(
+                crate::store::return_page(
+                    req.uri().query().unwrap_or(""),
+                    req.extensions().get::<crate::CspNonce>(),
+                )
+                .into_bytes(),
+            );
+            set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
+            set(&mut r, header::CACHE_CONTROL, "no-store");
+            r
         } else if let Some(file) = path
             .strip_prefix('/')
             .filter(|p| p.starts_with("_prism/") || p.starts_with("assets/"))

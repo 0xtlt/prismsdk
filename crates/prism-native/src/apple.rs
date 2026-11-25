@@ -527,6 +527,11 @@ mod bridge {
         fn prism_web_auth(id: u64, url: *const c_char, redirect: *const c_char, ephemeral: bool);
         fn prism_webauthn(id: u64, create: bool, conditional: bool, options: *const c_char);
         fn prism_passkeys_available() -> bool;
+        // PrismPurchases.swift (StoreKit 2, #306)
+        fn prism_store_products(id: u64, ids: *const c_char);
+        fn prism_store_purchase(id: u64, product: *const c_char, account: *const c_char);
+        fn prism_store_entitlements(id: u64, restore: bool);
+        fn prism_store_watch(id: u64);
     }
 
     /// What the Keychain and LocalAuthentication offer here:
@@ -710,6 +715,25 @@ mod bridge {
                 DeviceCall::RenewBrowserId => {
                     send(DeviceMessage::Reply(id, Ok(DeviceValue::Done)));
                 }
+                // In-app purchases (#306), StoreKit 2: ids one per line.
+                DeviceCall::StoreProducts(ids) => {
+                    prism_store_products(id, c(&ids.join("\n")).as_ptr())
+                }
+                DeviceCall::Purchase(p) => {
+                    let account = p.account_token.as_deref().map(c);
+                    prism_store_purchase(
+                        id,
+                        c(&p.product).as_ptr(),
+                        account.as_ref().map_or(std::ptr::null(), |a| a.as_ptr()),
+                    )
+                }
+                DeviceCall::StoreEntitlements => prism_store_entitlements(id, false),
+                DeviceCall::RestorePurchases => prism_store_entitlements(id, true),
+                DeviceCall::WatchEntitlements => prism_store_watch(id),
+                // A checkout page coming back to the server is a web thing.
+                DeviceCall::StoreReturnUrl | DeviceCall::StoreCheckout { .. } => {
+                    send(DeviceMessage::Reply(id, Err(DeviceError::Unavailable)));
+                }
             }
         }
     }
@@ -824,6 +848,16 @@ mod bridge {
             })
             .unwrap_or_default();
         send(DeviceMessage::Reply(id, Ok(DeviceValue::Fields(fields))));
+    }
+
+    /// What the user owns now, for the entitlements stream `id`: a JSON
+    /// array of product ids (PrismPurchases.swift).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn prism_store_event(id: u64, json: *const c_char) {
+        let ids = string(json)
+            .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
+            .unwrap_or_default();
+        send(DeviceMessage::Event(id, DeviceEvent::Entitlements(ids)));
     }
 
     #[unsafe(no_mangle)]

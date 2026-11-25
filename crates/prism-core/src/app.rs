@@ -179,7 +179,9 @@ pub struct App {
     pub(crate) device: crate::device::Device,
     pub(crate) push: crate::push::Push,
     pub(crate) device_info: crate::device_info::DeviceInfoState,
-    storage: Box<dyn crate::storage::Storage>,
+    pub(crate) storage: Box<dyn crate::storage::Storage>,
+    /// In-app purchases (#306).
+    pub(crate) store: crate::store::StoreState,
     pub(crate) cloud: crate::storage::Cloud,
     pub(crate) window: crate::window::Window,
     // Focus, scrolling, layers, key propagation (#17, #25).
@@ -276,6 +278,7 @@ impl Default for App {
             device: Default::default(),
             push: Default::default(),
             storage: Box::new(crate::storage::MemoryStorage::default()),
+            store: Default::default(),
             cloud: Default::default(),
             window: Default::default(),
             device_info: Default::default(),

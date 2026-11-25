@@ -6,7 +6,11 @@
 
 Fetches each library and its compile/runtime dependencies (POMs) from Google's
 Maven and Maven Central, the highest version winning, into the cache. AARs are
-unpacked. Prints JSON: [{"id", "jars": [...], "res": dir|null, "package": str|null}].
+unpacked. Version constraints are applied as Gradle applies them: those of the
+libraries' Gradle module metadata (`.module`: androidx.lifecycle's artifacts at
+one version), and the Kotlin Gradle plugin's (kotlin-stdlib-jdk7/jdk8 at
+kotlin-stdlib's version, their classes being in it since 1.8); otherwise the
+same classes would come twice. Prints JSON: [{"id", "jars": [...], "res": dir|null, "package": str|null}].
 
 Every file is checked against android-deps.lock (next to this script): the
 SHA-256 of each file the resolution reads, by its path in the repository.
@@ -176,8 +180,41 @@ def deps(g, a, v):
     return out, packaging
 
 
-# Breadth first; the highest version of each library wins.
-chosen, packaging, queue = {}, {}, []
+def module_constraints(g, a, v):
+    """(group, artifact, version) the library's Gradle module metadata
+    constrains: versions its siblings must have at least, if they are used."""
+    data = fetch(f"{g.replace('.', '/')}/{a}/{v}/{a}-{v}.module")
+    if not data:
+        return []
+    try:
+        meta = json.loads(data)
+    except ValueError:
+        return []
+    out = []
+    for variant in meta.get("variants", []):
+        for c in variant.get("dependencyConstraints", []):
+            version = c.get("version", {})
+            want = version.get("strictly") or version.get("requires")
+            if c.get("group") and c.get("module") and want and "[" not in want and "(" not in want:
+                out.append(coordinate(c["group"], c["module"], want))
+    return out
+
+
+# The Kotlin Gradle plugin's alignment: since Kotlin 1.8 the classes of
+# kotlin-stdlib-jdk7/jdk8 are in kotlin-stdlib, and those artifacts are empty.
+KOTLIN_ALIGNED = {("org.jetbrains.kotlin", "kotlin-stdlib"): ["kotlin-stdlib-jdk7", "kotlin-stdlib-jdk8"]}
+
+
+def constraints_of(g, a, v):
+    out = module_constraints(g, a, v)
+    if key(v) >= key("1.8.0"):
+        out += [(g, sibling, v) for sibling in KOTLIN_ALIGNED.get((g, a), [])]
+    return out
+
+
+# Breadth first; the highest version of each library wins, and constraints
+# raise the versions of the libraries they name (those used).
+chosen, packaging, queue, floors = {}, {}, [], {}
 for spec in specs:
     parts = spec.split(":")
     if len(parts) != 3:
@@ -188,12 +225,20 @@ for spec in specs:
     queue.append(root)
 while queue:
     g, a, v = queue.pop(0)
+    floor = floors.get((g, a))
+    if floor and key(floor) > key(v):
+        v = floor
     current = chosen.get((g, a))
     if current and key(current) >= key(v):
         continue
     chosen[(g, a)] = v
     children, packaging[(g, a)] = deps(g, a, v)
     queue.extend(children)
+    for cg, ca, cv in constraints_of(g, a, v):
+        if key(cv) > key(floors.get((cg, ca), "0")):
+            floors[(cg, ca)] = cv
+            if (cg, ca) in chosen and key(chosen[(cg, ca)]) < key(cv):
+                queue.append((cg, ca, cv))
 
 result = []
 unpacked = os.path.join(cache, "unpacked")
