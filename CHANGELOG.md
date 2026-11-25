@@ -7,6 +7,23 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.4.0 (2026-11-25)
+
+Store compliance, built in. Every Apple bundle carries a privacy manifest
+with the required-reason APIs its binary uses and Prism's reasons for them
+(ITMS-91053), binaries reference only the protected APIs the app declares
+in `[permissions]` (ITMS-90683), and app icons lose their alpha outside
+macOS (ITMS-90717). `[permissions]` covers contacts, calendars, bluetooth,
+tracking, health and seven more, on every platform. Android app bundles
+carry native debug symbols and are checked for 16 KB pages; `prism
+publish` checks all of it before uploading. On the web, shapes in hidden
+boxes, `hit_test(true)` in states and moved elements with a transition now
+behave as natively (#319).
+**Breaking on Apple platforms:** location, the camera, the microphone, the
+photo library and Face ID need prismsdk's `location`, `location-always`,
+`camera`, `microphone`, `photo-library` and `face-id` features (`prism`
+turns them on from `[permissions]`).
+
 ### Added
 
 - Privacy manifests (#318): every Apple bundle (the app and its widget
