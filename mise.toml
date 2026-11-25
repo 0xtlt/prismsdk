@@ -29,6 +29,13 @@ run = [
   "cargo check -p counter --target aarch64-apple-tvos-sim",
   "cargo check -p counter --target aarch64-apple-watchos-sim",
   "cargo check -p counter --target aarch64-apple-visionos-sim",
+  # Without the [permissions] features (the counter turns them on): the
+  # bridge's protected code compiled out (#318).
+  "cargo check -p prismsdk-macos",
+  "cargo check -p prismsdk-ios --target aarch64-apple-ios-sim",
+  "cargo check -p prismsdk-ios --target aarch64-apple-tvos-sim",
+  "cargo check -p prismsdk-ios --target aarch64-apple-visionos-sim",
+  "cargo check -p prismsdk-watchos --target aarch64-apple-watchos-sim",
   "cargo ndk -t arm64-v8a -P 29 check -p counter --lib",
 ]
 

@@ -2,9 +2,17 @@
 // motion, photo/camera pickers, haptics, clipboard, share sheet, URLs.
 // Each call carries an id; answers go back through the C functions below.
 import AVFoundation
+// Location, the camera, the microphone, the photo library and (Face ID)
+// LocalAuthentication are compiled in only for apps that declare them under
+// [permissions] in Prism.toml: `prism` turns on prismsdk's `location`,
+// `location-always`, `camera`, `microphone`, `photo-library` and `face-id`
+// features from it (PRISM_LOCATION…). App Store Connect asks for a purpose
+// string for each of these APIs the binary references, used or not.
+#if PRISM_LOCATION
 import CoreLocation
+#endif
 import Foundation
-#if canImport(Photos)
+#if PRISM_PHOTO_LIBRARY && canImport(Photos)
 import Photos
 #endif
 import UniformTypeIdentifiers
@@ -69,10 +77,26 @@ private func usageMissing(_ id: UInt64, _ key: String, _ name: String, event: Bo
     return true
 }
 
+/// A permission the app did not declare: its code is not in the app.
+private func undeclared(_ id: UInt64, _ name: String, event: Bool = false) {
+    let feature: String
+    switch name {
+    case "photos": feature = "photo-library"
+    default: feature = name.replacingOccurrences(of: "_", with: "-")
+    }
+    fail(id, "add `\(name) = \"why the app needs it\"` under [permissions] in Prism.toml: `prism` then builds the app with that code (prismsdk's `\(feature)` feature)", event: event)
+}
+
+/// `ask`: the request fails with what to declare; a status is "unavailable".
+private func undeclaredPermission(_ id: UInt64, _ name: String, _ ask: Bool) {
+    if ask { undeclared(id, name) } else { permissionReply(id, "unavailable") }
+}
+
 private func string(_ p: UnsafePointer<CChar>?) -> String? { p.map { String(cString: $0) } }
 
 // MARK: Location
 
+#if PRISM_LOCATION
 private let locationUsageKey: String = {
     #if os(iOS) || os(visionOS) || os(tvOS)
     return "NSLocationWhenInUseUsageDescription"
@@ -111,7 +135,7 @@ final class PrismLocation: NSObject, CLLocationManagerDelegate {
         PrismLocation.active[id] = self
         switch manager.authorizationStatus {
         case .notDetermined:
-            #if os(iOS)
+            #if os(iOS) && PRISM_LOCATION_ALWAYS
             if case .permission(true) = mode { manager.requestAlwaysAuthorization() } else { manager.requestWhenInUseAuthorization() }
             #else
             manager.requestWhenInUseAuthorization()
@@ -171,6 +195,7 @@ final class PrismLocation: NSObject, CLLocationManagerDelegate {
         error(code == .denied ? "denied" : code == .locationUnknown ? "location unknown" : e.localizedDescription)
     }
 }
+#endif
 
 // MARK: Calls (from Rust)
 
@@ -179,16 +204,24 @@ public func prismDevicePermission(_ id: UInt64, _ name: UnsafePointer<CChar>, _ 
     let name = String(cString: name)
     switch name {
     case "location", "location_always":
+        #if PRISM_LOCATION
         let manager = CLLocationManager()
         if !ask || manager.authorizationStatus != .notDetermined {
             return permissionReply(id, locationState(manager.authorizationStatus, precise: manager.accuracyAuthorization == .fullAccuracy))
         }
+        #if os(iOS) && !PRISM_LOCATION_ALWAYS
+        if name == "location_always" { return undeclared(id, name) }
+        #endif
         if usageMissing(id, locationUsageKey, "location") { return }
         PrismLocation(id: id, mode: .permission(always: name == "location_always"), accuracy: 1).start()
+        #else
+        undeclaredPermission(id, name, ask)
+        #endif
     #if os(watchOS)
     case "camera":
         permissionReply(id, "unavailable") // no camera on the watch
     case "microphone":
+        #if PRISM_MICROPHONE
         let reply = { (p: AVAudioApplication.recordPermission) in
             permissionReply(id, p == .granted ? "granted" : p == .undetermined ? "not_determined" : "denied")
         }
@@ -196,16 +229,22 @@ public func prismDevicePermission(_ id: UInt64, _ name: UnsafePointer<CChar>, _ 
         guard ask, status == .undetermined else { return reply(status) }
         if usageMissing(id, "NSMicrophoneUsageDescription", name) { return }
         AVAudioApplication.requestRecordPermission { _ in reply(AVAudioApplication.shared.recordPermission) }
+        #else
+        undeclaredPermission(id, name, ask)
+        #endif
     #else
-    case "camera", "microphone":
-        let media: AVMediaType = name == "camera" ? .video : .audio
-        let reply = { (s: AVAuthorizationStatus) in
-            permissionReply(id, s == .authorized ? "granted" : s == .notDetermined ? "not_determined" : "denied")
-        }
-        let status = AVCaptureDevice.authorizationStatus(for: media)
-        guard ask, status == .notDetermined else { return reply(status) }
-        if usageMissing(id, name == "camera" ? "NSCameraUsageDescription" : "NSMicrophoneUsageDescription", name) { return }
-        AVCaptureDevice.requestAccess(for: media) { _ in reply(AVCaptureDevice.authorizationStatus(for: media)) }
+    case "camera":
+        #if PRISM_CAMERA
+        capturePermission(id, .video, "NSCameraUsageDescription", name, ask)
+        #else
+        undeclaredPermission(id, name, ask)
+        #endif
+    case "microphone":
+        #if PRISM_MICROPHONE
+        capturePermission(id, .audio, "NSMicrophoneUsageDescription", name, ask)
+        #else
+        undeclaredPermission(id, name, ask)
+        #endif
     #endif
     #if os(watchOS)
     case "photos":
@@ -213,6 +252,7 @@ public func prismDevicePermission(_ id: UInt64, _ name: UnsafePointer<CChar>, _ 
         permissionReply(id, "granted")
     #else
     case "photos":
+        #if PRISM_PHOTO_LIBRARY
         let reply = { (s: PHAuthorizationStatus) in
             permissionReply(id, s == .authorized ? "granted" : s == .limited ? "limited" : s == .notDetermined ? "not_determined" : "denied")
         }
@@ -220,6 +260,9 @@ public func prismDevicePermission(_ id: UInt64, _ name: UnsafePointer<CChar>, _ 
         guard ask, status == .notDetermined else { return reply(status) }
         if usageMissing(id, "NSPhotoLibraryUsageDescription", "photos") { return }
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { reply($0) }
+        #else
+        undeclaredPermission(id, name, ask)
+        #endif
     #endif
     case "motion":
         #if os(iOS) || os(visionOS) || os(watchOS)
@@ -251,10 +294,27 @@ public func prismDevicePermission(_ id: UInt64, _ name: UnsafePointer<CChar>, _ 
     }
 }
 
+#if (PRISM_CAMERA || PRISM_MICROPHONE) && !os(watchOS)
+/// The camera's or the microphone's permission (AVCaptureDevice).
+private func capturePermission(_ id: UInt64, _ media: AVMediaType, _ key: String, _ name: String, _ ask: Bool) {
+    let reply = { (s: AVAuthorizationStatus) in
+        permissionReply(id, s == .authorized ? "granted" : s == .notDetermined ? "not_determined" : "denied")
+    }
+    let status = AVCaptureDevice.authorizationStatus(for: media)
+    guard ask, status == .notDetermined else { return reply(status) }
+    if usageMissing(id, key, name) { return }
+    AVCaptureDevice.requestAccess(for: media) { _ in reply(AVCaptureDevice.authorizationStatus(for: media)) }
+}
+#endif
+
 @_cdecl("prism_device_location")
 public func prismDeviceLocation(_ id: UInt64, _ accuracy: Int32, _ stream: Bool) {
+    #if PRISM_LOCATION
     if usageMissing(id, locationUsageKey, "location", event: stream) { return }
     PrismLocation(id: id, mode: stream ? .stream : .once, accuracy: accuracy).start()
+    #else
+    undeclared(id, "location", event: stream)
+    #endif
 }
 
 #if os(iOS) || os(visionOS) || os(watchOS)
@@ -284,7 +344,9 @@ public func prismDeviceMotionStart(_ id: UInt64, _ interval: Double) {
 @_cdecl("prism_device_stop")
 public func prismDeviceStop(_ id: UInt64) {
     PrismPurchases.stop(id)
+    #if PRISM_LOCATION
     if let l = PrismLocation.active.removeValue(forKey: id) { l.manager.stopUpdatingLocation() }
+    #endif
     #if os(iOS) || os(visionOS) || os(watchOS)
     motionManagers.removeValue(forKey: id)?.stopDeviceMotionUpdates()
     #endif
@@ -352,6 +414,7 @@ final class PrismPhotoPicker: NSObject, PHPickerViewControllerDelegate {
 }
 #endif
 
+#if PRISM_CAMERA
 final class PrismCamera: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
     let id: UInt64
     init(id: UInt64) { self.id = id }
@@ -376,6 +439,7 @@ final class PrismCamera: NSObject, UIImagePickerControllerDelegate, UINavigation
     }
 }
 #endif
+#endif
 
 #if !PRISM_PHOTOS_PICKER && (os(iOS) || os(visionOS) || os(watchOS))
 private let photoPickerFeature = "the photo picker needs prismsdk's `photo-picker` feature (prismsdk = { features = [\"photo-picker\"] }): PhotosUI is linked only with it"
@@ -398,6 +462,7 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
     if camera { return fail(id, "unavailable") } // UIImagePickerController has no camera on visionOS
     #else
     if camera {
+        #if PRISM_CAMERA
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else { return fail(id, "unavailable") }
         if usageMissing(id, "NSCameraUsageDescription", "camera") { return }
         let delegate = PrismCamera(id: id)
@@ -406,6 +471,9 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
         picker.sourceType = .camera
         picker.delegate = delegate
         top.present(picker, animated: true)
+        #else
+        undeclared(id, "camera")
+        #endif
         return
     }
     #endif

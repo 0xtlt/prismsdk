@@ -68,7 +68,8 @@ impl ServiceAccount {
     }
 }
 
-/// What a bundle declares (from `bundletool dump manifest`) and who signed it.
+/// What a bundle declares (from `bundletool dump manifest`), its native
+/// libraries, and who signed it.
 #[derive(Debug, PartialEq)]
 pub struct BundleInfo {
     pub package: String,
@@ -80,6 +81,36 @@ pub struct BundleInfo {
     /// Subject of the one certificate that signed every entry, or why the
     /// signature is not one Play takes ([`bundle_signer`]).
     pub signer: Result<String, String>,
+    /// Each native library (`base/lib/arm64-v8a/libapp.so`) with the
+    /// smallest alignment of its loadable segments ([`load_alignment`]).
+    pub native_libs: Vec<(String, Option<u64>)>,
+    /// The bundle carries native debug symbols (Play Console's crashes).
+    pub debug_symbols: bool,
+}
+
+/// The page size Android 15+ devices may use, which Google Play requires
+/// 64-bit native libraries to be aligned for.
+pub const PAGE_16K: u64 = 16384;
+
+/// The smallest `p_align` of a 64-bit little-endian ELF file's loadable
+/// segments (`PT_LOAD`); `None` for anything else (32-bit libraries, which
+/// 16 KB pages don't concern).
+pub fn load_alignment(elf: &[u8]) -> Option<u64> {
+    let u16_at = |o: usize| Some(u16::from_le_bytes(elf.get(o..o + 2)?.try_into().ok()?));
+    let u32_at = |o: usize| Some(u32::from_le_bytes(elf.get(o..o + 4)?.try_into().ok()?));
+    let u64_at = |o: usize| Some(u64::from_le_bytes(elf.get(o..o + 8)?.try_into().ok()?));
+    if elf.get(..6)? != b"\x7fELF\x02\x01" {
+        return None;
+    }
+    let phoff = usize::try_from(u64_at(0x20)?).ok()?;
+    let (size, count) = (usize::from(u16_at(0x36)?), usize::from(u16_at(0x38)?));
+    (0..count)
+        .map(|i| phoff + i * size)
+        .filter(|&h| u32_at(h) == Some(1))
+        .map(|h| u64_at(h + 48))
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .min()
 }
 
 fn attr<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
@@ -102,6 +133,8 @@ impl BundleInfo {
             target_sdk: num("android:targetSdkVersion"),
             debuggable: attr(xml, "android:debuggable") == Some("true"),
             signer: Err(NOT_SIGNED.into()),
+            native_libs: Vec::new(),
+            debug_symbols: false,
         })
     }
 
@@ -122,6 +155,15 @@ impl BundleInfo {
         }
         if self.debuggable {
             return Err("the bundle is debuggable: Play rejects it".into());
+        }
+        if let Some((lib, Some(align))) = self
+            .native_libs
+            .iter()
+            .find(|(_, a)| a.is_some_and(|a| a < PAGE_16K))
+        {
+            return Err(format!(
+                "{lib} is aligned for {align}-byte pages: Google Play requires 16 KB (Android 15+ devices); rebuild it with cargo-ndk 4+ or NDK r28+"
+            ));
         }
         match &self.signer {
             Err(e) => Err(e.clone()),
@@ -219,6 +261,25 @@ pub fn inspect(aab: &Path, bundletool: &Path) -> Result<BundleInfo, String> {
     }
     let mut info = BundleInfo::from_manifest(&String::from_utf8_lossy(&out.stdout))?;
     info.signer = bundle_signer(aab);
+    let list = std::process::Command::new("unzip")
+        .arg("-Z1")
+        .arg(aab)
+        .output()
+        .map_err(|e| format!("unzip: {e}"))?;
+    for entry in String::from_utf8_lossy(&list.stdout).lines() {
+        if entry.starts_with("BUNDLE-METADATA/com.android.tools.build.debugsymbols/") {
+            info.debug_symbols = true;
+        } else if entry.contains("/lib/") && entry.ends_with(".so") {
+            let lib = std::process::Command::new("unzip")
+                .arg("-p")
+                .arg(aab)
+                .arg(entry)
+                .output()
+                .map_err(|e| format!("unzip: {e}"))?;
+            info.native_libs
+                .push((entry.to_string(), load_alignment(&lib.stdout)));
+        }
+    }
     Ok(info)
 }
 
@@ -522,6 +583,39 @@ mod tests {
                 .unwrap_err()
                 .contains("API 36")
         );
+    }
+
+    /// A 64-bit ELF header with PT_LOAD segments aligned to `aligns`.
+    fn elf(aligns: &[u64]) -> Vec<u8> {
+        let mut e = vec![0u8; 64 + 56 * aligns.len()];
+        e[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        e[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
+        e[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+        e[0x38..0x3a].copy_from_slice(&(aligns.len() as u16).to_le_bytes());
+        for (i, a) in aligns.iter().enumerate() {
+            let h = 64 + 56 * i;
+            e[h..h + 4].copy_from_slice(&1u32.to_le_bytes());
+            e[h + 48..h + 56].copy_from_slice(&a.to_le_bytes());
+        }
+        e
+    }
+
+    #[test]
+    fn checks_native_library_alignment() {
+        assert_eq!(load_alignment(&elf(&[16384, 16384])), Some(16384));
+        assert_eq!(load_alignment(&elf(&[16384, 4096])), Some(4096));
+        assert_eq!(load_alignment(b"\x7fELF\x01\x01"), None);
+        assert_eq!(load_alignment(&elf(&[16384])[..80]), None);
+        let xml = r#"<manifest android:versionCode="7" android:versionName="1.2.0" package="dev.prism.counter">
+  <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36"/>"#;
+        let mut info = BundleInfo::from_manifest(xml).unwrap();
+        info.signer = Ok("CN=Upload".into());
+        info.native_libs = vec![("base/lib/arm64-v8a/libcounter.so".into(), Some(16384))];
+        assert_eq!(info.check("dev.prism.counter"), Ok(()));
+        info.native_libs
+            .push(("base/lib/x86_64/libcounter.so".into(), Some(4096)));
+        let err = info.check("dev.prism.counter").unwrap_err();
+        assert!(err.contains("x86_64") && err.contains("16 KB"), "{err}");
     }
 
     #[test]

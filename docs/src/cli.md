@@ -55,9 +55,20 @@ icon = "icon.png"             # 1024×1024 PNG
 # locales = "locales"         # translations directory
 orientations = ["portrait"]   # iPhone and Android (default: every one), see below
 
-[permissions]                 # why the app asks (shown by the system)
+[permissions]                 # why the app asks (shown by the system), see below
 location = "Shows todos near you."
 camera = "Takes a photo for a todo."
+
+[privacy]                     # the App Store privacy manifest, see below
+tracking = false              # NSPrivacyTracking
+# tracking_domains = ["ads.example.com"]  # needed when tracking = true
+# manifest = "PrivacyInfo.xcprivacy"      # merged in (the default when it exists)
+
+[privacy.apis]                # required-reason APIs of the app's own code
+user_defaults = ["CA92.1"]
+
+[privacy.collected]           # data the app or its server collects
+email_address = ["app_functionality", "linked"]
 
 [store]                       # in-app purchases (see In-app purchases)
 enabled = true                # Android: bundles Google Play Billing
@@ -115,6 +126,79 @@ development builds only (#187): `prism run` and `prism dev` without `--release`
 add them; `prism build`, `--release` and `prism publish` leave them out, so a
 store build carries no exception for a laptop's address. A host in both lists
 is allowed everywhere.
+
+### Permissions
+
+`[permissions]` names the protected resources the app asks for, each with the
+text the system shows when it asks. `prism` knows these names and refuses
+others:
+
+| Name | Apple (Info.plist) | Android | Mac App Store sandbox, Windows |
+|---|---|---|---|
+| `location` | `NSLocationWhenInUseUsageDescription` | `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | location; `location` |
+| `location_always` | `NSLocationAlwaysAndWhenInUseUsageDescription` | `ACCESS_BACKGROUND_LOCATION` | location; `location` |
+| `camera` | `NSCameraUsageDescription` | `CAMERA` | camera; `webcam` |
+| `microphone` | `NSMicrophoneUsageDescription` | `RECORD_AUDIO` | audio input; `microphone` |
+| `photos` | `NSPhotoLibraryUsageDescription`, `NSPhotoLibraryAddUsageDescription` | — (the photo picker asks none) | photos library |
+| `motion` | `NSMotionUsageDescription` | — | — |
+| `face_id` | `NSFaceIDUsageDescription` | — | — |
+| `contacts` | `NSContactsUsageDescription` | `READ_CONTACTS` | address book |
+| `calendars`, `reminders` | `NSCalendarsFullAccessUsageDescription`, `NSRemindersFullAccessUsageDescription` (and the older keys) | `READ_CALENDAR`, `WRITE_CALENDAR` (calendars) | calendars |
+| `bluetooth` | `NSBluetoothAlwaysUsageDescription` | `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT` | bluetooth; `bluetooth` |
+| `speech` | `NSSpeechRecognitionUsageDescription` | `RECORD_AUDIO` | audio input |
+| `tracking` | `NSUserTrackingUsageDescription` (App Tracking Transparency) | `com.google.android.gms.permission.AD_ID` | — |
+| `health` | `NSHealthShareUsageDescription`, `NSHealthUpdateUsageDescription` | — | — |
+| `nfc` | `NFCReaderUsageDescription` | `NFC` | —; `proximity` |
+| `media_library` | `NSAppleMusicUsageDescription` | `READ_MEDIA_AUDIO` | — |
+| `homekit`, `siri`, `local_network` | `NSHomeKitUsageDescription`, `NSSiriUsageDescription`, `NSLocalNetworkUsageDescription` | — | — |
+
+App Store Connect wants a purpose string for every protected API the binary
+references, whether the app calls it or not (ITMS-90683). So on Apple
+platforms Prism's code for location, the camera, the microphone, the photo
+library and Face ID is compiled in only when `[permissions]` declares it:
+`prism` turns on prismsdk's feature for each (`location`, `location-always`,
+`camera`, `microphone`, `photo-library`, `face-id`) through the key the app
+depends on prismsdk under (`--features prism/location,…`). An app built
+without `prism` lists them in its `Cargo.toml`
+(`prism = { …, features = ["location"] }`). Without one, the API fails with a
+message naming the `[permissions]` entry, and `capabilities()` reports the
+resource unavailable. The Apple bundlers also look for protected APIs a crate
+brings without its text (`CLLocationManager`, `CNContactStore`,
+`HKHealthStore`…): App Store builds stop on one, other builds warn.
+
+### Privacy manifest
+
+Every Apple bundle Prism makes carries a `PrivacyInfo.xcprivacy` (#318):
+the app and its widget extension, on iOS, iPadOS, tvOS, visionOS, watchOS
+and macOS. It declares the [required-reason APIs](https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api)
+each binary references, which the bundler finds in the binary itself (the
+functions, constants and selectors Apple lists), and Prism gives the reasons
+of its own uses:
+
+| Category | Reason | Prism's use |
+|---|---|---|
+| `FileTimestamp` | `C617.1` | metadata of files in the app's containers (`std::fs`, assets, caches) |
+| `SystemBootTime` | `35F9.1` | time between the app's events (animations, frames) |
+| `DiskSpace` | `E174.1` | SQLite checks the volume before it writes (`db`) |
+
+The other categories, `UserDefaults` and `ActiveKeyboards`, are the app's own
+(a crate it depends on): it gives their reasons under `[privacy.apis]`
+(`user_defaults`, `active_keyboards`, also `file_timestamp`, `system_boot_time`
+and `disk_space` for reasons of its own), checked against Apple's list. An App
+Store build for the iOS family stops when a category the binary references has
+no reason, since App Store Connect rejects it (ITMS-91053); other builds warn.
+
+`[privacy]` fills the rest of the app's manifest: `tracking` and
+`tracking_domains` (Apple wants at least one domain when the app tracks, and
+`tracking` under `[permissions]` for the prompt), and `[privacy.collected]`,
+one line per [collected data type](https://developer.apple.com/documentation/bundleresources/describing-data-use-in-privacy-manifests)
+(`email_address`, `name`, `precise_location`, `crash_data`,
+`product_interaction`…) with its purposes (`third_party_advertising`,
+`developer_advertising`, `analytics`, `product_personalization`,
+`app_functionality`, `other`) and the flags `linked` (to the user's identity)
+and `tracking`. A `PrivacyInfo.xcprivacy` next to `Prism.toml` (or the file
+`[privacy] manifest` names) is merged in: its entries join Prism's, which
+lets an app declare a reason or key Prism doesn't know yet.
 
 `prism run|dev|build web` builds the [islands](guide/islands.md) for
 `wasm32-unknown-unknown` with a size profile, runs wasm-bindgen as a library

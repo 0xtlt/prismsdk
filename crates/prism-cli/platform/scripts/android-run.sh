@@ -86,6 +86,11 @@ VERSION_CODE="${PRISM_BUILD:-1}"
   || { echo "versionCode must be a whole number from 1 to 2100000000 (Prism.toml [app] build), not $VERSION_CODE" >&2; exit 1; }
 PROFILE_DIR=debug CARGO_FLAGS=()
 if [[ "${PRISM_RELEASE:-}" == 1 ]]; then PROFILE_DIR=release CARGO_FLAGS=(--release); fi
+# The prismsdk features Prism.toml's [permissions] turn on (PRISM_FEATURES):
+# nothing changes on Android, but this computer's build below shares its
+# artifacts with `prism run macos` that way.
+FEATURES=()
+[[ -n "${PRISM_FEATURES:-}" ]] && FEATURES=(--features "$PRISM_FEATURES")
 OUT="$TARGET_DIR/android/$PROFILE_DIR"
 STAGE="$OUT/stage"
 ABI="${PRISM_ANDROID_ABI:-arm64-v8a}"
@@ -97,14 +102,37 @@ esac
 rm -rf "$STAGE" && mkdir -p "$STAGE/lib/$ABI" "$OUT/classes" "$STAGE/assets"
 
 # 1. The app as a shared library (arm64: phones and Apple Silicon emulators).
-cargo ndk -t "$ABI" -P "$MIN_SDK" rustc -p "$PKG" --lib --crate-type cdylib ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
-cp "$TARGET_DIR/$TRIPLE/$PROFILE_DIR/lib$LIB.so" "$STAGE/lib/$ABI/"
+cargo ndk -t "$ABI" -P "$MIN_SDK" rustc -p "$PKG" --lib --crate-type cdylib ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"} ${FEATURES[@]+"${FEATURES[@]}"}
+SO="$STAGE/lib/$ABI/lib$LIB.so"
+cp "$TARGET_DIR/$TRIPLE/$PROFILE_DIR/lib$LIB.so" "$SO"
+# Android 15+ devices with 16 KB pages load only libraries whose segments
+# are aligned for them, and Google Play takes no other (cargo-ndk 4+ and NDK
+# r28+ link them so): an error for app bundles, a warning otherwise.
+STRICT_ALIGN=0
+[[ "$AAB" == 1 ]] && STRICT_ALIGN=1
+python3 - "$SO" "$STRICT_ALIGN" <<'ELF'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+# 64-bit little-endian ELF (arm64-v8a, x86_64): the program headers' PT_LOAD.
+if data[:4] == b"\x7fELF" and data[4] == 2 and data[5] == 1:
+    phoff, = struct.unpack_from("<Q", data, 0x20)
+    size, count = struct.unpack_from("<HH", data, 0x36)
+    aligns = [struct.unpack_from("<Q", data, phoff + i * size + 48)[0] for i in range(count)
+              if struct.unpack_from("<I", data, phoff + i * size)[0] == 1]
+    if aligns and min(aligns) < 16384:
+        msg = ("%s is aligned for %d-byte pages: Android 15+ devices with 16 KB pages cannot load it, "
+               "and Google Play rejects it. Update cargo-ndk (4 or later: cargo install cargo-ndk) "
+               "or the NDK (r28 or later)" % (sys.argv[1].rsplit("/", 1)[-1], min(aligns)))
+        if sys.argv[2] == "1":
+            sys.exit("prism: " + msg)
+        print("warning: " + msg, file=sys.stderr)
+ELF
 
 # 2. What the app declares, asked once of a build for this computer
 #    (PRISM_DESCRIBE=all): assets (picture("logo.png")), widgets, car screen.
 #    Prism's native backend can stay off there (docs: « What the bundlers ask
 #    the app »).
-cargo build -q -p "$PKG" || {
+cargo build -q -p "$PKG" ${FEATURES[@]+"${FEATURES[@]}"} || {
   echo "prism: building $PKG for this computer failed. The bundler runs that build to ask the app what it declares (PRISM_DESCRIBE): it must compile here, with Prism's native backend off if the app enables it only for Android (see « What the bundlers ask the app » in the docs)." >&2
   exit 1
 }
@@ -217,16 +245,10 @@ fi
 if [[ ${#ROOTS[@]} -gt 0 ]]; then
   CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/prism/maven"
   mkdir -p "$OUT/libres"
-  while IFS=$'\t' read -r kind a b; do
-    case $kind in
-      jar) LIB_JARS="$LIB_JARS:$a" ;;
-      res)
-        zip="$OUT/libres/${b//./_}.zip"
-        "$BUILD_TOOLS/aapt2" compile --dir "$a" -o "$zip"
-        LIB_RES+=(-R "$zip") LIB_PKGS="${LIB_PKGS:+$LIB_PKGS:}$b" ;;
-      aar) MERGE_DIRS+=("$a") ;;
-    esac
-  done < <(python3 "$(dirname "$0")/android-deps.py" "$CACHE" "${ROOTS[@]}" | python3 -c '
+  # Through files, not a pipe into `< <(…)`: a failed fetch stops the build
+  # here (process substitution drops its status).
+  python3 "$(dirname "$0")/android-deps.py" "$CACHE" "${ROOTS[@]}" > "$OUT/libs.json"
+  python3 -c '
 import json, os, sys
 for e in json.load(sys.stdin):
     for j in e["jars"]:
@@ -241,7 +263,17 @@ for e in json.load(sys.stdin):
                                        "com.android.billingclient:", "androidx.core:core:")) and e["jars"]:
         first = e["jars"][0]
         print("aar\t" + os.path.dirname(first) + "\t")
-')
+' < "$OUT/libs.json" > "$OUT/libs.tsv"
+  while IFS=$'\t' read -r kind a b; do
+    case $kind in
+      jar) LIB_JARS="$LIB_JARS:$a" ;;
+      res)
+        zip="$OUT/libres/${b//./_}.zip"
+        "$BUILD_TOOLS/aapt2" compile --dir "$a" -o "$zip"
+        LIB_RES+=(-R "$zip") LIB_PKGS="${LIB_PKGS:+$LIB_PKGS:}$b" ;;
+      aar) MERGE_DIRS+=("$a") ;;
+    esac
+  done < "$OUT/libs.tsv"
 fi
 # google-services.json → the resources Firebase reads at startup (what the
 # google-services Gradle plugin generates).
@@ -279,13 +311,22 @@ keys = {
     "location_always": ["ACCESS_BACKGROUND_LOCATION"],
     "camera": ["CAMERA"],
     "microphone": ["RECORD_AUDIO"],
+    "contacts": ["READ_CONTACTS"],
+    "calendars": ["READ_CALENDAR", "WRITE_CALENDAR"],
+    "bluetooth": ["BLUETOOTH_SCAN", "BLUETOOTH_CONNECT"],
+    "speech": ["RECORD_AUDIO"],
+    "nfc": ["NFC"],
+    "media_library": ["READ_MEDIA_AUDIO"],
+    # The advertising ID (Play asks apps targeting Android 13+ to declare it).
+    "tracking": ["com.google.android.gms.permission.AD_ID"],
 }
 # Background jobs survive reboots (JobInfo.setPersisted).
 names = ["INTERNET", "VIBRATE", "POST_NOTIFICATIONS", "RECEIVE_BOOT_COMPLETED"]
 for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
     names += keys.get(line.partition("\t")[0], [])
 for n in dict.fromkeys(names):
-    print(f"""  <uses-permission android:name="android.permission.{n}"/>""")
+    full = n if "." in n else "android.permission." + n
+    print(f"""  <uses-permission android:name="{full}"/>""")
 ')"
 ICON_ATTR=""
 if [[ -n "${PRISM_ICON:-}" && -f "$PRISM_ICON" ]]; then
@@ -521,6 +562,32 @@ if [[ "$AAB" == 1 ]]; then
   #    assets/, lib/, root/), bundletool build-bundle, then jarsigner (Play
   #    rejects bundles signed with apksigner or a debug key).
   BUNDLETOOL=(bash "$(dirname "$0")/bundletool.sh")
+  # The library's symbols go to Play as the bundle's native debug symbols
+  # (function names in Play Console's crashes and ANRs) and leave the
+  # library, as Android Studio's builds do: the NDK's llvm tools, where
+  # cargo-ndk finds the NDK.
+  SYMBOLS=()
+  NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_PATH:-${NDK_HOME:-}}}}"
+  [[ -n "$NDK" ]] || NDK="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)"
+  LLVM="$(ls -d "$NDK"/toolchains/llvm/prebuilt/*/bin 2>/dev/null | head -1)"
+  if [[ -x "$LLVM/llvm-objcopy" && -x "$LLVM/llvm-readelf" ]]; then
+    SECTIONS="$("$LLVM/llvm-readelf" -S --wide "$SO")"
+    if grep -q ' \.symtab ' <<< "$SECTIONS"; then
+      mkdir -p "$OUT/symbols/$ABI"
+      rm -f "$OUT/symbols/$ABI"/*
+      if grep -q ' \.debug_info ' <<< "$SECTIONS"; then
+        SYM="$OUT/symbols/$ABI/lib$LIB.so.dbg"
+        "$LLVM/llvm-objcopy" --only-keep-debug "$SO" "$SYM"
+      else
+        SYM="$OUT/symbols/$ABI/lib$LIB.so.sym"
+        "$LLVM/llvm-objcopy" --strip-debug "$SO" "$SYM"
+      fi
+      "$LLVM/llvm-objcopy" --strip-unneeded "$SO"
+      SYMBOLS=(--metadata-file="com.android.tools.build.debugsymbols/$ABI/$(basename "$SYM"):$SYM")
+    fi
+  else
+    echo "note: no NDK found (ANDROID_NDK_HOME): the bundle has no native debug symbols for Play Console" >&2
+  fi
   MOD="$OUT/module"
   rm -rf "$MOD" "$OUT/base.zip" && mkdir -p "$MOD/manifest" "$MOD/dex"
   (cd "$MOD" && unzip -q "$OUT/base.apk")
@@ -541,7 +608,7 @@ JSON
   BUNDLE="$OUT/$APP_NAME.aab"
   rm -f "$OUT/unsigned.aab"
   "${BUNDLETOOL[@]}" build-bundle --modules="$OUT/base.zip" --config="$OUT/BundleConfig.json" \
-    --output="$OUT/unsigned.aab"
+    ${SYMBOLS[@]+"${SYMBOLS[@]}"} --output="$OUT/unsigned.aab"
   rm -f "$BUNDLE"
   PRISM_KS_PASS="$PASS" PRISM_KEY_PASS="$KEY_PASS" jarsigner -keystore "$KEYSTORE" \
     -storepass:env PRISM_KS_PASS -keypass:env PRISM_KEY_PASS \

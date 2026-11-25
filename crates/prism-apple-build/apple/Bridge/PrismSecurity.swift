@@ -16,11 +16,18 @@
 // compiled in with prismsdk's `sign-in` feature only (PRISM_AUTH_SERVICES):
 // linking it costs ~1 s of dyld work at every launch in the simulator
 // (#314). Without it, those calls fail with a message naming the feature.
+//
+// LocalAuthentication (PRISM_LOCAL_AUTH) is compiled in on macOS and watchOS,
+// and on iOS and visionOS for apps that declare `face_id` under [permissions]
+// in Prism.toml (prismsdk's `face-id` feature): App Store Connect asks those
+// apps for NSFaceIDUsageDescription as soon as the binary references
+// LAContext. Without it, biometric secrets and owner checks fail with a
+// message saying what to declare.
 #if PRISM_AUTH_SERVICES
 import AuthenticationServices
 #endif
 import Foundation
-#if canImport(LocalAuthentication)
+#if PRISM_LOCAL_AUTH && canImport(LocalAuthentication)
 import LocalAuthentication
 #endif
 // tvOS SDKs ship LocalAuthentication headers with LAContext marked unavailable:
@@ -63,6 +70,16 @@ private func done(_ id: UInt64) { text(id, nil) }
 private func str(_ p: UnsafePointer<CChar>?) -> String? { p.map { String(cString: $0) } }
 
 private func info(_ key: String) -> String? { Bundle.main.object(forInfoDictionaryKey: key) as? String }
+
+/// Why an owner check is unavailable: tvOS has no LocalAuthentication; iOS
+/// and visionOS apps get it by declaring `face_id`.
+private let noLocalAuth: String = {
+    #if os(iOS) || os(visionOS)
+    return "add `face_id = \"why the app uses Face ID\"` under [permissions] in Prism.toml: `prism` then builds the app with LocalAuthentication (prismsdk's `face-id` feature)"
+    #else
+    return "unavailable"
+    #endif
+}()
 
 // MARK: Keychain
 
@@ -109,7 +126,7 @@ private func status(_ s: OSStatus) -> String {
     }
 }
 
-#if canImport(LocalAuthentication) && !os(tvOS)
+#if PRISM_LOCAL_AUTH && canImport(LocalAuthentication) && !os(tvOS)
 /// Biometrics are enrolled and usable now.
 private func biometricsEnrolled() -> Bool {
     #if os(watchOS)
@@ -120,7 +137,7 @@ private func biometricsEnrolled() -> Bool {
 }
 #endif
 
-#if os(tvOS)
+#if os(tvOS) || !PRISM_LOCAL_AUTH
 private func accessControl() -> SecAccessControl? { nil }
 #else
 /// Reading needs the owner: the current biometric set if enrolled (re-enrolling
@@ -157,8 +174,8 @@ public func prismSecureSet(_ id: UInt64, _ key: UnsafePointer<CChar>, _ value: U
         var add = baseQuery(key, shared: shared, dataProtection: biometric)
         add[kSecValueData as String] = data
         if biometric {
-            #if os(tvOS)
-            return failure(id, "unavailable") // no LocalAuthentication on tvOS
+            #if os(tvOS) || !PRISM_LOCAL_AUTH
+            return failure(id, noLocalAuth) // no LocalAuthentication on tvOS
             #else
             #if os(macOS)
             if !dataProtectionKeychain(key, shared: shared) {
@@ -209,7 +226,7 @@ public func prismSecureGet(_ id: UInt64, _ key: UnsafePointer<CChar>, _ prompt: 
             guard s == errSecSuccess, let attrs = item as? [String: Any] else { return failure(id, status(s)) }
             let gated = (attrs[kSecAttrGeneric as String] as? Data) == Data(gateMarker.utf8)
             // 2. The value, with the context that proved the owner.
-            #if canImport(LocalAuthentication) && !os(tvOS)
+            #if PRISM_LOCAL_AUTH && canImport(LocalAuthentication) && !os(tvOS)
             let context = LAContext()
             let read = { readValue(id, key, shared: shared, dataProtection: dp, context: context) }
             guard gated else { return read() }
@@ -236,7 +253,7 @@ public func prismSecureGet(_ id: UInt64, _ key: UnsafePointer<CChar>, _ prompt: 
             }
             return
             #else
-            if gated { return failure(id, "unavailable") }
+            if gated { return failure(id, noLocalAuth) }
             return readValue(id, key, shared: shared, dataProtection: dp, context: nil)
             #endif
         }
@@ -271,7 +288,7 @@ public func prismSecureDelete(_ id: UInt64, _ key: UnsafePointer<CChar>, _ share
 
 // MARK: LocalAuthentication
 
-#if canImport(LocalAuthentication) && !os(tvOS)
+#if PRISM_LOCAL_AUTH && canImport(LocalAuthentication) && !os(tvOS)
 private func kindName(_ context: LAContext) -> String {
     #if os(watchOS)
     return "none" // no biometric sensor on the watch (the biometric policy is unavailable)
@@ -328,7 +345,7 @@ private func ownerCheck(reason: String, passcode: Bool, reply: @escaping (String
 /// 0 none, 1 Touch ID, 2 Face ID, 3 Optic ID (the hardware, enrolled or not).
 @_cdecl("prism_biometry_kind")
 public func prismBiometryKind() -> Int32 {
-    #if canImport(LocalAuthentication) && !os(tvOS)
+    #if PRISM_LOCAL_AUTH && canImport(LocalAuthentication) && !os(tvOS)
     let context = LAContext()
     #if !os(watchOS)
     _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
@@ -347,7 +364,7 @@ public func prismBiometryKind() -> Int32 {
 /// The owner can authenticate (biometrics or a passcode).
 @_cdecl("prism_device_auth_available")
 public func prismDeviceAuthAvailable() -> Bool {
-    #if canImport(LocalAuthentication) && !os(tvOS)
+    #if PRISM_LOCAL_AUTH && canImport(LocalAuthentication) && !os(tvOS)
     return LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil)
     #else
     return false
@@ -356,7 +373,7 @@ public func prismDeviceAuthAvailable() -> Bool {
 
 @_cdecl("prism_biometry_status")
 public func prismBiometryStatus(_ id: UInt64) {
-    #if canImport(LocalAuthentication) && !os(tvOS)
+    #if PRISM_LOCAL_AUTH && canImport(LocalAuthentication) && !os(tvOS)
     let context = LAContext()
     var enrolled = false, locked = false
     #if !os(watchOS)
@@ -376,12 +393,12 @@ public func prismBiometryStatus(_ id: UInt64) {
 
 @_cdecl("prism_authenticate")
 public func prismAuthenticate(_ id: UInt64, _ reason: UnsafePointer<CChar>, _ passcode: Bool) {
-    #if canImport(LocalAuthentication) && !os(tvOS)
+    #if PRISM_LOCAL_AUTH && canImport(LocalAuthentication) && !os(tvOS)
     ownerCheck(reason: String(cString: reason), passcode: passcode) { error in
         if let error { failure(id, error) } else { done(id) }
     }
     #else
-    failure(id, "unavailable") // tvOS: no LocalAuthentication
+    failure(id, noLocalAuth) // tvOS: no LocalAuthentication
     #endif
 }
 

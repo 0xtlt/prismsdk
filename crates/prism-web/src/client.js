@@ -1164,6 +1164,10 @@
 
   function drawShape(el) {
     const w = el.clientWidth, h = el.clientHeight;
+    // A box without a size (in a `display: none` ancestor, not laid out
+    // yet) has nothing to draw at: a 0×0 viewBox would stay blank (#319).
+    // What it shows stays; the observer draws it at the next size it gets.
+    if (!w || !h) return;
     let ix = 0, iy = 0;
     const paths = [];
     for (const line of (el._drawing || "").split("\n")) {
@@ -1668,7 +1672,47 @@
       .then(() => ghost.remove(), () => ghost.remove());
   }
 
+  // --- Moves (#319) ---------------------------------------------------------------
+  // The browser lays children out itself, so a child a `children` op moves
+  // (reordered, or shifted by a sibling coming or going) jumps to its new
+  // place. Native backends animate its frame with its transition (`.spring`,
+  // `with_animation`): here it slides from where it was (FLIP), once the
+  // whole message is applied.
+  /** The children of `children` ops this message, with their box before. */
+  const moving = new Map();
+  /** An element's own transition (`transition:all 0.4s … 0s`), as Web Animations timing. */
+  function transitionOf(el) {
+    const t = /(?:^|;)transition:all ([\d.]+)s (\S+) ([\d.]+)s/.exec(el._css || "");
+    return t && +t[1] > 0 ? { duration: +t[1] * 1000, easing: t[2], delay: +t[3] * 1000 } : null;
+  }
+  function moveFrom(el) {
+    if (quiet || reducedMotion?.matches || !el.isConnected) return;
+    for (const c of el.children) {
+      if (c.dataset.pid && !moving.has(c) && !c._loop && transitionOf(c)) moving.set(c, c.getBoundingClientRect());
+    }
+  }
+  function slideMoved() {
+    if (!moving.size) return;
+    const was = [...moving];
+    moving.clear();
+    // Every box measured first, then every animation started: one layout.
+    const slides = [];
+    for (const [c, from] of was) {
+      const t = c.isConnected && transitionOf(c);
+      if (!t) continue;
+      const to = c.getBoundingClientRect();
+      const dx = from.left - to.left, dy = from.top - to.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+      const own = getComputedStyle(c).transform;
+      slides.push([c, dx, dy, own && own !== "none" ? own : "", t]);
+    }
+    for (const [c, dx, dy, own, t] of slides) {
+      c.animate([{ transform: `translate(${dx}px,${dy}px) ${own}`.trim() }, { transform: own || "none" }], t);
+    }
+  }
+
   function setChildren(el, ids) {
+    moveFrom(el);
     const kids = ids.map((i) => nodes.get(i)).filter(Boolean);
     const keep = new Set(kids);
     [...el.children].forEach((c) => { if (c.dataset.pid && !keep.has(c)) { exit(el, c); c.remove(); } });
@@ -7599,6 +7643,7 @@
     flushOverlays();
     focusAsked = null;
     flushStates();
+    slideMoved();
     reportLayouts();
     // Other people's carets follow the layout this batch changed (#240).
     queueCarets();

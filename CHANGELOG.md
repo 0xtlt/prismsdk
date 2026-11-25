@@ -7,6 +7,69 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- Privacy manifests (#318): every Apple bundle (the app and its widget
+  extension; iOS, iPadOS, tvOS, visionOS, watchOS, macOS) carries a
+  `PrivacyInfo.xcprivacy`. It declares the required-reason APIs the
+  bundler finds in each binary, with Prism's reasons for its own uses
+  (FileTimestamp `C617.1`, SystemBootTime `35F9.1`, DiskSpace `E174.1`),
+  so App Store Connect no longer flags ITMS-91053. Prism.toml `[privacy]`
+  sets tracking and its domains, `[privacy.apis]` the app's own reasons
+  (`user_defaults = ["CA92.1"]`), `[privacy.collected]` the data it
+  collects; a `PrivacyInfo.xcprivacy` next to Prism.toml is merged in. App
+  Store builds for the iOS family stop on a referenced category without a
+  reason, a protected API without its purpose string, or tracking without
+  domains or its prompt.
+- `[permissions]` knows contacts, calendars, reminders, bluetooth, speech,
+  tracking (App Tracking Transparency), health, nfc, media_library,
+  homekit, siri and local_network: their Info.plist texts, Android
+  permissions (`READ_CONTACTS`, `BLUETOOTH_SCAN`, `AD_ID`…), Mac App Store
+  entitlements and Windows capabilities. An unknown name is an error.
+- App icons lose their alpha channel outside macOS (ITMS-90717): filled
+  with white, the front layers of tvOS and visionOS kept, with a note when
+  the icon was transparent.
+- Android app bundles carry the library's native debug symbols
+  (`BUNDLE-METADATA/com.android.tools.build.debugsymbols`), and ship it
+  stripped: Play Console's crashes show function names.
+- Android builds check that the library is aligned for 16 KB pages (an
+  error for app bundles), and `prism publish android` checks every library
+  in the bundle.
+- `prism publish` checks the privacy manifests of the app and its widget
+  extension, and that the iOS and watchOS app icon is opaque.
+
+### Changed
+
+- **Breaking on Apple platforms:** Prism's code for location, the camera,
+  the microphone, the photo library and Face ID is compiled in only with
+  prismsdk's `location`, `location-always`, `camera`, `microphone`,
+  `photo-library` and `face-id` features, because App Store Connect wants
+  a purpose string for every protected API a binary references (ITMS-90683).
+  `prism` turns them on from `[permissions]`; a build without `prism` lists
+  them in Cargo.toml. Without one, the API fails with a message naming the
+  `[permissions]` entry and `capabilities()` reports it unavailable.
+  LocalAuthentication is linked on iOS and visionOS only with `face-id`.
+- macOS reads « Double-click a window's title bar » through CFPreferences,
+  not NSUserDefaults (a required-reason API none of Apple's reasons covers
+  for a system setting).
+
+### Fixed
+
+- Web: a `shape()` drawn while its box has no size (inside a `display:
+  none` ancestor) waits for one instead of keeping a 0×0 viewBox, so icons
+  revealed on hover show (#319).
+- Web: `.hit_test(true)` in a state (`hover`, `group_hover`…) takes
+  pointer input back (`pointer-events: auto`) where the base has
+  `.hit_test(false)` (#319).
+- Web: an element with a transition (`.spring()`, `with_animation`) that
+  moves among its siblings slides to its new place (FLIP), as natively
+  (#319).
+- Android: a Maven repository that answers an error (429, 5xx) or doesn't
+  answer is asked again (as Retry-After says, else after 1, 3 and 9 s),
+  then stops the build with that error. It used to count as not having the
+  file, and the build went on to fail in `javac` on the car library's
+  classes.
+
 ## 0.3.0 (2026-11-25)
 
 In-app purchases (StoreKit 2, Google Play Billing, the app's own store on

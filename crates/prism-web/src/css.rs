@@ -637,12 +637,20 @@ pub fn states_css(kind: NodeKind, island: bool, id: prism_core::NodeId, s: &Styl
                 let _ = write!(body, "{p}:{v} !important;");
             }
         }
-        // Gone in this state: back to the initial value.
+        // Gone in this state: back to the initial value. Pointer input
+        // comes back as `auto`: `unset` would inherit an ancestor's `none`,
+        // so `.hit_test(true)` in a state could not undo the base's
+        // `.hit_test(false)` (#319).
         for (p, _) in &base {
             // (A state's style has no states of its own: the base decides
             // whether a field keeps the focus outline.)
             if p != "outline" && !now.iter().any(|(np, _)| np == p) {
-                let _ = write!(body, "{p}:unset !important;");
+                let initial = if p == "pointer-events" {
+                    "auto"
+                } else {
+                    "unset"
+                };
+                let _ = write!(body, "{p}:{initial} !important;");
             }
         }
         if body.is_empty() {

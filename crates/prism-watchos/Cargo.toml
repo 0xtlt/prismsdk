@@ -26,6 +26,20 @@ sign-in = []
 photo-picker = []
 # StoreKit: in-app purchases (#312).
 purchases = []
+# Protected resources: App Store Connect wants a purpose string for each one
+# whose API the binary references. `prism` turns them on from Prism.toml's
+# [permissions], which also writes the strings.
+# CoreLocation (`location`; `location-always`: the Always authorization).
+location = []
+location-always = ["location"]
+# The camera's permission and `take_photo`; the microphone's permission.
+camera = []
+microphone = []
+# The photo library's permission (PHPhotoLibrary; the picker needs none).
+photo-library = []
+# LocalAuthentication on iOS and visionOS (Face ID): biometric secrets, owner
+# checks. macOS and watchOS always have it.
+face-id = []
 
 [target.'cfg(target_os = "watchos")'.dependencies]
 prism-core.workspace = true

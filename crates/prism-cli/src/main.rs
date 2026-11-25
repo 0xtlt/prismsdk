@@ -25,6 +25,7 @@ mod linux;
 mod msix;
 mod new;
 mod play;
+mod privacy;
 mod publish;
 #[cfg(test)]
 mod signing_tests;
@@ -384,6 +385,13 @@ fn build(p: &Project, target: Target, o: &Options) -> Result<(), String> {
         // A separate target dir: switching web ↔ native doesn't rebuild everything.
         cmd.args(["--no-default-features", "--features", "web", "--target-dir"])
             .arg(p.target_dir.join("web"));
+    } else if target == Target::Macos {
+        // The code of the protected resources `[permissions]` declares, as in
+        // `macos-app.sh`'s build: the two share their artifacts.
+        let features = p.permission_features();
+        if !features.is_empty() {
+            cmd.arg("--features").arg(features.join(","));
+        }
     }
     let status = cmd.status().map_err(|e| format!("cargo: {e}"))?;
     status
@@ -545,6 +553,25 @@ fn apple_command(
             .collect();
         cmd.env("PRISM_PERMISSIONS", lines.join("\n"));
     }
+    // The prismsdk features `[permissions]` turn on, for every cargo build
+    // the script runs (`--features prism/location,…`).
+    let features = p.permission_features();
+    if !features.is_empty() {
+        cmd.env("PRISM_FEATURES", features.join(","));
+    } else if let Some(name) = p
+        .permissions
+        .iter()
+        .map(|(k, _)| k)
+        .find(|k| privacy::permission_feature(k).is_some())
+    {
+        eprintln!(
+            "prism: note: {} doesn't depend on prismsdk itself, so turn on the prismsdk feature `{}` where it does (the code for `{name}` is compiled in only with it)",
+            p.package,
+            privacy::permission_feature(name).unwrap_or_default()
+        );
+    }
+    // `[privacy]`: the app's part of its privacy manifest (Apple platforms).
+    cmd.env("PRISM_PRIVACY", p.privacy.to_json().to_string());
     if !p.languages.is_empty() {
         cmd.env("PRISM_LOCALES", p.languages.join(","));
     }

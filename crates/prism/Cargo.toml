@@ -34,6 +34,18 @@ photo-picker = ["prism-macos?/photo-picker", "prism-ios?/photo-picker", "prism-w
 # Apple platforms (#312): in-app purchases link StoreKit, which costs the
 # same ~1 s at launch. Android and the web sell without it.
 purchases = ["prism-macos?/purchases", "prism-ios?/purchases", "prism-watchos?/purchases"]
+# Apple platforms: the protected resources App Store Connect wants a purpose
+# string for whenever the binary references their API (ITMS-90683). `prism`
+# turns each one on from Prism.toml's [permissions] (which writes those
+# strings): `location`, `location_always`, `camera`, `microphone`, `photos`,
+# `face_id`. Without it the call fails with a message saying what to
+# declare. Elsewhere they change nothing.
+location = ["prism-macos?/location", "prism-ios?/location", "prism-watchos?/location"]
+location-always = ["location", "prism-macos?/location-always", "prism-ios?/location-always", "prism-watchos?/location-always"]
+camera = ["prism-macos?/camera", "prism-ios?/camera", "prism-watchos?/camera"]
+microphone = ["prism-macos?/microphone", "prism-ios?/microphone", "prism-watchos?/microphone"]
+photo-library = ["prism-macos?/photo-library", "prism-ios?/photo-library", "prism-watchos?/photo-library"]
+face-id = ["prism-macos?/face-id", "prism-ios?/face-id", "prism-watchos?/face-id"]
 
 [dependencies]
 prism-core.workspace = true

@@ -156,7 +156,18 @@ fn android(p: &Project, aab: &Path, o: &PublishOptions) -> Result<(), String> {
         info.target_sdk,
         info.signer.as_deref().unwrap_or("nobody Play takes")
     );
+    for (lib, align) in &info.native_libs {
+        let pages = align.map_or("not a 64-bit library".to_string(), |a| {
+            format!("{a}-byte pages")
+        });
+        println!("  native   {lib} ({pages})");
+    }
     info.check(&p.bundle_id)?;
+    if !info.native_libs.is_empty() && !info.debug_symbols {
+        println!(
+            "  note     no native debug symbols: Play Console's crashes show addresses, not function names (prism build android --aab adds them with the NDK)"
+        );
+    }
     let status = match (o.draft, o.rollout) {
         (true, Some(_)) => return Err("--draft and --rollout do not go together".into()),
         (true, None) => "draft",

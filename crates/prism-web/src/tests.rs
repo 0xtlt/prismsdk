@@ -5052,3 +5052,18 @@ fn ssr_shape_of_a_flexible_size_scales_or_waits_for_the_client() {
             .ends_with(r#"class="prism-shape"></div>"#)
     );
 }
+
+/// #319: `.hit_test(true)` in a state takes pointer input back, even under
+/// an ancestor that lets it through (`unset` would inherit its `none`).
+#[test]
+fn a_state_takes_pointer_input_back() {
+    let s = Style::default()
+        .hit_test(false)
+        .group_hover(|s| s.hit_test(true))
+        .resolve(Default::default());
+    assert!(css(NodeKind::View, &s).contains("pointer-events:none;"));
+    assert_eq!(
+        css::states_css(NodeKind::View, false, 7, &s),
+        r#"@media (hover:hover){[data-group]:hover [data-pid="7"]:not(:where([data-group]:not(:hover) *)){pointer-events:auto !important;}}"#
+    );
+}

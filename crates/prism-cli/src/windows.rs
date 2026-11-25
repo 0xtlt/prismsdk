@@ -314,6 +314,8 @@ fn device_capabilities(p: &Project) -> Vec<String> {
             "location" | "location_always" => "location",
             "camera" => "webcam",
             "microphone" => "microphone",
+            "bluetooth" => "bluetooth",
+            "nfc" => "proximity",
             _ => continue,
         };
         if !caps.iter().any(|c| c == cap) {

@@ -224,6 +224,8 @@ pub(crate) mod tests {
             publisher: None,
             package_publisher: None,
             permissions: vec![],
+            privacy: Default::default(),
+            prism_dependency: None,
             languages: vec![],
             team: None,
             simulator: None,

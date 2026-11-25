@@ -82,10 +82,12 @@ impl IosServices {
                 notifications,
                 tray: false,
                 app_menu: false,
-                location: true,
+                // CoreLocation: the `location` feature, which `prism` turns
+                // on from Prism.toml's [permissions].
+                location: cfg!(feature = "location"),
                 motion: !tv,
-                // Simulators have no camera.
-                camera: !tv && !vision && !cfg!(target_abi = "sim"),
+                // Simulators have no camera; the `camera` feature.
+                camera: !tv && !vision && !cfg!(target_abi = "sim") && cfg!(feature = "camera"),
                 // PHPicker: the `photo-picker` feature (#314).
                 photos: !tv && cfg!(feature = "photo-picker"),
                 haptics: !tv && !vision,
