@@ -38,7 +38,7 @@ Products are created in App Store Connect and in the Play Console (Monetize › 
 
 ## Configuration
 
-Apple platforms need nothing: StoreKit is part of the system. Android builds bundle Google Play Billing when the app sells:
+On Apple platforms, StoreKit is part of the system; the app links it with prismsdk's `purchases` feature (`prism = { package = "prismsdk", …, features = ["purchases"] }`), because linking it costs ~1 s at every launch in the simulator (#312). Without it, `cx.capabilities().purchases` is `false` there and the calls fail with a message naming the feature. Other platforms ignore the feature. Android builds bundle Google Play Billing when the app sells:
 
 ```toml
 [store]

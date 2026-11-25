@@ -491,6 +491,11 @@ fn apple_command(
     if p.uses_encryption == Some(false) {
         cmd.env("PRISM_ENCRYPTION", "0");
     }
+    // `[app] orientations` (#310): iPhone's Info.plist, Android's activity.
+    cmd.env("PRISM_ORIENTATIONS", p.ios_orientations().join(","));
+    if let Some(o) = p.android_screen_orientation() {
+        cmd.env("PRISM_SCREEN_ORIENTATION", o);
+    }
     if o.store {
         cmd.env("PRISM_DIST", "appstore");
     } else if o.direct {

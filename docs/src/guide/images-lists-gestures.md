@@ -7,7 +7,8 @@ picture(avatar_url).header("Authorization", format!("Bearer {token}"))  // behin
 svg(server_made_svg).alt("Pairing code").w(px(160.))    // SVG markup, drawn as vectors
 video("https://…/talk.mp4").poster("talk.jpg").w_full() // a video with the platform's controls
 ui::qr_code("https://example.com/pair/42").size(180.)    // a QR code, no image involved
-VirtualList::new(10_000, 56., |i| row(i))               // only the visible rows exist
+VirtualList::new(cx, 10_000, 56., |i, _| row(i))        // only the visible rows exist
+list.update(cx, |l, cx| { l.set_id("feed", cx); l.scroll_to_row(500, true, cx) })  // named: driven from code
 ReorderList::new(cx, keys, 52., row, on_move)           // rows the user puts in another order
 scroll().on_refresh(handler).refreshing(self.loading)   // pull to refresh (UIRefreshControl)
 div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures

@@ -39,7 +39,7 @@ impl WatchServices {
                 motion: true,
                 // No camera on a watch; photos come from the PhotosUI picker.
                 camera: false,
-                photos: true,
+                photos: cfg!(feature = "photo-picker"),
                 haptics: true,
                 share: true,
                 cloud_sync: prism_native::apple::ICloudStorage::new().is_some()
@@ -48,11 +48,13 @@ impl WatchServices {
                 biometry,
                 device_auth,
                 sign_in_with_apple: apple,
-                web_auth: true,
+                // ASWebAuthenticationSession: the `sign-in` feature (#314).
+                web_auth: cfg!(feature = "sign-in"),
                 // WKApplication.registerForRemoteNotifications (watchOS 6+).
                 push: prism_native::apple::push::service(),
                 // StoreKit 2 (PrismPurchases.swift, #306).
-                purchases: true,
+                // With the `purchases` feature only (#312).
+                purchases: cfg!(feature = "purchases"),
                 ..Default::default()
             },
             ops: Vec::new(),

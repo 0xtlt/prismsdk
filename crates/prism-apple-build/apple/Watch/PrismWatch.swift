@@ -8,7 +8,9 @@
 // grow, backgrounds and borders map to stacks and modifiers.
 import Accessibility
 import CoreText
+#if PRISM_PHOTOS_PICKER
 import PhotosUI
+#endif
 import SceneKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -2085,7 +2087,6 @@ struct Refresh: ViewModifier {
 /// Alerts, long-press menus, the photo picker and the share sheet.
 struct Presented: ViewModifier {
     @ObservedObject var store = PrismStore.shared
-    @State private var photos: [PhotosPickerItem] = []
 
     func body(content: Content) -> some View {
         content
@@ -2111,11 +2112,7 @@ struct Presented: ViewModifier {
                     .disabled((a["enabled"] as? Bool) == false)
                 }
             }
-            .sheet(isPresented: Binding(get: { store.picker != nil }, set: { if !$0 { cancelPicker() } })) {
-                PhotosPicker(selection: $photos, maxSelectionCount: store.picker.map { $0.limit > 0 ? $0.limit : nil } ?? nil,
-                             matching: .images) { Label("Photos", systemImage: "photo") }
-                    .onChange(of: photos) { _, items in finishPicker(items) }
-            }
+            .modifier(PhotoPickerSheet())
             .sheet(isPresented: Binding(get: { store.share != nil }, set: { if !$0 { store.share = nil } })) {
                 if let url = store.share?.url.flatMap(URL.init(string:)) {
                     ShareLink(item: url, message: store.share?.text.map { Text($0) })
@@ -2144,6 +2141,22 @@ struct Presented: ViewModifier {
 
     private func role(_ r: String?) -> ButtonRole? {
         r == "destructive" ? .destructive : r == "cancel" ? .cancel : nil
+    }
+}
+
+/// The photo picker, with prismsdk's `photo-picker` feature only (#314):
+/// without it the bridge answers the request itself.
+#if PRISM_PHOTOS_PICKER
+struct PhotoPickerSheet: ViewModifier {
+    @ObservedObject var store = PrismStore.shared
+    @State private var photos: [PhotosPickerItem] = []
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: Binding(get: { store.picker != nil }, set: { if !$0 { cancelPicker() } })) {
+            PhotosPicker(selection: $photos, maxSelectionCount: store.picker.map { $0.limit > 0 ? $0.limit : nil } ?? nil,
+                         matching: .images) { Label("Photos", systemImage: "photo") }
+                .onChange(of: photos) { _, items in finishPicker(items) }
+        }
     }
 
     private func cancelPicker() {
@@ -2175,6 +2188,11 @@ struct Presented: ViewModifier {
         }
     }
 }
+#else
+struct PhotoPickerSheet: ViewModifier {
+    func body(content: Content) -> some View { content }
+}
+#endif
 
 @_cdecl("prism_watch_pick_images")
 public func prismWatchPickImagesHost(_ id: UInt64, _ limit: UInt32) {

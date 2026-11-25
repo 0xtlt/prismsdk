@@ -103,7 +103,8 @@ impl MacServices {
                 biometry,
                 device_auth,
                 sign_in_with_apple: apple,
-                web_auth: true,
+                // ASWebAuthenticationSession: the `sign-in` feature (#314).
+                web_auth: cfg!(feature = "sign-in"),
                 // A bundled app declaring com.apple.developer.aps-environment.
                 push: if bundled {
                     prism_native::apple::push::service()
@@ -118,7 +119,8 @@ impl MacServices {
                 // StoreKit 2 (PrismPurchases.swift, #306): products and
                 // purchases need an app the Mac App Store signed (or
                 // TestFlight's sandbox).
-                purchases: true,
+                // With the `purchases` feature only (#312).
+                purchases: cfg!(feature = "purchases"),
                 drop_files: true,
                 drag_and_drop: true,
             },

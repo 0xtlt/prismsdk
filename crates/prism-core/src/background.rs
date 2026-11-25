@@ -195,6 +195,8 @@ impl App {
         for handler in self.background.handlers.clone() {
             handler(phase, self);
         }
+        // Frame callbacks go on in the foreground (#311).
+        self.ensure_frame_timer();
     }
 
     /// Starts background task `id` (the platform decided to run it). Returns

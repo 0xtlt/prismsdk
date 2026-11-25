@@ -11,7 +11,14 @@
 // - ASWebAuthenticationSession: iOS 12, macOS 10.15, watchOS 6.2, tvOS 16;
 //   presentationContextProvider is iOS/macOS only.
 // - ASAuthorizationAppleIDProvider: iOS 13, macOS 10.15, tvOS 13, watchOS 6.
+//
+// AuthenticationServices (Sign in with Apple, web sign-in, passkeys) is
+// compiled in with prismsdk's `sign-in` feature only (PRISM_AUTH_SERVICES):
+// linking it costs ~1 s of dyld work at every launch in the simulator
+// (#314). Without it, those calls fail with a message naming the feature.
+#if PRISM_AUTH_SERVICES
 import AuthenticationServices
+#endif
 import Foundation
 #if canImport(LocalAuthentication)
 import LocalAuthentication
@@ -378,6 +385,7 @@ public func prismAuthenticate(_ id: UInt64, _ reason: UnsafePointer<CChar>, _ pa
     #endif
 }
 
+#if PRISM_AUTH_SERVICES
 // MARK: Presentation
 
 #if os(iOS) || os(visionOS) || os(tvOS)
@@ -677,4 +685,35 @@ public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ conditional: Bool, _ o
 
 @_cdecl("prism_passkeys_available")
 public func prismPasskeysAvailable() -> Bool { true }
+#endif
+#else
+// MARK: Without the `sign-in` feature
+
+private let signInFeature = "this needs prismsdk's `sign-in` feature (prismsdk = { features = [\"sign-in\"] }): AuthenticationServices is linked only with it"
+
+@_cdecl("prism_apple_sign_in")
+public func prismAppleSignIn(_ id: UInt64, _ email: Bool, _ name: Bool, _ nonce: UnsafePointer<CChar>?, _ state: UnsafePointer<CChar>?) {
+    failure(id, "Sign in with Apple: \(signInFeature)")
+}
+
+@_cdecl("prism_apple_sign_in_available")
+public func prismAppleSignInAvailable() -> Bool { false }
+
+@_cdecl("prism_auth_redirect")
+public func prismAuthRedirect(_ id: UInt64, _ preferred: UnsafePointer<CChar>?) {
+    failure(id, "Web sign-in: \(signInFeature)")
+}
+
+@_cdecl("prism_web_auth")
+public func prismWebAuth(_ id: UInt64, _ url: UnsafePointer<CChar>, _ redirect: UnsafePointer<CChar>, _ ephemeral: Bool) {
+    failure(id, "Web sign-in: \(signInFeature)")
+}
+
+@_cdecl("prism_webauthn")
+public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ conditional: Bool, _ options: UnsafePointer<CChar>) {
+    failure(id, "Passkeys: \(signInFeature)")
+}
+
+@_cdecl("prism_passkeys_available")
+public func prismPasskeysAvailable() -> Bool { false }
 #endif

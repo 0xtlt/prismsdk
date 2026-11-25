@@ -276,6 +276,8 @@ impl State {
         }
         schedule_timer(self.runtime.next_timer());
         self.sync_ticker();
+        // Frame callbacks (#311): the display link runs while they wait.
+        prism_native::apple::display_link::sync(self.runtime.wants_frames());
     }
 
     /// Ticks countdowns every second, only while one is shown: otherwise
@@ -4337,7 +4339,20 @@ fn make_runtime(
     runtime
         .app
         .set_widget_configurations_source(prism_native::apple::widget_configurations);
+    // Frame callbacks come from CADisplayLink (#311).
+    runtime.set_native_frames(true);
     runtime
+}
+
+/// A refresh of the display link (#311, `PrismFrames.swift`): runs the
+/// app's frame callbacks and applies what they changed before the frame.
+#[unsafe(no_mangle)]
+extern "C" fn prism_frame(ago: f64, ahead: f64) {
+    let (timestamp, target) = prism_native::apple::display_link::times(ago, ahead);
+    with_state(|s| {
+        let patches = s.runtime.frame(timestamp, target);
+        s.commit(patches);
+    });
 }
 
 /// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's

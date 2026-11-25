@@ -32,3 +32,26 @@ cx.with_animation(Transition::spring(400), |cx| store.update(cx, |s, cx| s.delet
 - **Offsets in percent of the element's own size**: `.translate_percent(x, y)` (CSS `translate(x%, y%)`), for anchoring a label on a point without negative margins or fixed-width boxes. Visual only, like `offset`; mirrored right to left. The native backends apply it when they place the view (after the shared layout, so it costs nothing per frame).
 - Offsets follow the layout direction (mirrored right to left). **Reduce Motion** (system setting, `prefers-reduced-motion`, GTK's animations switch) turns all of it off.
 - `prism::ui` components take `.enter()`, `.exit()` and `.transition()` too.
+
+## Frame callbacks
+
+Code that must run once per refresh of the screen (an auto-scroll, a game
+loop, a drag follow-up, a time-based animation `Transition` cannot express)
+asks for frames instead of a 16 ms timer, which drifts against the display
+(#311):
+
+```rust
+// Every frame until stopped: 1,200 points a second, whatever the refresh rate.
+self.ticker = Some(cx.frames(|this, frame, cx| {
+    cx.scroll_to("list", 0., 1200. * frame.elapsed.as_secs_f32(), false);
+}));
+cx.stop_frames(ticker);
+
+// Once, on the next frame: time to first frame, a measurement after layout.
+cx.on_next_frame(|this, frame, _| this.first_frame = Some(frame.timestamp - this.started));
+```
+
+- **`FrameInfo`**: `timestamp` (the refresh the callbacks run for), `target_timestamp` (when what they change reaches the screen), `elapsed` (since the ticker's first frame) and `delta` (since the previous frame). Use the times rather than counting frames: screens run at 60, 90 or 120 Hz, and a slow frame skips refreshes.
+- **Entities**: `cx.frames` and `cx.on_next_frame` in a `Context<T>` hand the callback the entity and re-render it after, like a listener; a released entity's ticker stops. `App::frames(|frame, app| …)` and `App::on_next_frame` take the app instead.
+- **What drives them**: `CADisplayLink` on iOS, iPadOS, tvOS and visionOS; the window's display link on macOS 14 and later (`CVDisplayLink` on macOS 13); `Choreographer` on Android; the GTK frame clock on Linux; `CompositionTarget.Rendering` on Windows; `requestAnimationFrame` on the web, each frame waiting for the server's answer to the previous one, so a slow connection slows frames down instead of queueing them. watchOS has no display link: a 60 Hz timer stands in. The callbacks run before the platform lays out and draws the frame, and what they change is on that frame.
+- **Cost**: the display link runs only while a callback waits, and stops with the last one. Frames pause while the app is in the background (and on the web while the tab is hidden), and go on when it comes back.

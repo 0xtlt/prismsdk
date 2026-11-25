@@ -52,6 +52,17 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
+/// A refresh of the display link (#311, `PrismFrames.swift`): runs the
+/// app's frame callbacks and applies what they changed before the frame.
+#[unsafe(no_mangle)]
+extern "C" fn prism_frame(ago: f64, ahead: f64) {
+    let (timestamp, target) = prism_native::apple::display_link::times(ago, ahead);
+    with_state(|s| {
+        let patches = s.runtime.frame(timestamp, target);
+        s.commit(patches);
+    });
+}
+
 fn with_state(f: impl FnOnce(&mut State)) {
     STATE.with(|cell| {
         // The platform can call back while we mutate views (layout passes,
@@ -452,6 +463,8 @@ impl State {
         }
         schedule_timer(self.runtime.next_timer());
         self.sync_ticker();
+        // Frame callbacks (#311): the display link runs while they wait.
+        prism_native::apple::display_link::sync(self.runtime.wants_frames());
     }
 
     /// Ticks countdowns (timer labels, menu bar countdowns) every second,
@@ -5635,6 +5648,8 @@ pub fn run(config: AppConfig, init: AppInit) {
     runtime
         .app
         .set_widget_configurations_source(prism_native::apple::widget_configurations);
+    // Frame callbacks come from the display link (#311).
+    runtime.set_native_frames(true);
     // Widget buttons open the app on links that only its widgets can sign,
     // each usable once; the key and the ledger of used links stay between
     // runs in a folder of their own, out of the app's storage.

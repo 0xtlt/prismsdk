@@ -7373,7 +7373,37 @@
       case "shortcuts": shortcuts = new Map((msg.list || []).map(([keys, id]) => [keys, id])); return;
       // `cx.set_unsaved_changes` (#158): leaving the page asks first.
       case "unsaved": unsaved = !!msg.on; return;
+      // Frame callbacks (#311): the loop runs while the app wants frames;
+      // "frame" answers the last one sent.
+      case "frames": return frameLoop(!!msg.on);
+      case "frame": frameClock.waiting = false; return;
     }
+  }
+
+  // --- Frame callbacks (`cx.frames`, `cx.on_next_frame`, #311) --------------------------
+  // Each refresh (requestAnimationFrame) asks the server to run the app's frame
+  // callbacks. The next one waits for its answer, so a slow link slows frames down
+  // instead of queueing them; a hidden tab gets no refreshes.
+  const frameClock = { on: false, waiting: false, raf: 0, last: 0, period: 1000 / 60 };
+  function frameTick(ts) {
+    frameClock.raf = 0;
+    if (!frameClock.on) return;
+    // The refresh period, from the last refreshes (60, 120 Hz…).
+    const d = ts - frameClock.last;
+    if (frameClock.last && d > 4 && d < 100) frameClock.period += (d - frameClock.period) / 8;
+    frameClock.last = ts;
+    if (!frameClock.waiting && ws && ws.readyState === 1) {
+      const now = performance.now();
+      send({ t: "frame", ago: Math.max(0, now - ts), ahead: Math.max(0, ts + frameClock.period - now) });
+      frameClock.waiting = true;
+    }
+    frameClock.raf = requestAnimationFrame(frameTick);
+  }
+  function frameLoop(on) {
+    frameClock.on = on;
+    frameClock.waiting = false;
+    frameClock.last = 0;
+    if (on && !frameClock.raf) frameClock.raf = requestAnimationFrame(frameTick);
   }
 
   // --- Run-time fonts and stylesheets (`cx.load_font`, `cx.add_stylesheet`) ----------
@@ -7494,6 +7524,8 @@
   }
   function closed() {
     ws = null;
+    // The next session starts the frame loop again if its app wants frames.
+    frameLoop(false);
     if (conn.renew) {
       conn.renew = false;
       clearTimeout(conn.timer);

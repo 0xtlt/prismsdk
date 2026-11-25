@@ -141,6 +141,8 @@ pub struct RemoteWidgets {
     /// Each video's size, reported by the host once known (#207).
     pub video_sizes: HashMap<NodeId, (f32, f32)>,
     frames: HashMap<NodeId, (f32, f32)>,
+    /// The content size last sent for each scroll view (`set_content_size`).
+    content_sizes: HashMap<NodeId, (f32, f32)>,
     measure: Measure,
     /// The root view (overlays default to its size).
     root: Option<NodeId>,
@@ -161,6 +163,7 @@ impl RemoteWidgets {
             viewports: HashMap::new(),
             video_sizes: HashMap::new(),
             frames: HashMap::new(),
+            content_sizes: HashMap::new(),
             measure,
             root: None,
             rich: false,
@@ -909,6 +912,7 @@ impl Widgets for RemoteWidgets {
     }
 
     fn destroy(&mut self, id: &NodeId) {
+        self.content_sizes.remove(id);
         self.kinds.remove(id);
         self.texts.remove(id);
         self.icons.remove(id);
@@ -1151,6 +1155,14 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_content_size(&mut self, id: &NodeId, width: f32, height: f32) {
+        // Every layout reports it, and the host lays its content out again
+        // on each `content` op: unchanged sizes aren't sent (#316). Overlays
+        // still get every one (they may open on it).
+        if self.kinds.get(id) != Some(&NodeKind::Overlay)
+            && self.content_sizes.insert(*id, (width, height)) == Some((width, height))
+        {
+            return;
+        }
         self.ops
             .push(json!({ "op": "content", "id": id, "size": [width, height] }));
     }
@@ -1385,8 +1397,9 @@ impl Widgets for RemoteWidgets {
     }
 
     /// `{"op":"scrollto","id","x","y","rel","anim"}` (#193): `x`, `y` in
-    /// points (by them from the offset when `rel`), the host keeps them
-    /// within the content.
+    /// the host's units, the renderer's zoom already applied (pixels on
+    /// Android, #308; by them from the offset when `rel`), the host keeps
+    /// them within the content.
     fn scroll_to(&mut self, id: &NodeId, x: f32, y: f32, relative: bool, animated: bool) {
         let clamp = |v: f32| if v.is_finite() { v.min(1e9) } else { 1e9 };
         self.ops.push(json!({

@@ -60,6 +60,8 @@ public final class PrismHost {
     static native void nativeReady(float width, float height, float density, String info);
     static native void nativeEvent(String json);
     static native void nativeWake();
+    /** A refresh (#311): runs the app's frame callbacks; false when none is left. */
+    static native boolean nativeFrame(long agoNanos, long aheadNanos);
     /** Whether a key (the `key` event about to be sent) is the app's alone, a selection group's included (#231). */
     static native boolean nativeConsumesKey(String json);
     /** Whether text an input method types into field `id` goes to its selection group (#231). */
@@ -303,9 +305,47 @@ public final class PrismHost {
 
     // --- Called from Rust (main thread) ---------------------------------------------------
 
-    /** Wakes the Rust runtime after `delay` ms (any thread). */
+    /** The one queued wake-up of the Rust runtime and when it runs
+     *  (uptime ms; Long.MAX_VALUE: none queued). */
+    private static final Object wakeLock = new Object();
+    private static long wakeAt = Long.MAX_VALUE;
+    private static final Runnable WAKE = () -> {
+        synchronized (wakeLock) { wakeAt = Long.MAX_VALUE; }
+        nativeWake();
+    };
+
+    /** Wakes the Rust runtime after `delay` ms (any thread). Requests
+     *  coalesce (#315): one wake is queued, at the earliest time asked, and
+     *  each wake asks for the next one. */
     public static void post(long delay) {
-        main.postDelayed(PrismHost::nativeWake, Math.max(0, delay));
+        long at = android.os.SystemClock.uptimeMillis() + Math.max(0, delay);
+        synchronized (wakeLock) {
+            if (wakeAt <= at) return;
+            if (wakeAt != Long.MAX_VALUE) main.removeCallbacks(WAKE);
+            wakeAt = at;
+            main.postAtTime(WAKE, at);
+        }
+    }
+
+    /** Choreographer's callback while the app wants frames (#311). */
+    private static boolean framesPosted;
+    private static final android.view.Choreographer.FrameCallback FRAME = new android.view.Choreographer.FrameCallback() {
+        @Override public void doFrame(long frameTimeNanos) {
+            long now = System.nanoTime();
+            android.view.Display display = root != null ? root.getDisplay() : null;
+            float hz = display != null ? display.getRefreshRate() : 60;
+            long period = (long) (1e9 / (hz > 1 ? hz : 60));
+            boolean more = nativeFrame(now - frameTimeNanos, Math.max(0, frameTimeNanos + period - now));
+            if (more) android.view.Choreographer.getInstance().postFrameCallback(this);
+            else framesPosted = false;
+        }
+    };
+
+    /** Asks for frame callbacks until `nativeFrame` answers false (main thread, #311). */
+    public static void frames() {
+        if (framesPosted) return;
+        framesPosted = true;
+        android.view.Choreographer.getInstance().postFrameCallback(FRAME);
     }
 
     public static void apply(String json) {
@@ -582,9 +622,13 @@ public final class PrismHost {
                     PrismInput.contentSize(n, Math.round((float) c.getDouble(0)), Math.round((float) c.getDouble(1)));
                 } else if (n.host != null) {
                     JSONArray c = p.getJSONArray("size");
-                    n.host.fixedWidth = Math.round((float) c.getDouble(0));
-                    n.host.fixedHeight = Math.round((float) c.getDouble(1));
-                    n.host.requestLayout();
+                    int w = Math.round((float) c.getDouble(0)), h = Math.round((float) c.getDouble(1));
+                    // Laying the content out again costs a frame on long lists (#316).
+                    if (w != n.host.fixedWidth || h != n.host.fixedHeight) {
+                        n.host.fixedWidth = w;
+                        n.host.fixedHeight = h;
+                        n.host.requestLayout();
+                    }
                 }
                 break;
             case "menu": n.menu = p.optJSONObject("menu"); setClickable(n); break;
@@ -1345,6 +1389,9 @@ public final class PrismHost {
             v.setFillViewport(false);
             s = v;
         }
+        // Its content stays within its bounds (PrismDecor.clip keeps it so).
+        s.setOutlineProvider(android.view.ViewOutlineProvider.BOUNDS);
+        s.setClipToOutline(true);
         s.addView(n.host, horizontal
                 ? new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 : new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -1354,7 +1401,7 @@ public final class PrismHost {
             for (Node c : nodes.values()) if (c.stickyScroll == id) applySticky(c);
             if (!n.scrollEvents) return;
             JSONObject ev = event("scroll", id);
-            // In points, like `ScrollEvent` (and the `scrollto` op).
+            // In points, like `ScrollEvent`.
             try { ev.put("o", y / density); ev.put("v", v.getHeight() / density); } catch (JSONException ignored) {}
             send(ev);
         });

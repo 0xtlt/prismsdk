@@ -11,6 +11,7 @@
 //! category = "public.app-category.productivity"  # App Store category (macOS needs one)
 //! uses_encryption = false       # export compliance (ITSAppUsesNonExemptEncryption)
 //! description = "Counts things" # Linux packages
+//! orientations = ["portrait"]   # iPhone and Android phones (default: every one; iPad keeps every one)
 //!
 //! [android]
 //! version_code = 7              # instead of [app] build
@@ -37,7 +38,7 @@
 //! wns_app_id = "…"              # Windows (MSIX): the Entra app's application (client) id
 //!
 //! [store]                     # in-app purchases through the platform's store (#306)
-//! enabled = true                # Android: bundles Google Play Billing (Apple's StoreKit needs nothing)
+//! enabled = true                # Android: bundles Google Play Billing (Apple: prismsdk's `purchases` feature)
 //!
 //! [ios]
 //! team = "ABCDE12345"           # Apple team for real devices
@@ -86,6 +87,9 @@ pub struct Project {
     pub uses_encryption: Option<bool>,
     /// `[app] description`: one line, for Linux packages.
     pub description: Option<String>,
+    /// `[app] orientations` (#310): the orientations of iPhones and Android
+    /// devices, empty for every one.
+    pub orientations: Vec<Orientation>,
     /// `[linux] maintainer`: the .deb Maintainer field.
     pub maintainer: Option<String>,
     /// `[windows] publisher`: the executable's `CompanyName`.
@@ -305,6 +309,21 @@ impl Project {
             category: get("app.category"),
             uses_encryption: get("app.uses_encryption").map(|v| v == "true"),
             description: get("app.description"),
+            orientations: get("app.orientations")
+                .map(|v| parse_list(&v))
+                .unwrap_or_default()
+                .iter()
+                .map(|o| Orientation::parse(o))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .fold(Vec::new(), |mut all, o| {
+                    for o in o {
+                        if !all.contains(&o) {
+                            all.push(o);
+                        }
+                    }
+                    all
+                }),
             maintainer: get("linux.maintainer"),
             publisher: get("windows.publisher"),
             package_publisher: get("windows.package_publisher"),
@@ -375,6 +394,86 @@ impl Project {
                 .into_iter()
                 .map(|h| http_host(&h))
                 .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+/// An orientation of `[app] orientations` (#310).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Orientation {
+    Portrait,
+    PortraitUpsideDown,
+    /// The device turned so its top is on the left (iOS's
+    /// `UIInterfaceOrientationLandscapeRight`, Android's `landscape`).
+    LandscapeRight,
+    /// Its top on the right (`UIInterfaceOrientationLandscapeLeft`,
+    /// Android's `reverseLandscape`).
+    LandscapeLeft,
+}
+
+impl Orientation {
+    /// `"portrait"`, `"portrait_upside_down"`, `"landscape_left"`,
+    /// `"landscape_right"`, or `"landscape"` for both landscapes.
+    fn parse(raw: &str) -> Result<Vec<Orientation>, String> {
+        Ok(
+            match raw.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+                "portrait" => vec![Orientation::Portrait],
+                "portrait_upside_down" | "upside_down" => vec![Orientation::PortraitUpsideDown],
+                "landscape" => vec![Orientation::LandscapeLeft, Orientation::LandscapeRight],
+                "landscape_left" => vec![Orientation::LandscapeLeft],
+                "landscape_right" => vec![Orientation::LandscapeRight],
+                _ => {
+                    return Err(format!(
+                        "Prism.toml [app] orientations: {raw:?} is not an orientation (portrait, portrait_upside_down, landscape, landscape_left, landscape_right)"
+                    ));
+                }
+            },
+        )
+    }
+
+    /// Info.plist's name for it.
+    pub fn ios(self) -> &'static str {
+        match self {
+            Orientation::Portrait => "UIInterfaceOrientationPortrait",
+            Orientation::PortraitUpsideDown => "UIInterfaceOrientationPortraitUpsideDown",
+            Orientation::LandscapeLeft => "UIInterfaceOrientationLandscapeLeft",
+            Orientation::LandscapeRight => "UIInterfaceOrientationLandscapeRight",
+        }
+    }
+}
+
+impl Project {
+    /// iPhone's `UISupportedInterfaceOrientations` (#310): `[app]
+    /// orientations`, else portrait and both landscapes (iPhones without
+    /// Face ID have no upside-down portrait).
+    pub fn ios_orientations(&self) -> Vec<&'static str> {
+        if self.orientations.is_empty() {
+            return vec![
+                Orientation::Portrait.ios(),
+                Orientation::LandscapeLeft.ios(),
+                Orientation::LandscapeRight.ios(),
+            ];
+        }
+        self.orientations.iter().map(|o| o.ios()).collect()
+    }
+
+    /// The activity's `android:screenOrientation` (#310), `None` when the
+    /// system decides (no `[app] orientations`, or portrait and landscape
+    /// mixed without being all four). Following the user's rotation lock.
+    pub fn android_screen_orientation(&self) -> Option<&'static str> {
+        use Orientation::*;
+        let has = |o| self.orientations.contains(&o);
+        let portrait = [Portrait, PortraitUpsideDown].map(has);
+        let landscape = [LandscapeRight, LandscapeLeft].map(has);
+        Some(match (portrait, landscape) {
+            ([true, true], [true, true]) => "fullUser",
+            ([true, false], [false, false]) => "portrait",
+            ([false, true], [false, false]) => "reversePortrait",
+            ([true, true], [false, false]) => "userPortrait",
+            ([false, false], [true, false]) => "landscape",
+            ([false, false], [false, true]) => "reverseLandscape",
+            ([false, false], [true, true]) => "userLandscape",
+            _ => return None,
         })
     }
 }

@@ -207,13 +207,15 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeReady(
     // A new Activity: the density or the text size may have changed.
     forget_measures();
     let services = crate::services::AndroidServices::new(&info);
-    let runtime = make_runtime(
+    let mut runtime = make_runtime(
         init,
         &info,
         &services,
         Some((width / density, height / density)),
         Some(device_info(&info, width, height, density)),
     );
+    // Frame callbacks come from Choreographer (#311).
+    runtime.set_native_frames(true);
     let mut renderer = NativeRenderer::new(RemoteWidgets::new(measure).with_rich_inputs());
     renderer.set_zoom(density);
     STATE.with(|st| {
@@ -323,10 +325,18 @@ fn commit(s: &mut State, patches: &[prism_core::Patch]) {
     }
     s.renderer.widgets.ops.append(&mut s.services.ops);
     relayout(s);
+    // Frame callbacks (#311): Choreographer runs while they wait; it stops
+    // when `nativeFrame` answers that none is left.
+    if s.runtime.wants_frames() && !FRAMES.with(|f| f.replace(true)) {
+        jni::frames();
+    }
     if let Some(at) = s.runtime.next_timer() {
+        // Rounded up: a wake before the timer is due would only post again
+        // (#315).
         jni::post(
             at.saturating_duration_since(std::time::Instant::now())
-                .as_millis() as i64,
+                .as_micros()
+                .div_ceil(1000) as i64,
         );
     }
 }
@@ -407,6 +417,38 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeWake(_env: *mut JNIEnv, _c
     });
     poll_headless();
     check_jobs();
+}
+
+thread_local! {
+    /// The Choreographer frame callback is posted (#311).
+    static FRAMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `PrismHost.nativeFrame(agoNanos, aheadNanos)`: a refresh (#311), the
+/// frame having begun `ago` ns ago and reaching the screen in `ahead` ns.
+/// Runs the frame callbacks and sends what they changed before Android
+/// draws the frame. Answers whether to ask for the next frame.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_nativeFrame(
+    _env: *mut JNIEnv,
+    _class: jclass,
+    ago: jlong,
+    ahead: jlong,
+) -> jboolean {
+    let now = std::time::Instant::now();
+    let ns = |n: jlong| std::time::Duration::from_nanos(n.clamp(0, 1_000_000_000) as u64);
+    let timestamp = now.checked_sub(ns(ago)).unwrap_or(now);
+    let target = now + ns(ahead);
+    let mut more = false;
+    with_state(|s| {
+        let patches = s.runtime.frame(timestamp, target);
+        commit(s, &patches);
+        more = s.runtime.wants_frames();
+    });
+    if !more {
+        FRAMES.with(|f| f.set(false));
+    }
+    more
 }
 
 /// `PrismHost.nativeConsumesKey(json)`: whether a key press (the `key`

@@ -25,6 +25,15 @@ native = ["dep:prism-macos", "dep:prism-ios", "dep:prism-watchos", "dep:prism-li
 web = ["dep:prism-web"]
 # SQL (sqlx + SQLite): on the device natively, on the server for the web.
 db = ["dep:prism-db"]
+# Apple platforms (#314): Sign in with Apple, web sign-in (OAuth) and passkeys
+# link AuthenticationServices, the photo picker links PhotosUI. Each one costs
+# ~1 s of dyld work at every launch in the simulator, so apps ask for them.
+# Elsewhere they change nothing.
+sign-in = ["prism-macos?/sign-in", "prism-ios?/sign-in", "prism-watchos?/sign-in"]
+photo-picker = ["prism-macos?/photo-picker", "prism-ios?/photo-picker", "prism-watchos?/photo-picker"]
+# Apple platforms (#312): in-app purchases link StoreKit, which costs the
+# same ~1 s at launch. Android and the web sell without it.
+purchases = ["prism-macos?/purchases", "prism-ios?/purchases", "prism-watchos?/purchases"]
 
 [dependencies]
 prism-core.workspace = true

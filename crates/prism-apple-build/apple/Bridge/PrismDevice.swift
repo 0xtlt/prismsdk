@@ -12,7 +12,9 @@ import UserNotifications
 #if canImport(CoreMotion)
 import CoreMotion
 #endif
-#if os(iOS) || os(visionOS) || os(tvOS)
+// PhotosUI only with prismsdk's `photo-picker` feature (PRISM_PHOTOS_PICKER):
+// linking it costs ~1 s of dyld work at every launch in the simulator (#314).
+#if PRISM_PHOTOS_PICKER && (os(iOS) || os(visionOS) || os(tvOS))
 import PhotosUI
 #endif
 #if canImport(UIKit)
@@ -323,6 +325,7 @@ private func topController() -> UIViewController? {
     return top
 }
 
+#if PRISM_PHOTOS_PICKER
 final class PrismPhotoPicker: NSObject, PHPickerViewControllerDelegate {
     let id: UInt64
     init(id: UInt64) { self.id = id }
@@ -347,6 +350,7 @@ final class PrismPhotoPicker: NSObject, PHPickerViewControllerDelegate {
         group.notify(queue: .main) { replyFiles(id, lines); pickers[id] = nil }
     }
 }
+#endif
 
 final class PrismCamera: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
     let id: UInt64
@@ -373,11 +377,19 @@ final class PrismCamera: NSObject, UIImagePickerControllerDelegate, UINavigation
 }
 #endif
 
+#if !PRISM_PHOTOS_PICKER && (os(iOS) || os(visionOS) || os(watchOS))
+private let photoPickerFeature = "the photo picker needs prismsdk's `photo-picker` feature (prismsdk = { features = [\"photo-picker\"] }): PhotosUI is linked only with it"
+#endif
+
 @_cdecl("prism_device_pick_images")
 public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool) {
     #if os(watchOS)
     if camera { return fail(id, "unavailable") } // no camera on the watch
+    #if PRISM_PHOTOS_PICKER
     prismWatchPickImages(id, limit)
+    #else
+    fail(id, photoPickerFeature)
+    #endif
     #elseif os(tvOS)
     fail(id, "unavailable") // no photo picker or camera on tvOS
     #elseif os(iOS) || os(visionOS)
@@ -397,6 +409,7 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
         return
     }
     #endif
+    #if PRISM_PHOTOS_PICKER
     // PHPicker runs out of process: no photo library permission needed.
     var config = PHPickerConfiguration()
     config.filter = .images
@@ -406,6 +419,9 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
     let picker = PHPickerViewController(configuration: config)
     picker.delegate = delegate
     top.present(picker, animated: true)
+    #else
+    fail(id, photoPickerFeature)
+    #endif
     #else
     guard !camera else { return fail(id, "unavailable") }
     let panel = NSOpenPanel()

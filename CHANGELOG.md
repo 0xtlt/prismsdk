@@ -31,8 +31,35 @@ bumps the minor version). Every crate of the workspace shares one version.
   `prism_web::entitlements_changed(buyer_id)` updates the buyer's live
   sessions from a webhook. `TestStore` sells at once, from code or a
   StoreKit configuration file (`.storekit`), for tests and debug builds.
+- Frame callbacks (#311): `cx.on_next_frame(|this, frame, cx| …)` runs
+  once on the next frame the display shows; `cx.frames(…)` on every frame
+  until `cx.stop_frames(ticker)`, like `requestAnimationFrame` or
+  `CADisplayLink`. `FrameInfo` gives the frame's `timestamp`,
+  `target_timestamp`, `elapsed` and `delta`. Driven by the display link
+  (CADisplayLink on iOS, iPadOS, tvOS and visionOS; the screen's display
+  link on macOS; Choreographer on Android; `requestAnimationFrame` on the
+  web; the GTK frame clock; `CompositionTarget.Rendering` on Windows), a
+  60 Hz timer elsewhere (watchOS). Frames pause in the background.
+- `VirtualList::set_id(id, cx)` names its scroll view, so `cx.scroll_to`,
+  `scroll_by` and `scroll_offset` drive it; `scroll_to_row(row, animated,
+  cx)` scrolls to a row (#309).
+- Prism.toml `[app] orientations` (#310): `["portrait"]` locks an iPhone
+  app to portrait (`UISupportedInterfaceOrientations`) and an Android app
+  (`screenOrientation`); also `portrait_upside_down`, `landscape`,
+  `landscape_left`, `landscape_right`. iPad keeps every orientation, as
+  multitasking requires.
 
 ### Changed
+
+- **Breaking (Apple platforms):** Sign in with Apple, `oauth` sign-in
+  (`web_auth`) and passkeys need prismsdk's `sign-in` feature, the photo
+  picker (`pick_images`) its `photo-picker` feature, in-app purchases its
+  `purchases` feature (#312, #314). Each links a framework
+  (AuthenticationServices, PhotosUI, StoreKit) that drags ~1,000 images
+  into every launch: in the simulator a one-screen app now reaches `main`
+  ~0.4 s after its process starts instead of ~1.45 s. Without a feature,
+  its calls fail with a message naming it and its capability is false.
+  Other platforms ignore the features.
 
 - Android builds: the Maven resolver (`android-deps.py`) applies version
   constraints as Gradle does: those of the libraries' Gradle module
@@ -41,6 +68,19 @@ bumps the minor version). Every crate of the workspace shares one version.
   Without them, Play Billing next to the car library brought the same
   classes twice and the build failed. Car builds now bundle kotlin-stdlib
   1.8.22 (was 1.7.10), as Gradle would.
+
+### Fixed
+
+- Android: `cx.scroll_to` and `scroll_by` moved the density's multiple of
+  the distance asked (#308).
+- Android: timers no longer pile up wake-ups: the host keeps one, at the
+  earliest time asked (#315). A scroll view's unchanged content size is
+  not sent again, and its content is laid out again only when that size
+  changes (#316). Together: scrolling a long list from code went from
+  65 % to 12.5 % CPU in #313's benchmark, frames over 25 ms from 4 % to
+  0.2 %.
+- Android: a scroll view clips its content: rows scrolled out of it no
+  longer draw over the views above and below it.
 
 ## 0.2.0 (2026-11-24)
 

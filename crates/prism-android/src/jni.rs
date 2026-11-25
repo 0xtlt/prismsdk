@@ -19,6 +19,7 @@ struct Host {
     apply: jmethodID,
     measure: jmethodID,
     post: jmethodID,
+    frames: jmethodID,
     job_finished: jmethodID,
     cloud_changed: jmethodID,
 }
@@ -82,6 +83,7 @@ pub(crate) fn init_host(env: *mut JNIEnv) {
                 c"(Ljava/lang/String;Ljava/lang/String;FIFLjava/lang/String;)[F",
             ),
             post: method(c"post", c"(J)V"),
+            frames: method(c"frames", c"()V"),
             job_finished: method(c"jobFinished", c"(Ljava/lang/String;Z)V"),
             cloud_changed: method(c"cloudChanged", c"()V"),
         };
@@ -177,6 +179,19 @@ pub(crate) fn post(delay_ms: i64) {
             }]
             .as_ptr(),
         );
+        check(env);
+    }
+}
+
+/// `PrismHost.frames()`: starts the Choreographer frame callback, which
+/// calls `nativeFrame` on each refresh until it answers false (#311).
+/// Main thread.
+pub(crate) fn frames() {
+    let (Some(env), Some(h)) = (env(), HOST.get()) else {
+        return;
+    };
+    unsafe {
+        ((**env).v1_6.CallStaticVoidMethodA)(env, h.class, h.frames, [].as_ptr());
         check(env);
     }
 }

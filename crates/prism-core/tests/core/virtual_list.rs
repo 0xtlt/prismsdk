@@ -130,3 +130,63 @@ fn a_zero_viewport_still_shows_a_row() {
     scroll_to(&mut h, 0., 0.);
     assert!(!rows(&h).is_empty());
 }
+
+/// #309: a named list's scroll view is driven from code like `scroll().id(…)`.
+#[test]
+fn a_named_list_scrolls_from_code() {
+    let mut h = app(1000);
+    let l = list(&h);
+    // Unnamed: nothing to target.
+    h.rt.app.update(&l, |l, cx| l.scroll_to_row(10, false, cx));
+    let p = h.render().to_vec();
+    assert!(
+        !p.iter()
+            .any(|p| matches!(p, prism_core::Patch::ScrollTo { .. }))
+    );
+
+    h.rt.app.update(&l, |l, cx| l.set_id("feed", cx));
+    h.render();
+    assert_eq!(l.read(&h.rt.app).id(), Some("feed"));
+    let scroll = scroll_id(&h);
+    h.rt.app.update(&l, |l, cx| l.scroll_to_row(100, true, cx));
+    // Past the end: clamped to the count, the platform clamps to the content.
+    h.rt.app
+        .update(&l, |l, cx| l.scroll_to_row(5000, false, cx));
+    h.rt.app.scroll_by("feed", 0., 8.);
+    h.rt.app.refresh();
+    let p = h.render().to_vec();
+    let scrolls: Vec<_> = p
+        .iter()
+        .filter(|p| matches!(p, prism_core::Patch::ScrollTo { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(
+        scrolls,
+        [
+            prism_core::Patch::ScrollTo {
+                id: scroll,
+                x: 0.,
+                y: 100. * ROW,
+                relative: false,
+                animated: true
+            },
+            prism_core::Patch::ScrollTo {
+                id: scroll,
+                x: 0.,
+                y: 1000. * ROW,
+                relative: false,
+                animated: false
+            },
+            prism_core::Patch::ScrollTo {
+                id: scroll,
+                x: 0.,
+                y: 8.,
+                relative: true,
+                animated: false
+            },
+        ]
+    );
+    // Its offset, read by name.
+    scroll_to(&mut h, 120., 400.);
+    assert_eq!(h.rt.app.scroll_offset("feed"), Some(120.));
+}

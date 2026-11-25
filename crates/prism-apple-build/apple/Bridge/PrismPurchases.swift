@@ -6,12 +6,17 @@
 // StoreKit 2 is on every platform Prism builds for (iOS 15, macOS 12,
 // tvOS 15, watchOS 8, visionOS 1); `purchase(confirmIn:)` needs a scene on
 // iOS, tvOS and visionOS 17, a window on macOS 15.2.
+//
+// With prismsdk's `purchases` feature only (PRISM_STOREKIT, #312): StoreKit
+// costs ~1 s of dyld work at every launch in the simulator.
 import Foundation
+#if PRISM_STOREKIT
 import StoreKit
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
 import AppKit
+#endif
 #endif
 
 // MARK: Answers (implemented in Rust, prism-native apple.rs)
@@ -32,6 +37,7 @@ private func failure(_ id: UInt64, _ message: String) {
     DispatchQueue.main.async { message.withCString { replyError(id, false, $0) } }
 }
 
+#if PRISM_STOREKIT
 private func json(_ value: Any) -> String {
     let data = (try? JSONSerialization.data(withJSONObject: value)) ?? Data("[]".utf8)
     return String(decoding: data, as: UTF8.self)
@@ -230,3 +236,32 @@ public func prismStorePurchase(_ id: UInt64, _ product: UnsafePointer<CChar>, _ 
         }
     }
 }
+#else
+// MARK: Without the `purchases` feature
+
+private let purchasesFeature = "in-app purchases need prismsdk's `purchases` feature (prismsdk = { features = [\"purchases\"] }): StoreKit is linked only with it"
+
+enum PrismPurchases {
+    static func stop(_ id: UInt64) {}
+}
+
+@_cdecl("prism_store_watch")
+public func prismStoreWatch(_ id: UInt64) {
+    DispatchQueue.main.async { purchasesFeature.withCString { replyError(id, true, $0) } }
+}
+
+@_cdecl("prism_store_entitlements")
+public func prismStoreEntitlements(_ id: UInt64, _ restore: Bool) {
+    failure(id, purchasesFeature)
+}
+
+@_cdecl("prism_store_products")
+public func prismStoreProducts(_ id: UInt64, _ ids: UnsafePointer<CChar>) {
+    failure(id, purchasesFeature)
+}
+
+@_cdecl("prism_store_purchase")
+public func prismStorePurchase(_ id: UInt64, _ product: UnsafePointer<CChar>, _ account: UnsafePointer<CChar>?) {
+    failure(id, purchasesFeature)
+}
+#endif

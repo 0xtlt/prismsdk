@@ -13,7 +13,7 @@ build, the example app):
 
 | | macOS | iOS (simulator) |
 |---|---|---|
-| Launch to first frame | 190 ms | 300 ms after `main` (the simulator adds ~1.3 s before it) |
+| Launch to first frame | 190 ms | 300 ms after `main` |
 | `+1` (one text changes) | 0.4 ms | 0.8 ms |
 | First visit of the Components tab (~2,450 patches) | 180 ms | 240 ms |
 | Switch back to that tab | 5–18 ms | 17 ms |
@@ -28,6 +28,8 @@ build, the example app):
 - **Release profile**: thin LTO and stripped symbols (binaries −24 %).
 - **macOS tabs and stacks**: tabs and the screens under the top one stay in the window, hidden, so going back to them draws nothing again (a warm tab switch 29 ms → 5–18 ms, Back to a large screen 39 ms → 5 ms). Their layers keep their drawing: having visited every tab of the example costs ~12 MB more.
 - **No idle timer**: countdowns tick every second only while one is shown; an app without one does not wake up for them.
+- **Launch on iOS**: the bridge links AuthenticationServices, PhotosUI and StoreKit only with prismsdk's `sign-in`, `photo-picker` and `purchases` features (#312, #314). Any one of them drags ~1,000 more images into the launch, which `dyld` walks before `main`: in the simulator a one-screen app without them reaches `main` ~0.4 s after its process starts instead of ~1.45 s (a SwiftUI app: ~0.24 s). The example app turns all three on.
+- **Android wake-ups and scroll content** (#315, #316): the runtime keeps one queued wake-up, at its next timer, instead of one per event; a scroll view's unchanged content size is not sent again, so Android does not lay its content out again. In #313's benchmark (a 1,000-row list scrolled from code every frame, Android emulator): 65 % → 12.5 % CPU, frames over 25 ms 4 % → 0.2 % (Compose's `LazyColumn`: 15 %).
 - **Apple number formatting**: `cx.format_number` reuses one `NSNumberFormatter` per locale (scrolling a list of numbers: −40 % on macOS, −50 % in the iOS simulator).
 
 ## Big trees

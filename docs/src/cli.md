@@ -53,6 +53,7 @@ bundle_id = "com.example.counter"  # dot-separated words: letters, digits, _ and
 version = "1.0.0"             # default: the Cargo.toml's
 icon = "icon.png"             # 1024×1024 PNG
 # locales = "locales"         # translations directory
+orientations = ["portrait"]   # iPhone and Android (default: every one), see below
 
 [permissions]                 # why the app asks (shown by the system)
 location = "Shows todos near you."
@@ -83,6 +84,19 @@ allow_http_dev = ["192.168.1.20"]   # the same, in development builds only
 islands = ["islands/chart"]   # WASM island crates, on one line (see Islands)
 island_budget_kb = 40         # gzip per island: `prism build web` fails above it
 ```
+
+`[app] orientations` locks the app to some orientations (#310): any of
+`"portrait"`, `"portrait_upside_down"`, `"landscape"` (both),
+`"landscape_left"` and `"landscape_right"` (the device's top on the right or on
+the left: iOS's `UIInterfaceOrientationLandscapeLeft` and `…Right`). On iPhone
+they become `UISupportedInterfaceOrientations` (default: portrait and both
+landscapes); iPad keeps every orientation, which its multitasking needs. On
+Android they become the activity's `android:screenOrientation`, following the
+user's rotation lock: `portrait`, `userPortrait` (both portraits),
+`userLandscape`, `landscape`, `reverseLandscape`, or `fullUser` for all four;
+portrait and landscape mixed otherwise leaves the system's default. Android 16
+ignores the lock on large screens (600 dp wide and more), as it does for every
+app targeting it.
 
 `[network] allow_http` lists the hosts the app may reach over plain HTTP
 (#152), such as a development server shown in a `web_view`: Apple platforms
