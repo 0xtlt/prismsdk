@@ -218,6 +218,7 @@ fn build_swift(dirs: &[&str], module: &str) {
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let lib = out.join(format!("lib{module}.a"));
+    let features = BridgeFeatures::from_env();
     let status = Command::new("xcrun")
         .args([
             "--sdk",
@@ -239,6 +240,7 @@ fn build_swift(dirs: &[&str], module: &str) {
             "-module-name",
             module,
         ])
+        .args(features.swift_flags())
         .arg("-o")
         .arg(&lib)
         .args(&sources)
@@ -317,21 +319,71 @@ fn build_swift(dirs: &[&str], module: &str) {
         "UserNotifications",
         "SwiftUI",
         "ActivityKit",
-        // Secure storage, owner authentication, sign-in (PrismSecurity.swift).
+        // Secure storage, owner authentication (PrismSecurity.swift).
         "Security",
         "LocalAuthentication",
-        "AuthenticationServices",
         // Videos (PrismVideo.swift, #207).
         "AVFoundation",
         "AVKit",
-        // In-app purchases (PrismPurchases.swift, #306).
-        "StoreKit",
     ] {
         if frameworks.join(format!("{fw}.framework")).exists()
             && !(fw == "ActivityKit" && sdk == "macosx")
         {
             println!("cargo:rustc-link-lib=framework={fw}");
         }
+    }
+    // Sign-in (PrismSecurity.swift), with the `sign-in` feature only (#314).
+    if features.sign_in {
+        println!("cargo:rustc-link-lib=framework=AuthenticationServices");
+    }
+    // In-app purchases (PrismPurchases.swift, #306), with the `purchases`
+    // feature only (#312).
+    if features.purchases && frameworks.join("StoreKit.framework").exists() {
+        println!("cargo:rustc-link-lib=framework=StoreKit");
+    }
+}
+
+/// The bridge's optional parts (#312, #314), from the cargo features of the
+/// backend whose build script calls [`build_bridge`] (`prismsdk`'s
+/// `sign-in`, `photo-picker` and `purchases` turn them on). Each one's framework drags
+/// ~1000 more images into every launch in the simulator (~1 s of dyld
+/// work), so an app links them only when it asks for them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BridgeFeatures {
+    /// AuthenticationServices: Sign in with Apple, web sign-in, passkeys.
+    sign_in: bool,
+    /// PhotosUI: the photo library picker (`pick_images`).
+    photo_picker: bool,
+    /// StoreKit: in-app purchases (`purchase`, `owns`…).
+    purchases: bool,
+}
+
+impl BridgeFeatures {
+    fn from_env() -> Self {
+        let on = |var: &str| {
+            println!("cargo:rerun-if-env-changed={var}");
+            std::env::var_os(var).is_some()
+        };
+        BridgeFeatures {
+            sign_in: on("CARGO_FEATURE_SIGN_IN"),
+            photo_picker: on("CARGO_FEATURE_PHOTO_PICKER"),
+            purchases: on("CARGO_FEATURE_PURCHASES"),
+        }
+    }
+
+    /// The `swiftc -D` conditions the Swift sources test.
+    fn swift_flags(self) -> Vec<&'static str> {
+        let mut flags = Vec::new();
+        if self.sign_in {
+            flags.extend(["-D", "PRISM_AUTH_SERVICES"]);
+        }
+        if self.photo_picker {
+            flags.extend(["-D", "PRISM_PHOTOS_PICKER"]);
+        }
+        if self.purchases {
+            flags.extend(["-D", "PRISM_STOREKIT"]);
+        }
+        flags
     }
 }
 
@@ -500,5 +552,27 @@ mod tests {
         assert!(failed.is_err());
         let dir = made.lock().unwrap().take().expect("the folder was made");
         assert!(!dir.exists(), "{} is left behind", dir.display());
+    }
+
+    #[test]
+    fn bridge_features_become_swift_conditions() {
+        use super::BridgeFeatures;
+        assert!(BridgeFeatures::default().swift_flags().is_empty());
+        let all = BridgeFeatures {
+            sign_in: true,
+            photo_picker: true,
+            purchases: true,
+        };
+        assert_eq!(
+            all.swift_flags(),
+            [
+                "-D",
+                "PRISM_AUTH_SERVICES",
+                "-D",
+                "PRISM_PHOTOS_PICKER",
+                "-D",
+                "PRISM_STOREKIT"
+            ]
+        );
     }
 }

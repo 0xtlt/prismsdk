@@ -25,6 +25,7 @@ pub mod device_info;
 mod element;
 pub mod events;
 pub mod fonts;
+pub mod frames;
 pub mod glyphs;
 pub mod i18n;
 pub mod interaction;
@@ -109,6 +110,7 @@ pub use events::{
     PointerEvent, PointerPhase, Rect, WheelEvent,
 };
 pub use fonts::{FontFace, FontSource, Stylesheet};
+pub use frames::{FrameInfo, FrameTicker};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use interaction::{Interaction, Interactions, States};
 pub use island::{Island, IslandEvent, IslandSource, island, web_component};
@@ -866,6 +868,36 @@ impl Runtime {
         self.reconciler.node_named(name)
     }
 
+    /// Whether the app has frame callbacks waiting (#311) and is not in the
+    /// background. A backend that drives frames from a display link
+    /// ([`set_native_frames`](Self::set_native_frames)) runs its link while
+    /// this is true, checking after each commit, and calls
+    /// [`frame`](Self::frame) on each refresh.
+    pub fn wants_frames(&self) -> bool {
+        self.app.wants_frames()
+    }
+
+    /// Tells the runtime the backend calls [`frame`](Self::frame) from a
+    /// display link (#311). Without it a 60 Hz timer stands in, through
+    /// [`next_timer`](Self::next_timer) and [`poll`](Self::poll).
+    pub fn set_native_frames(&mut self, native: bool) {
+        self.app.set_native_frames(native);
+    }
+
+    /// A refresh of the display (#311): runs the frame callbacks with the
+    /// time the frame began (`timestamp`, the vsync) and the time the frame
+    /// being prepared reaches the screen (`target`), then re-renders what
+    /// they changed. Returns the patches, to apply before the frame is
+    /// drawn.
+    pub fn frame(
+        &mut self,
+        timestamp: std::time::Instant,
+        target: std::time::Instant,
+    ) -> Vec<Patch> {
+        self.app.run_frame(timestamp, target);
+        self.poll()
+    }
+
     /// When the earliest pending timer is due, if any.
     pub fn next_timer(&self) -> Option<std::time::Instant> {
         self.app.executor.next_timer()
@@ -1241,6 +1273,7 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::WidgetAction;
+    // Frame callbacks (#311).
     pub use crate::{
         Accessible, Accuracy, Activity, Alert, Animations, App, AppleSignIn, AsyncApp, AuthRequest,
         BackEvent, BackgroundTask, BiometryKind, Breakpoint, Capitalize, CarButton, CarButtonStyle,
@@ -1259,6 +1292,7 @@ pub mod prelude {
         picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner, text,
         text_area, text_input, timer, toggle,
     };
+    pub use crate::{FrameInfo, FrameTicker};
     // One selection across several text fields (#231).
     pub use crate::{EditAcross, EditCause, SelectionAcross, SelectionPoint, text_flow};
     pub use crate::{

@@ -325,11 +325,15 @@ final class PrismDecor {
 
     // --- Clipping -------------------------------------------------------------------------
 
-    /** Clips the view's children to its rounded box (`clip`; pictures always). */
+    /** Clips the view's children to its rounded box (`clip`; pictures and scroll views always). */
     static void clip(PrismHost.Node n) {
         JSONObject s = n.style;
         View v = n.view;
-        boolean clip = s.optBoolean("clip") || n.kind.equals("picture");
+        // A scroll view shows its content within its bounds: its parents
+        // (PrismLayout) don't clip, so rows scrolled out of it would draw over
+        // its neighbours.
+        boolean scrolls = v instanceof android.widget.ScrollView || v instanceof android.widget.HorizontalScrollView;
+        boolean clip = s.optBoolean("clip") || n.kind.equals("picture") || scrolls;
         float radius = (float) s.optDouble("radius", 0);
         int corners = s.optInt("corners", 15);
         boolean perCorner = radius > 0 && corners != 15;

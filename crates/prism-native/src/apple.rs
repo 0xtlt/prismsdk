@@ -192,6 +192,41 @@ pub fn widget_configurations(kind: &str) -> Vec<prism_core::WidgetConfig> {
 #[path = "apple_push.rs"]
 pub mod push;
 
+/// Frame callbacks (#311): the display link of the Swift bridge
+/// (`apple/Bridge/PrismFrames.swift`), shared by the macOS and UIKit
+/// backends. Each refresh calls the backend's `prism_frame(ago, ahead)`.
+#[cfg(all(feature = "apple-bridge", not(target_os = "watchos")))]
+pub mod display_link {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    unsafe extern "C" {
+        fn prism_frames(on: bool);
+    }
+
+    thread_local! {
+        static RUNNING: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Runs the display link while the runtime wants frames
+    /// ([`prism_core::Runtime::wants_frames`]), stops it otherwise. Call it
+    /// after each commit, on the main thread.
+    pub fn sync(wanted: bool) {
+        if RUNNING.with(|r| r.replace(wanted)) != wanted {
+            unsafe { prism_frames(wanted) };
+        }
+    }
+
+    /// The frame's start and target times from the bridge's seconds: how
+    /// long ago it began, how long until it is on screen.
+    pub fn times(ago: f64, ahead: f64) -> (Instant, Instant) {
+        let now = Instant::now();
+        let secs =
+            |s: f64| Duration::from_secs_f64(if s.is_finite() { s.clamp(0., 1.) } else { 0. });
+        (now.checked_sub(secs(ago)).unwrap_or(now), now + secs(ahead))
+    }
+}
+
 /// Web views (#62): the `WKWebView` host of the Swift bridge
 /// (`apple/Bridge/PrismWebView.swift`), shared by the macOS and UIKit
 /// backends. tvOS has no WebKit: `WebHost::new` returns `None` there.

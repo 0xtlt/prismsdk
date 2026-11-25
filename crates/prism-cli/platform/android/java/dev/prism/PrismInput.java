@@ -1080,11 +1080,11 @@ final class PrismInput {
         v.post(() -> v.requestRectangleOnScreen(new Rect(0, 0, v.getWidth(), v.getHeight()), false));
     }
 
-    /** `cx.scroll_by` / `cx.scroll_to` (#193): points to pixels; the view keeps it within its content. */
+    /** `cx.scroll_by` / `cx.scroll_to` (#193): `x`, `y` already in pixels (the renderer zooms
+     *  them by the density, #308); the view keeps it within its content. */
     static void scrollTo(PrismHost.Node n, float x, float y, boolean relative, boolean animated) {
         View v = n.view;
-        float d = PrismHost.density;
-        int px = (int) Math.max(-1e8f, Math.min(1e8f, x * d)), py = (int) Math.max(-1e8f, Math.min(1e8f, y * d));
+        int px = (int) Math.max(-1e8f, Math.min(1e8f, x)), py = (int) Math.max(-1e8f, Math.min(1e8f, y));
         v.post(() -> {
             if (v instanceof android.widget.ScrollView) {
                 android.widget.ScrollView s = (android.widget.ScrollView) v;

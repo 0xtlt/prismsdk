@@ -337,3 +337,67 @@ fn a_failing_test_leaves_no_temp_folder() {
     let dir = made.lock().unwrap().take().expect("the folder was made");
     assert!(!dir.exists(), "{} is left behind", dir.display());
 }
+
+/// #310: `[app] orientations` for iPhone's Info.plist and Android's activity.
+#[test]
+fn app_orientations() {
+    let load = |toml: Option<&str>| {
+        let dir = TempDir::new("orientations");
+        project(&dir, toml, CARGO)
+    };
+    // Unset: iPhone's portrait and both landscapes, Android's default.
+    let p = load(None).unwrap();
+    assert_eq!(
+        p.ios_orientations(),
+        [
+            "UIInterfaceOrientationPortrait",
+            "UIInterfaceOrientationLandscapeLeft",
+            "UIInterfaceOrientationLandscapeRight"
+        ]
+    );
+    assert_eq!(p.android_screen_orientation(), None);
+
+    let p = load(Some("[app]\norientations = [\"portrait\"]\n")).unwrap();
+    assert_eq!(p.ios_orientations(), ["UIInterfaceOrientationPortrait"]);
+    assert_eq!(p.android_screen_orientation(), Some("portrait"));
+
+    for (list, android) in [
+        ("\"landscape\"", Some("userLandscape")),
+        ("\"landscape-right\"", Some("landscape")),
+        ("\"landscape_left\"", Some("reverseLandscape")),
+        (
+            "\"portrait\", \"portrait_upside_down\"",
+            Some("userPortrait"),
+        ),
+        ("\"upside_down\"", Some("reversePortrait")),
+        (
+            "\"portrait\", \"landscape\", \"upside_down\"",
+            Some("fullUser"),
+        ),
+        // Mixed, not all four: the system decides on Android.
+        ("\"portrait\", \"landscape\"", None),
+    ] {
+        let p = load(Some(&format!("[app]\norientations = [{list}]\n"))).unwrap();
+        assert_eq!(p.android_screen_orientation(), android, "{list}");
+    }
+    // Duplicates go, the order stays.
+    let p = load(Some(
+        "[app]\norientations = [\"landscape\", \"landscape_left\", \"portrait\"]\n",
+    ))
+    .unwrap();
+    assert_eq!(
+        p.ios_orientations(),
+        [
+            "UIInterfaceOrientationLandscapeLeft",
+            "UIInterfaceOrientationLandscapeRight",
+            "UIInterfaceOrientationPortrait"
+        ]
+    );
+    let err = load(Some("[app]\norientations = [\"sideways\"]\n"))
+        .err()
+        .unwrap();
+    assert!(
+        err.contains("[app] orientations") && err.contains("sideways"),
+        "{err}"
+    );
+}

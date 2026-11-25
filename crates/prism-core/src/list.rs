@@ -5,6 +5,8 @@
 //! let list = VirtualList::new(cx, 10_000, 56., |i, _cx| text(format!("Row {i}")));
 //! div().child(list)                        // in render
 //! list.update(cx, |l, cx| l.set_count(n, cx));   // when data changes
+//! list.update(cx, |l, cx| l.set_id("feed", cx));  // name it for cx.scroll_to / scroll_offset
+//! list.update(cx, |l, cx| l.scroll_to_row(500, true, cx));  // jump to row 500
 //! ```
 
 use std::rc::Rc;
@@ -24,6 +26,8 @@ pub struct VirtualList {
     /// Extra rows rendered above and below the viewport.
     overscan: usize,
     render_row: RowFn,
+    /// The name of its scroll view (`set_id`).
+    id: Option<String>,
 }
 
 impl VirtualList {
@@ -42,7 +46,32 @@ impl VirtualList {
             viewport: 1000.,
             overscan: 6,
             render_row: Rc::new(move |i, app| render_row(i, app).into_element()),
+            id: None,
         })
+    }
+
+    /// Names the list's scroll view (#309), like `scroll().id(id)`: the
+    /// app can then drive it with [`App::scroll_to`] and [`App::scroll_by`]
+    /// (or [`scroll_to_row`](Self::scroll_to_row)) and read its offset with
+    /// [`App::scroll_offset`]. Re-renders.
+    pub fn set_id(&mut self, id: impl Into<String>, cx: &mut Context<Self>) {
+        self.id = Some(id.into());
+        cx.notify();
+    }
+
+    /// The name given with [`set_id`](Self::set_id).
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    /// Scrolls so row `row` is at the top (as far as the content allows),
+    /// after the next render, animated or at once (#309). Does nothing
+    /// until the list is named ([`set_id`](Self::set_id)).
+    pub fn scroll_to_row(&self, row: usize, animated: bool, cx: &mut Context<Self>) {
+        if let Some(id) = &self.id {
+            let y = row.min(self.count) as f32 * self.row_height;
+            cx.scroll_to(id.clone(), 0., y, animated);
+        }
     }
 
     /// Changes the number of rows and re-renders.
@@ -93,17 +122,20 @@ impl Render for VirtualList {
             })
             .collect();
         let entity = cx.entity();
-        scroll()
-            .on_scroll(Rc::new(move |e: &ScrollEvent, app: &mut App| {
-                // Not a listener: re-render only when the window changes.
-                entity.update(app, |l, cx| l.scrolled(e, cx));
-            }))
-            .child(div().h(Length::Px(range.start as f32 * h)).flex_shrink_0())
-            .children(rows)
-            .child(
-                div()
-                    .h(Length::Px((self.count - range.end) as f32 * h))
-                    .flex_shrink_0(),
-            )
+        let mut list = scroll();
+        if let Some(id) = &self.id {
+            list = list.id(id.clone());
+        }
+        list.on_scroll(Rc::new(move |e: &ScrollEvent, app: &mut App| {
+            // Not a listener: re-render only when the window changes.
+            entity.update(app, |l, cx| l.scrolled(e, cx));
+        }))
+        .child(div().h(Length::Px(range.start as f32 * h)).flex_shrink_0())
+        .children(rows)
+        .child(
+            div()
+                .h(Length::Px((self.count - range.end) as f32 * h))
+                .flex_shrink_0(),
+        )
     }
 }

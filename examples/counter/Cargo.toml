@@ -10,7 +10,8 @@ native = ["prism/native"]
 web = ["prism/web"]
 
 [dependencies]
-prism = { workspace = true, features = ["db"] }
+# The demo uses sign-in, passkeys and the photo picker (#314).
+prism = { workspace = true, features = ["db", "sign-in", "photo-picker", "purchases"] }
 
 [build-dependencies]
 prism-build.workspace = true

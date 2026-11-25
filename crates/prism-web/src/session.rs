@@ -252,7 +252,10 @@ impl WebApp {
                         let _ = waker.send(Inbound::Wake);
                     }
                 }));
-                let runtime = Runtime::with_options(&app.init_with(request, page_request), options);
+                let mut runtime =
+                    Runtime::with_options(&app.init_with(request, page_request), options);
+                // Frame callbacks come from the page's requestAnimationFrame (#311).
+                runtime.set_native_frames(true);
                 let sign_ins = crate::security::session_key();
                 live(&sid, sign_ins, registered);
                 Live {
@@ -286,6 +289,8 @@ impl WebApp {
                     drops: HashMap::new(),
                     queued,
                     woken,
+                    frames_on: false,
+                    frame_answer: false,
                 }
                 .run(rx);
             })
@@ -311,6 +316,11 @@ struct Live {
     queued: Arc<AtomicUsize>,
     /// A wake-up is waiting in the inbox.
     woken: Arc<AtomicBool>,
+    /// The page runs its frame loop (#311): `{"t":"frames","on":…}` said so.
+    frames_on: bool,
+    /// A frame ran: the page hears so (`{"t":"frame"}`) after its patches,
+    /// and asks for the next one.
+    frame_answer: bool,
 }
 
 impl Drop for Live {
@@ -357,6 +367,15 @@ impl Live {
         loop {
             if !self.flush_requests() {
                 return;
+            }
+            // Frame callbacks (#311): the page's requestAnimationFrame loop
+            // runs while the app wants frames.
+            let wanted = self.runtime.wants_frames();
+            if wanted != self.frames_on {
+                self.frames_on = wanted;
+                if !(self.send)(json!({ "t": "frames", "on": wanted }).to_string()) {
+                    return;
+                }
             }
             // `cx.reconnect()`: the page was told, it opens a new session.
             if self.services.reconnect {
@@ -461,6 +480,11 @@ impl Live {
                 Ok(Inbound::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
             };
             if !self.patches(&patches) {
+                return;
+            }
+            if std::mem::take(&mut self.frame_answer)
+                && !(self.send)(json!({ "t": "frame" }).to_string())
+            {
                 return;
             }
         }
@@ -605,6 +629,13 @@ impl Live {
         };
         let rt = &mut self.runtime;
         match v.get("t").and_then(Value::as_str) {
+            // A refresh of the page (#311): `ago` ms since it began, `ahead`
+            // ms until it is on screen, from requestAnimationFrame.
+            Some("frame") => {
+                self.frame_answer = true;
+                let (timestamp, target) = frame_times(&v);
+                rt.frame(timestamp, target)
+            }
             // A notification or live banner was tapped: open its deep link.
             Some("link") => match v.get("path").and_then(Value::as_str) {
                 Some(path) => rt.open_link(path),
@@ -911,6 +942,21 @@ impl Live {
 
 /// A message for the page, `{"p": ops, "t": t}`. The ops are moved in:
 /// `json!` would copy every one of them.
+/// A page frame's start and target times (#311) from its `ago` and `ahead`
+/// milliseconds, at most a second each.
+fn frame_times(v: &Value) -> (Instant, Instant) {
+    let now = Instant::now();
+    let ms = |k: &str| {
+        let n = v.get(k).and_then(Value::as_f64).unwrap_or(0.);
+        Duration::from_secs_f64(if n.is_finite() {
+            n.clamp(0., 1000.) / 1000.
+        } else {
+            0.
+        })
+    };
+    (now.checked_sub(ms("ago")).unwrap_or(now), now + ms("ahead"))
+}
+
 fn message(t: &str, ops: Vec<Value>) -> serde_json::Map<String, Value> {
     let mut m = serde_json::Map::new();
     m.insert("p".into(), Value::Array(ops));

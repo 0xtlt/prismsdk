@@ -86,7 +86,8 @@ impl IosServices {
                 motion: !tv,
                 // Simulators have no camera.
                 camera: !tv && !vision && !cfg!(target_abi = "sim"),
-                photos: !tv,
+                // PHPicker: the `photo-picker` feature (#314).
+                photos: !tv && cfg!(feature = "photo-picker"),
                 haptics: !tv && !vision,
                 share: !tv,
                 clipboard: !tv,
@@ -98,7 +99,8 @@ impl IosServices {
                 device_auth,
                 sign_in_with_apple: apple,
                 // ASWebAuthenticationSession (tvOS 16+ included).
-                web_auth: true,
+                // ASWebAuthenticationSession: the `sign-in` feature (#314).
+                web_auth: cfg!(feature = "sign-in"),
                 // The build declares aps-environment (`[push]` in Prism.toml).
                 push: prism_native::apple::push::service(),
                 // WKWebView (#62); tvOS has no WebKit.
@@ -110,7 +112,8 @@ impl IosServices {
                 drag_and_drop: cfg!(not(target_os = "tvos")),
                 // StoreKit 2 (PrismPurchases.swift, #306); parental controls
                 // answer `Denied` when buying.
-                purchases: true,
+                // With the `purchases` feature only (#312).
+                purchases: cfg!(feature = "purchases"),
             },
             controller,
         }

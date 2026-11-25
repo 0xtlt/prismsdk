@@ -219,6 +219,7 @@ pub(crate) mod tests {
             category: None,
             uses_encryption: None,
             description: Some("Counts".into()),
+            orientations: Vec::new(),
             maintainer: None,
             publisher: None,
             package_publisher: None,

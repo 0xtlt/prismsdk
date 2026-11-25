@@ -14,8 +14,8 @@
 //!
 //! | direction | call |
 //! |---|---|
-//! | Java → Rust | `PrismHost.nativeMain()` (in the `prism` facade), `nativeReady(w, h, density, info)`, `nativeEvent(json)`, `nativeWake()`, `nativeConsumesKey(json)` and `nativeTakesText(id)` (a selection group's keys and typing, #231), `sceneBlob(id)` (3D scenes' blobs, any thread); without a screen too: `nativeBackground(task, info)`, `nativeBackgroundExpired(task)`, `nativeWidgetAction(…)`, `nativeCarEvent(kind, value, info)`, `nativePush(json, info)` |
-//! | Rust → Java | `PrismHost.apply(json)`, `measure(kind, text, size, weight, maxWidth, spec)` (answers are cached by request), `post(delayMs)`, `jobFinished(task, ok)`, `cloudChanged()` |
+//! | Java → Rust | `PrismHost.nativeMain()` (in the `prism` facade), `nativeReady(w, h, density, info)`, `nativeEvent(json)`, `nativeWake()`, `nativeFrame(agoNanos, aheadNanos)` (frame callbacks, #311), `nativeConsumesKey(json)` and `nativeTakesText(id)` (a selection group's keys and typing, #231), `sceneBlob(id)` (3D scenes' blobs, any thread); without a screen too: `nativeBackground(task, info)`, `nativeBackgroundExpired(task)`, `nativeWidgetAction(…)`, `nativeCarEvent(kind, value, info)`, `nativePush(json, info)` |
+//! | Rust → Java | `PrismHost.apply(json)`, `measure(kind, text, size, weight, maxWidth, spec)` (answers are cached by request), `post(delayMs)`, `frames()` (Choreographer until `nativeFrame` answers false), `jobFinished(task, ok)`, `cloudChanged()` |
 
 #[cfg(target_os = "android")]
 mod imp;

@@ -17,6 +17,16 @@ categories = ["gui", "os::macos-apis"]
 # The crate is `prismsdk-macos` on crates.io; code still writes `prism_macos`.
 name = "prism_macos"
 
+[features]
+# The bridge's optional parts (#312, #314), read by its build script: each links a
+# framework that costs ~1 s of dyld work at launch in the simulator.
+# AuthenticationServices: Sign in with Apple, web sign-in, passkeys.
+sign-in = []
+# PhotosUI: the photo library picker.
+photo-picker = []
+# StoreKit: in-app purchases (#312).
+purchases = []
+
 [target.'cfg(target_os = "macos")'.dependencies]
 prism-core.workspace = true
 prism-native = { workspace = true, features = ["apple-bridge"] }

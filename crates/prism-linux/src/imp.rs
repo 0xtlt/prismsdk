@@ -1144,6 +1144,48 @@ fn commit(s: &mut State, patches: Vec<prism_core::Patch>) {
         let delay = at.saturating_duration_since(std::time::Instant::now());
         glib::timeout_add_local_once(delay, poll);
     }
+    sync_frames(s);
+}
+
+thread_local! {
+    /// The window's frame clock calls `frame` (#311).
+    static TICKING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Frame callbacks (#311): while the app wants frames, the window's GTK
+/// frame clock runs them on each refresh, before GTK lays out and draws.
+/// The tick stops itself once none is left.
+fn sync_frames(s: &State) {
+    if !s.runtime.wants_frames() || TICKING.replace(true) {
+        return;
+    }
+    s.renderer.widgets.window.add_tick_callback(|_, clock| {
+        // Microseconds, on `g_get_monotonic_time`'s clock.
+        let now = std::time::Instant::now();
+        let ago = (glib::monotonic_time() - clock.frame_time()).clamp(0, 1_000_000);
+        let (interval, presented) = clock.refresh_info(clock.frame_time());
+        let interval = if interval > 0 { interval } else { 16_667 };
+        let at = if presented > 0 {
+            presented
+        } else {
+            clock.frame_time() + interval
+        };
+        let ahead = (at - glib::monotonic_time()).clamp(0, 1_000_000);
+        let us = |n: i64| std::time::Duration::from_micros(n as u64);
+        let timestamp = now.checked_sub(us(ago)).unwrap_or(now);
+        let mut more = true;
+        with_state(|s| {
+            let patches = s.runtime.frame(timestamp, now + us(ahead));
+            commit(s, patches);
+            more = s.runtime.wants_frames();
+        });
+        if more {
+            glib::ControlFlow::Continue
+        } else {
+            TICKING.set(false);
+            glib::ControlFlow::Break
+        }
+    });
 }
 
 /// A video player (#207): reports the end of the playback, and lays out
@@ -4496,7 +4538,7 @@ fn activate(app: &gtk::Application) {
         });
     });
     app.add_action(&respond);
-    let runtime = Runtime::with_options(
+    let mut runtime = Runtime::with_options(
         init,
         prism_core::RuntimeOptions {
             path: std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into()),
@@ -4514,6 +4556,8 @@ fn activate(app: &gtk::Application) {
             ..Default::default()
         },
     );
+    // Frame callbacks come from the window's frame clock (#311).
+    runtime.set_native_frames(true);
     let keys = Rc::new(KeyState::default());
     attach_keys(window.upcast_ref(), keys.clone());
     let renderer = NativeRenderer::new(Gtk {

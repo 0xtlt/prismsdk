@@ -180,6 +180,8 @@ mod media;
 #[cfg(target_os = "windows")]
 mod menubar;
 // The screen's size, density and refresh rate: no Win32, tested everywhere.
+#[cfg(target_os = "windows")]
+mod frames;
 mod monitor;
 #[cfg(target_os = "windows")]
 mod motion;

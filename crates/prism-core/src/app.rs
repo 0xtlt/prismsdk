@@ -177,6 +177,8 @@ pub struct App {
     pub(crate) menus: crate::menu::Menus,
     pub(crate) background: crate::background::Background,
     pub(crate) device: crate::device::Device,
+    /// Frame callbacks (#311).
+    pub(crate) frame_clock: crate::frames::FrameClock,
     pub(crate) push: crate::push::Push,
     pub(crate) device_info: crate::device_info::DeviceInfoState,
     pub(crate) storage: Box<dyn crate::storage::Storage>,
@@ -276,6 +278,7 @@ impl Default for App {
             menus: Default::default(),
             background: Default::default(),
             device: Default::default(),
+            frame_clock: Default::default(),
             push: Default::default(),
             storage: Box::new(crate::storage::MemoryStorage::default()),
             store: Default::default(),

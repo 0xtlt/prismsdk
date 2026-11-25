@@ -235,6 +235,8 @@ pub fn commit(s: &mut State, patches: Vec<Patch>) {
             SetTimer(Some(main_hwnd()), TIMER_RUNTIME, ms, None);
         }
     }
+    // Frame callbacks (#311): XAML's `Rendering` runs them while they wait.
+    crate::frames::sync(s.runtime.wants_frames());
 }
 
 /// Lays the tree out in the window again.
@@ -1005,7 +1007,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         let environment = system::environment();
         let device_info = system::device_info(main, k);
         trace("environment");
-        let runtime = Runtime::with_options(
+        let mut runtime = Runtime::with_options(
             &init,
             prism_core::RuntimeOptions {
                 path: std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into()),
@@ -1023,6 +1025,8 @@ pub fn run(config: AppConfig, init: AppInit) {
                 ..Default::default()
             },
         );
+        // Frame callbacks come from XAML's `Rendering` (#311).
+        runtime.set_native_frames(true);
         trace("app runtime");
         let mut win = match Win::new(main, images, config.title.clone(), dpi) {
             Ok(w) => w,

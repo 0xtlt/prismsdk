@@ -20,6 +20,8 @@
 #   PRISM_BUILD      CFBundleVersion (default 1)
 #   PRISM_CATEGORY   LSApplicationCategoryType (public.app-category.…)
 #   PRISM_ENCRYPTION=0  ITSAppUsesNonExemptEncryption = NO (export compliance)
+#   PRISM_ORIENTATIONS  iPhone's UISupportedInterfaceOrientations, comma-separated
+#                    (Prism.toml [app] orientations, #310)
 #   PRISM_TEAM       Apple team id (default: the team of a matching profile)
 #   PRISM_PROFILE    .mobileprovision to use (default: best match for the bundle id)
 #   PRISM_IDENTITY   code signing identity (default: first "Apple Development")
@@ -407,8 +409,13 @@ STORE_PLIST=""
 [[ "${PRISM_ENCRYPTION:-}" == 0 ]] && STORE_PLIST+="  <key>ITSAppUsesNonExemptEncryption</key><false/>
 "
 if [[ "$OS" == ios ]]; then
-  # iPad multitasking needs every orientation (App Store validation).
-  STORE_PLIST+="  <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+  # iPhone: `[app] orientations` (PRISM_ORIENTATIONS, #310), else portrait
+  # and both landscapes. iPad multitasking needs every orientation (App
+  # Store validation).
+  IPHONE_ORIENTATIONS=""
+  IFS=, read -ra ORIENTATIONS <<< "${PRISM_ORIENTATIONS:-UIInterfaceOrientationPortrait,UIInterfaceOrientationLandscapeLeft,UIInterfaceOrientationLandscapeRight}"
+  for o in "${ORIENTATIONS[@]}"; do IPHONE_ORIENTATIONS+="<string>$o</string>"; done
+  STORE_PLIST+="  <key>UISupportedInterfaceOrientations</key><array>$IPHONE_ORIENTATIONS</array>
   <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>"
 fi
 

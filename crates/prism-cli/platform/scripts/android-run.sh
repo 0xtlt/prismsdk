@@ -17,6 +17,8 @@
 #   PRISM_ICON         1024×1024 PNG app icon
 #   PRISM_PERMISSIONS  Prism.toml [permissions] (name<TAB>text per line)
 #   PRISM_HTTP_HOSTS   plain-HTTP hosts, comma-separated (cleartext traffic)
+#   PRISM_SCREEN_ORIENTATION  the activity's android:screenOrientation
+#                      (Prism.toml [app] orientations, #310; default: the system's)
 #   PRISM_PATH         first screen (deep link)
 #   PRISM_RELEASE=1    release build
 #   PRISM_NO_INSTALL=1 build only
@@ -132,6 +134,11 @@ if [[ -n "${PRISM_HTTP_HOSTS:-}" ]]; then
     echo '</domain-config></network-security-config>'
   } > "$OUT/res/xml/prism_network_security.xml"
   NET_ATTR='android:networkSecurityConfig="@xml/prism_network_security"'
+fi
+# `[app] orientations` (#310): the activity's screenOrientation.
+SCREEN_ORIENTATION=""
+if [[ -n "${PRISM_SCREEN_ORIENTATION:-}" ]]; then
+  SCREEN_ORIENTATION=" android:screenOrientation=\"$PRISM_SCREEN_ORIENTATION\""
 fi
 # Each widget kind: a provider subclass, its size (appwidget-provider XML) and
 # a manifest receiver.
@@ -426,7 +433,7 @@ $PUSH_QUERIES
   <application android:label="$APP_NAME" $ICON_ATTR $NET_ATTR android:extractNativeLibs="false" android:supportsRtl="true"
       android:theme="@android:style/Theme.DeviceDefault.DayNight"
       android:allowBackup="true" android:backupAgent="dev.prism.PrismBackup" android:restoreAnyVersion="true">
-    <activity android:name="dev.prism.PrismActivity" android:exported="true" android:launchMode="singleTop"
+    <activity android:name="dev.prism.PrismActivity" android:exported="true" android:launchMode="singleTop"$SCREEN_ORIENTATION
         android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection">
       <meta-data android:name="prism.lib" android:value="$LIB"/>
       <meta-data android:name="prism.scheme" android:value="$SCHEME"/>

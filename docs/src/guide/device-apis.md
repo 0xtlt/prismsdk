@@ -25,6 +25,8 @@ On the web `open_url` keeps a URL of the page's own origin in the tab (the host'
 | Photos / camera | PHPicker (no permission needed) / camera | open panel / — | `<input type=file>`, uploaded to the session | photo picker (`ACTION_PICK_IMAGES`) / `ACTION_IMAGE_CAPTURE` | file chooser / — | `IFileOpenDialog` / the Camera app's capture UI |
 | Haptics, clipboard, share, URLs | UIFeedbackGenerator, UIPasteboard, share sheet | trackpad, NSPasteboard, sharing picker | `vibrate`, Clipboard API, Web Share | `VibrationEffect`, `ClipboardManager`, `ACTION_SEND` chooser | —, the display's clipboard, —, the default app | a vibration device (most PCs have none), the Win32 clipboard, the Share dialog, `ShellExecuteW` |
 
+On iOS, iPadOS, visionOS and watchOS the photo picker (`pick_images`) needs prismsdk's `photo-picker` feature (`features = ["photo-picker"]`): it links PhotosUI, which costs ~1 s at every launch in the simulator (#314). Without it `pick_images` fails with a message naming the feature and `capabilities().photos` is false there; `take_photo` and the macOS open panel need nothing.
+
 On Windows every one works in an unpackaged app; [Windows › Device APIs without a package](../platforms/windows.md#device-apis-without-a-package) says how, and what `capabilities()` checks at startup.
 
 Usage texts go in `Prism.toml`; `prism` writes them to Info.plist (iOS refuses to ask without them):
