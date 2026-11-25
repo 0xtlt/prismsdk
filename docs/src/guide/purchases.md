@@ -23,7 +23,7 @@ cx.on_entitlements(|app| { /* … */ });
 
 `cx.owns` answers at launch: Prism keeps the store's last answer between runs, so the first frame already shows the unlocked screens. It then asks the store, and keeps listening while the app runs. Every change re-renders the windows and reloads the widgets (they render in the app, so `cx.owns` works in them too). `cx.entitlements_confirmed()` says whether the store has answered since launch.
 
-Errors are `DeviceError`s: `Unavailable` where there is no store (or the Play Store app is missing), `Denied` where purchases are turned off (Screen Time), and the store's own errors with their name (`DeviceError::Platform`, such as Play's `NETWORK_ERROR`).
+Errors are `DeviceError`s: `Unavailable` where there is no store (or the Play Store app is missing), `Denied` where purchases are turned off (Screen Time), and the store's own errors with their name (`DeviceError::Platform`: StoreKit's `networkError` or `productUnavailable`, Play's `NETWORK_ERROR` or `ITEM_UNAVAILABLE`). Match on `e.name()`, not on the message.
 
 `purchase_with(Purchase::new("pro").account_token(uuid))` ties the purchase to your user (a UUID). It becomes StoreKit's `appAccountToken` and Play's obfuscated account id, which your server finds in the transaction.
 
@@ -45,7 +45,7 @@ Apple platforms need nothing: StoreKit is part of the system. Android builds bun
 enabled = true   # Android: Google Play Billing, fetched from Google's Maven and bundled
 ```
 
-`prism run|build android` then fetches the library (version 9.1.0) and its dependencies, checked against `android-deps.lock`, merges their manifests (the `BILLING` permission, Play's proxy activities) and compiles `PrismBilling.java`. Without it, `cx.capabilities().purchases` is `false` on Android and the calls answer `Unavailable`. Play Billing needs the Play Store app on the device: emulators with Google Play have it.
+`prism run|build android` then fetches the library (version 9.1.0) and its dependencies, checked against `android-deps.lock`, merges their manifests (the `BILLING` permission, Play's proxy activities) and compiles `PrismBilling.java`. Without it, `cx.capabilities().purchases` is `false` on Android and the calls answer `Unavailable`. Play Billing needs the Play Store app on the device (emulators with Google Play have it): without it, `purchases` is `false` too and the calls answer `Unavailable` at once.
 
 Prism acknowledges Play purchases, as Google requires within three days (it refunds those left unacknowledged), when they arrive and again whenever it reads what the user owns. On Apple platforms it finishes verified transactions.
 
