@@ -147,6 +147,9 @@
     if (el.dataset.clickable !== "1" || el.getAttribute("aria-disabled") === "true") return;
     // The click that ends a drag is not a click.
     if (dragJustEnded) return;
+    // `copy_on_click` (#323): written now, inside the click, as browsers
+    // require (Safari refuses a write that comes later from the server).
+    if (el._copyText != null) copyNow(id, el._copyText);
     // Pointer clicks say where (keyboard activations have no position: detail 0).
     // With the keys held and the click's number in a quick series (#159),
     // only when they say something.
@@ -154,6 +157,17 @@
       const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
       send({ t: "click", id, ...local(el, e), ...(mods ? { mods } : {}), ...(e.detail > 1 ? { n: e.detail } : {}) });
     } else send({ t: "click", id });
+  }
+
+  /** Writes `text` to the clipboard and reports how it went (#323). */
+  function copyNow(id, text) {
+    const report = (err) => send(err == null ? { t: "copied", id } : { t: "copied", id, err });
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return report("unavailable");
+      navigator.clipboard.writeText(text).then(() => report(null), (e) => report(named(e)));
+    } catch (e) {
+      report(named(e));
+    }
   }
 
   // --- Pointer and drag (#17) -------------------------------------------------
@@ -1364,6 +1378,7 @@
     if ((href != null) !== (el.localName === "a")) {
       create(id, kind, href != null ? "a" : null);
       const fresh = nodes.get(id);
+      fresh._copyText = el._copyText;
       while (el.firstChild) fresh.appendChild(el.firstChild);
       if (el.parentNode) { el.parentNode.insertBefore(fresh, el); el.remove(); }
       el = fresh;
@@ -1472,7 +1487,9 @@
       el._back.addEventListener("click", (e) => {
         e.stopPropagation();
         userNavigated = true;
-        send({ t: "back", id, depth: el._screens.length - 1 });
+        // A screen that asks first hears it instead (#324).
+        const guard = backGuard(el);
+        send({ t: "back", id: guard ? Number(guard.dataset.pid) : id, depth: el._screens.length - 1 });
       });
       stacks.push(el);
     } else if (kind === "tabs") {
@@ -3492,7 +3509,13 @@
         if (el.dataset.kind === "spinner") el.dataset.size = p.value === 1 ? "large" : "";
         if (el.dataset.kind === "picture") toggleClass(el, "prism-fit", p.value === 1);
         if (el.dataset.kind === "scroll") setRefreshing(el, p.value === 1);
-        if (el.dataset.kind === "stack") { el._closable = (p.value & 1) === 1; el._noHeader = (p.value & 2) === 2; refreshStack(el); }
+        if (el.dataset.kind === "stack") {
+          el._closable = (p.value & 1) === 1;
+          el._noHeader = (p.value & 2) === 2;
+          // Path changes made in place (#324): see `syncHistory`.
+          el._replaces = Math.floor(p.value / 256);
+          refreshStack(el);
+        }
         if (el.dataset.kind === "screen") {
           el._bare = p.value === 1;
           const owner = el.parentElement && el.parentElement.parentElement;
@@ -3617,6 +3640,9 @@
       case "island": return setIsland(p);
       case "props": return setIslandProps(el, p.props);
       case "link": return setLink(el, p.id, p.href);
+      // A screen that asks before the browser leaves it (#324).
+      case "backreq": if (el) el._backRequests = !!p.on; return;
+      case "copy": if (el) el._copyText = p.text == null ? null : String(p.text); return;
       case "attrs": return setAttrs(el, p.attrs);
       // Web views (#62).
       case "webpost": return el && webPost(el, p.data);
@@ -6241,47 +6267,88 @@
     showTitle();
   }
 
-  let hist = null; // { depth, tab } the browser history currently reflects
+  // Browser history (#324). Each entry made by this page carries its
+  // number in the session (`prism`), the stack's depth and tab, and the
+  // path it shows; `entries` mirrors them, by number.
+  let hist = null; // the entry the browser shows: { prism, depth, tab, path, replaces }
+  let entries = [];
   let ignorePops = 0;
+  const entryOf = (n, s) => ({ prism: n, depth: s.depth, tab: s.tab, path: s.path });
+
+  /** The top screen's guard (`Screen::on_back_request`), if it has one. */
+  function backGuard(stack) {
+    const top = stack && stack._screens && nodes.get(stack._screens[stack._screens.length - 1]);
+    return top && top._backRequests ? top : null;
+  }
 
   function syncHistory() {
     const s = navState();
     if (!s) return;
-    if (!hist && s.depth > 1) {
-      // Deep link: give the browser entries for the screens underneath.
-      history.replaceState({ prism: 1, tab: s.tab }, "", urlFor("/"));
-      for (let d = 2; d <= s.depth; d++) history.pushState({ prism: d, tab: s.tab }, "", urlFor(s.path));
-    } else if (!hist || hist.tab !== s.tab) {
-      history.replaceState({ prism: s.depth, tab: s.tab }, "", urlFor(s.path));
-    } else if (s.depth > hist.depth) {
-      for (let d = hist.depth + 1; d <= s.depth; d++) history.pushState({ prism: d, tab: s.tab }, "", urlFor(s.path));
-    } else if (s.depth < hist.depth) {
-      ignorePops++;
-      history.go(s.depth - hist.depth);
-    } else if (appPath() !== s.path) {
-      history.replaceState({ prism: s.depth, tab: s.tab }, "", urlFor(s.path));
+    const replaces = s.stack._replaces || 0;
+    const record = (n) => {
+      entries[n] = { depth: s.depth, tab: s.tab, path: s.path };
+      hist = { ...entryOf(n, s), replaces };
+    };
+    if (!hist) {
+      // The first tree: this entry is the page's own, a deep link's too
+      // (no entries for the screens under it). A reload keeps its number.
+      const n = (history.state && history.state.prism) || 1;
+      history.replaceState(entryOf(n, s), "", urlFor(s.path));
+      return record(n);
     }
-    hist = { depth: s.depth, tab: s.tab };
+    if (hist.path === s.path && hist.depth === s.depth && hist.tab === s.tab) {
+      hist.replaces = replaces;
+      return;
+    }
+    // Another tab, `cx.replace` or `replace_query`: this entry changes.
+    if (s.tab !== hist.tab || replaces !== hist.replaces) {
+      history.replaceState(entryOf(hist.prism, s), "", urlFor(s.path));
+      return record(hist.prism);
+    }
+    // Back in the app (`cx.back`, the page's Back button): to the entry it
+    // left, when the entries since then are the screens it popped.
+    if (s.depth < hist.depth) {
+      let j = hist.prism - 1;
+      while (j >= 1 && entries[j] && entries[j].tab === s.tab && entries[j].depth > s.depth) j--;
+      const e = entries[j];
+      if (j >= 1 && e && e.tab === s.tab && e.depth === s.depth && e.path === s.path) {
+        ignorePops++;
+        history.go(j - hist.prism);
+        return record(j);
+      }
+    }
+    // Anything else shows another screen: a new entry (a push, a sidebar's
+    // `navigate_root`, a reset). Forward history goes, as in a browser.
+    const n = hist.prism + 1;
+    history.pushState(entryOf(n, s), "", urlFor(s.path));
+    entries.length = n;
+    record(n);
   }
 
   window.addEventListener("popstate", (e) => {
     const s = navState();
     if (ignorePops > 0) {
       ignorePops--;
-      if (s && appPath() !== s.path) history.replaceState({ prism: hist.depth, tab: s.tab }, "", urlFor(s.path));
+      if (s && hist && appPath() !== s.path) history.replaceState(entryOf(hist.prism, s), "", urlFor(s.path));
       return;
     }
-    const depth = e.state && e.state.prism;
-    if (!s || !depth) return location.reload();
+    const st = e.state;
+    if (!s || !hist || !st || !st.prism || typeof st.path !== "string") return location.reload();
+    if (st.prism === hist.prism) return;
     userNavigated = true;
-    const id = Number(s.stack.dataset.pid);
-    if (depth < hist.depth) {
-      hist.depth = depth;
-      send({ t: "back", id, depth });
-    } else if (depth > hist.depth) {
-      hist.depth = depth;
-      send({ t: "navigate", id, path: appPath() });
+    // The screen asks first (#324): it stays, its entry too, and hears the
+    // request; the app goes with `cx.back()` or a navigation of its own.
+    const guard = backGuard(s.stack);
+    if (guard) {
+      ignorePops++;
+      history.go(hist.prism - st.prism);
+      return send({ t: "back", id: Number(guard.dataset.pid), depth: st.depth });
     }
+    entries[st.prism] = { depth: st.depth, tab: st.tab, path: st.path };
+    hist = { prism: st.prism, depth: st.depth, tab: st.tab, path: st.path, replaces: hist.replaces };
+    // The entry's path at its depth: popped to while still in the stack,
+    // opened again otherwise.
+    send({ t: "history", id: Number(s.stack.dataset.pid), depth: st.depth, path: st.path });
   });
 
   // --- Scroll events (virtualized lists) -------------------------------------
@@ -6569,6 +6636,9 @@
     }
     if (n.w) st.width = n.w === "f" ? "100%" : n.w + "px";
     if (n.h) st.height = n.h === "f" ? "100%" : n.h + "px";
+    if (n.mw) st.minWidth = n.mw + "px";
+    if (n.mh) st.minHeight = n.mh + "px";
+    if (n.nw) { st.whiteSpace = "nowrap"; st.overflow = "hidden"; }
     if (n.f) st.flexGrow = n.f;
     if (n.ai) st.alignItems = { s: "flex-start", c: "center", e: "flex-end" }[n.ai];
     if (n.jc) st.justifyContent = { c: "center", e: "flex-end", b: "space-between", a: "space-around", v: "space-evenly" }[n.jc];
@@ -7276,7 +7346,10 @@
         }
         case "paste":
           return reply({ text: await navigator.clipboard?.readText().catch(() => null) ?? null });
-        case "copy": return navigator.clipboard?.writeText(msg.text);
+        // Answered once written, or with the browser's refusal (#323).
+        case "copy":
+          if (!navigator.clipboard?.writeText) return reply({ err: "unavailable" });
+          return navigator.clipboard.writeText(msg.text).then(() => reply({}), (e) => reply({ err: named(e) }));
         case "read_clipboard_item": return readClipboardItem(msg, reply);
         case "write_clipboard": return writeClipboard(msg.entries || []);
         case "haptic":

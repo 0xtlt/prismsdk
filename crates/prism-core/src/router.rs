@@ -348,6 +348,8 @@ pub struct Router {
     // --- Bar options (#30) ---
     /// Tint of the tab bar and the header bars (`RouterBuilder::tint`).
     tint: Option<crate::style::Color>,
+    /// How many times a tab's top path was replaced in place (#324).
+    replaces: u64,
 }
 
 /// Declares the routes (and optionally tabs), then [`build`](RouterBuilder::build)s the router.
@@ -443,7 +445,12 @@ impl Router {
     fn apply_op(&mut self, op: NavOp, cx: &mut Context<Self>) {
         match op {
             NavOp::State(_) => {}
-            NavOp::ReplaceQuery(query) => self.replace_query(&query),
+            NavOp::ReplaceQuery(query) => {
+                if self.modal.is_empty() {
+                    self.replaces += 1;
+                }
+                self.replace_query(&query)
+            }
             NavOp::Present(path) => {
                 let path = normalize_path(&path);
                 self.dismiss(cx);
@@ -475,6 +482,7 @@ impl Router {
             NavOp::Replace(path) => {
                 let path = normalize_path(&path);
                 let tab = self.selected;
+                self.replaces += 1;
                 let owner = self.owning_tab(&path, false).unwrap_or(tab);
                 // A path of another tab opens there, selecting it; this tab
                 // keeps at least its root.
@@ -548,6 +556,35 @@ impl Router {
             path,
             entity: Some(entity),
         });
+    }
+
+    /// Shows a stack's history entry (#324): `path` at `depth` (browser
+    /// Back or Forward), else pushed. A screen still at that depth is
+    /// popped to; a root entry leaves its path alone in its stack; deeper,
+    /// the screens under the entry stay and `path` opens over them.
+    fn show_entry(&mut self, tab: usize, e: &NavigateEvent, cx: &mut Context<Self>) {
+        let Some(depth) = e.depth else {
+            return self.push(&e.path, false, cx);
+        };
+        let path = normalize_path(&e.path);
+        let owner = self.owning_tab(&path, false).unwrap_or(tab);
+        let in_stack = self.tabs.get(owner).is_some_and(|t| {
+            t.entries
+                .get(depth.saturating_sub(1))
+                .is_some_and(|s| s.path == path)
+        });
+        if in_stack {
+            self.selected = owner;
+            self.truncate(owner, depth, cx);
+        } else if depth <= 1 {
+            self.root(&path, cx);
+        } else if owner == tab {
+            self.truncate(tab, depth - 1, cx);
+            self.push(&path, false, cx);
+        } else {
+            self.push(&path, false, cx);
+        }
+        cx.notify();
     }
 
     /// Keeps the first `depth` screens (at least one) of tab `tab`.
@@ -929,6 +966,7 @@ impl RouterBuilder {
             next_state: RefCell::new(None),
             shared: RefCell::default(),
             tint: self.tint,
+            replaces: 0,
         });
         app.set_navigator(router);
         router.update(app, |r, cx| r.reset(&initial, cx));
@@ -953,13 +991,15 @@ fn tab_stack(
     t: &TabState,
     index: usize,
     header: bool,
+    replaces: u64,
     cx: &Context<Router>,
 ) -> crate::element::Stack {
     stack()
         .header(header)
+        .history_replaces(replaces)
         .path(t.entries.last().map_or("/", |e| e.path.as_str()))
         .on_back(cx.listener(move |this, e: &BackEvent, cx| this.truncate(index, e.depth, cx)))
-        .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| this.push(&e.path, false, cx)))
+        .on_navigate(cx.listener(move |this, e: &NavigateEvent, cx| this.show_entry(index, e, cx)))
         // Lazy tabs: no screens until the tab is first selected.
         .children(
             t.entries
@@ -1011,7 +1051,7 @@ impl Render for Router {
         // Lazy tabs: the selected tab renders, and stays rendered.
         self.show_selected_tab(cx.platform());
         if !self.tab_bar {
-            return tab_stack(&self.tabs[0], 0, self.header, cx)
+            return tab_stack(&self.tabs[0], 0, self.header, self.replaces, cx)
                 .tint(tint)
                 .child(sheet)
                 .into_element();
@@ -1023,7 +1063,7 @@ impl Render for Router {
             .children(self.tabs.iter().enumerate().map(|(i, t)| {
                 tab(t.title.resolve(cx), t.icon.clone())
                     .key(i.to_string())
-                    .child(tab_stack(t, i, self.header, cx).tint(tint))
+                    .child(tab_stack(t, i, self.header, self.replaces, cx).tint(tint))
             }))
             .child(sheet)
             .into_element()

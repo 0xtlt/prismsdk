@@ -1030,6 +1030,22 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         )),
         "alert" => Some(UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize)),
         "navigate" => Some(UiEvent::Navigate(id, v.get("path")?.as_str()?.to_string())),
+        // Back or Forward to a history entry (#324): `{"t":"history","id",
+        // "depth","path"}`.
+        "history" => Some(UiEvent::History(
+            id,
+            v.get("depth")?.as_u64()? as usize,
+            v.get("path")?.as_str()?.to_string(),
+        )),
+        // `copy_on_click`, written by the page during the click (#323):
+        // `{"t":"copied","id"}`, with `err` when the browser refused.
+        "copied" => Some(UiEvent::Copied(
+            id,
+            match v.get("err").and_then(Value::as_str) {
+                Some(err) => Err(prism_core::DeviceError::from_message(err)),
+                None => Ok(()),
+            },
+        )),
         // A tap on a 3D scene: `{"t":"scene_tap","id","node","point"}`.
         "scene_tap" => Some(UiEvent::SceneTap(
             id,
@@ -1942,6 +1958,7 @@ impl Encoder {
                 json!({ "op": "sel", "id": id, "start": start, "end": end })
             }
             Patch::SetSelectEvents { id, on } => json!({ "op": "selev", "id": id, "on": on }),
+            Patch::SetBackRequests { id, on } => json!({ "op": "backreq", "id": id, "on": on }),
             // Other people's carets (#240), drawn over the field by the client.
             Patch::SetRemoteCarets { id, carets } => json!({
                 "op": "carets",
@@ -1974,6 +1991,7 @@ impl Encoder {
             // The node becomes an `<a href>` (`client.js` resolves the path
             // under the mount point, like rich text links).
             Patch::SetLink { id, href } => json!({ "op": "link", "id": id, "href": href }),
+            Patch::SetCopyOnClick { id, text } => json!({ "op": "copy", "id": id, "text": text }),
             Patch::SetIslandProps { id, props } => {
                 let props: serde_json::Map<String, Value> = props
                     .iter()

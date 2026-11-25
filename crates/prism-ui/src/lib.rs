@@ -187,6 +187,10 @@ pub struct Button {
     pub hint: Option<String>,
     /// An app path (or a URL) it leads to (#230).
     pub link: Option<String>,
+    /// Text put on the clipboard when pressed (#323).
+    pub copy_on_click: Option<String>,
+    /// Whether [`copy_on_click`](Self::copy_on_click) worked.
+    pub on_copied: Option<Handler<prism_core::CopiedEvent>>,
     refine: Refine,
 }
 
@@ -202,6 +206,8 @@ pub fn button(label: impl Into<String>) -> Button {
         on_click: None,
         hint: None,
         link: None,
+        copy_on_click: None,
+        on_copied: None,
         refine: Refine::default(),
     }
 }
@@ -275,6 +281,20 @@ impl Button {
         self.link = Some(path.into());
         self
     }
+    /// Puts `text` on the clipboard when pressed (#323), on the web during
+    /// the click itself, as browsers require. See
+    /// [`Div::copy_on_click`](prism_core::Div::copy_on_click). Not while
+    /// disabled.
+    pub fn copy_on_click(mut self, text: impl Into<String>) -> Self {
+        self.copy_on_click = Some(text.into());
+        self
+    }
+    /// Whether the text of [`copy_on_click`](Self::copy_on_click) reached
+    /// the clipboard.
+    pub fn on_copied(mut self, handler: Handler<prism_core::CopiedEvent>) -> Self {
+        self.on_copied = Some(handler);
+        self
+    }
 }
 
 refinable!(Button);
@@ -291,6 +311,12 @@ impl Component for Button {
             }
             if let (Some(path), false) = (self.link.clone(), self.disabled) {
                 b = b.link(path);
+            }
+            if let (Some(copy), false) = (self.copy_on_click.clone(), self.disabled) {
+                b = b.copy_on_click(copy);
+            }
+            if let Some(h) = self.on_copied.clone() {
+                b = b.on_copied(h);
             }
             return self.refine.apply(b).into_element();
         }
@@ -332,9 +358,17 @@ impl Component for Button {
                     .accessibility_hidden(),
             );
         let link = self.link.clone().filter(|_| !self.disabled);
-        let active = link.is_some() || (self.on_click.is_some() && !self.disabled);
+        let copy = self.copy_on_click.clone().filter(|_| !self.disabled);
+        let active =
+            link.is_some() || copy.is_some() || (self.on_click.is_some() && !self.disabled);
         if let Some(path) = link {
             el = el.link(path);
+        }
+        if let Some(text) = copy {
+            el = el.copy_on_click(text);
+        }
+        if let Some(h) = self.on_copied {
+            el = el.on_copied(h);
         }
         if let (Some(h), false) = (self.on_click, self.disabled) {
             el = el.on_click(h);

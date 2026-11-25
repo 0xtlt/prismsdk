@@ -2308,7 +2308,13 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 // Islands run in browsers: native apps show the node's
                 // children (the island's fallback) as a plain view.
                 // A link is activated like any clickable view (`SetClickable`).
-                Patch::SetIsland { .. } | Patch::SetIslandProps { .. } | Patch::SetLink { .. } => {}
+                Patch::SetIsland { .. }
+                | Patch::SetIslandProps { .. }
+                | Patch::SetLink { .. }
+                // The app copies when the click arrives (#323).
+                | Patch::SetCopyOnClick { .. }
+                // Native Back gestures pop as before (#324).
+                | Patch::SetBackRequests { .. } => {}
                 // HTML attributes (`.attr(…)`): browser integrations, and
                 // `autocomplete` for a text field's content type (#203).
                 Patch::SetAttributes { id, attributes } => {

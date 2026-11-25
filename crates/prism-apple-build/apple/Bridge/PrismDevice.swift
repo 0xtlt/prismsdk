@@ -690,16 +690,23 @@ public func prismDeviceHaptic(_ kind: UnsafePointer<CChar>) {
     #endif
 }
 
+/// Answers `Done` once copied, or the error (#323).
 @_cdecl("prism_device_copy")
-public func prismDeviceCopy(_ text: UnsafePointer<CChar>) {
+public func prismDeviceCopy(_ id: UInt64, _ text: UnsafePointer<CChar>) {
     let text = String(cString: text)
     #if os(tvOS) || os(watchOS)
     _ = text // no clipboard on tvOS or watchOS
+    fail(id, "unavailable")
     #elseif os(iOS) || os(visionOS)
     UIPasteboard.general.string = text
+    prismReplyText(id, nil)
     #else
     NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
+    if NSPasteboard.general.setString(text, forType: .string) {
+        prismReplyText(id, nil)
+    } else {
+        fail(id, "the pasteboard refused the text")
+    }
     #endif
 }
 

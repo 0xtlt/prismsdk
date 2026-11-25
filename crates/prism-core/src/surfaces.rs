@@ -435,6 +435,14 @@ impl SNode {
                 _ => {}
             }
         }
+        // Minimum sizes in points (#321).
+        for (key, len) in [("mw", s.min_width), ("mh", s.min_height)] {
+            if let Length::Px(v) = len
+                && v > 0.
+            {
+                let _ = write!(o, r#","{key}":{}"#, num(v));
+            }
+        }
         if s.flex_grow > 0. {
             let _ = write!(o, r#","f":{}"#, num(s.flex_grow));
         }

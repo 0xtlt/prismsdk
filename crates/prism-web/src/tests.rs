@@ -2925,6 +2925,48 @@ fn new_patches_have_a_stable_json_encoding() {
     assert!(!plain[0]["css"].as_str().unwrap().contains("pointer-events"));
 }
 
+#[test]
+fn copy_and_history_messages_have_a_json_encoding() {
+    // #323, #324.
+    use crate::session::parse_event;
+    let mut e = Encoder::default();
+    let out = e.encode(&[
+        create(1, NodeKind::Button),
+        Patch::SetCopyOnClick {
+            id: 1,
+            text: Some("hello".into()),
+        },
+        Patch::SetBackRequests { id: 1, on: true },
+    ]);
+    assert_eq!(
+        Value::Array(out[1..].to_vec()),
+        json!([
+            { "op": "copy", "id": 1, "text": "hello" },
+            { "op": "backreq", "id": 1, "on": true },
+        ])
+    );
+    let ev = |v: Value| parse_event(&v);
+    assert_eq!(
+        ev(json!({"t": "copied", "id": 1})),
+        Some(UiEvent::Copied(1, Ok(())))
+    );
+    assert_eq!(
+        ev(json!({"t": "copied", "id": 1, "err": "NotAllowedError\u{1f}no"})),
+        Some(UiEvent::Copied(
+            1,
+            Err(prism_core::DeviceError::Platform {
+                name: "NotAllowedError".into(),
+                message: "no".into()
+            })
+        ))
+    );
+    assert_eq!(
+        ev(json!({"t": "history", "id": 2, "depth": 1, "path": "/b"})),
+        Some(UiEvent::History(2, 1, "/b".into()))
+    );
+    assert_eq!(ev(json!({"t": "history", "id": 2, "depth": 1})), None);
+}
+
 /// Other people's carets (#240): the client draws them over the field once
 /// it runs; the first paint has none, and the field's text is unchanged.
 #[test]

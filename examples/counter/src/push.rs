@@ -135,11 +135,12 @@ pub fn card(cx: &App) -> ui::Card {
                         .flex_row()
                         .flex_wrap()
                         .gap(8.)
-                        .child(ui::button(strings::push_copy(cx)).small().on_click(
-                            std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
-                                app.copy_text(json.clone())
-                            }),
-                        ))
+                        // Written during the click: Safari takes it then (#323).
+                        .child(
+                            ui::button(strings::push_copy(cx))
+                                .small()
+                                .copy_on_click(json),
+                        )
                         .child(
                             ui::button(strings::push_disable(cx))
                                 .small()

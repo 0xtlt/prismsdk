@@ -669,7 +669,8 @@ pub enum DeviceCall {
     StopWatch,
     /// Plays a haptic pattern.
     Haptic(Haptic),
-    /// Puts text on the clipboard.
+    /// Puts text on the clipboard; answers `Done` (any value) or the
+    /// error (#323).
     CopyText(String),
     /// Puts every type of the item on the clipboard (#246). No answer.
     WriteClipboard(crate::clipboard::ClipboardItem),
@@ -1033,9 +1034,25 @@ impl App {
         self.device_call(DeviceCall::Haptic(kind));
     }
 
-    /// Puts `text` on the clipboard.
+    /// Puts `text` on the clipboard, without waiting to know whether it
+    /// worked: [`AsyncApp::copy_text`] says (#323). On the web, from a
+    /// click: [`Div::copy_on_click`](crate::Div::copy_on_click) writes it
+    /// during the click itself, which Safari requires.
     pub fn copy_text(&mut self, text: impl Into<String>) {
         self.device_call(DeviceCall::CopyText(text.into()));
+    }
+
+    /// Copies `text`, then calls `then` with the result (#323):
+    /// `copy_on_click` off the web.
+    pub(crate) fn copy_text_then(
+        &mut self,
+        text: String,
+        then: impl FnOnce(Result<(), DeviceError>, &mut App) + 'static,
+    ) {
+        self.spawn(async move |cx| {
+            let result = cx.copy_text(text).await;
+            cx.update(|app| then(result, app));
+        });
     }
 
     /// Opens the system share sheet.
@@ -1248,6 +1265,25 @@ impl AsyncApp {
             .await?
             .into_iter()
             .next())
+    }
+
+    /// Puts `text` on the clipboard and says whether it worked (#323):
+    /// [`DeviceError::Unavailable`] where there is no clipboard (tvOS,
+    /// watchOS), the platform's error otherwise (on the web, the browser
+    /// refusing a write made outside a click: use
+    /// [`Div::copy_on_click`](crate::Div::copy_on_click) there).
+    ///
+    /// ```ignore
+    /// cx.spawn(async move |_, cx| {
+    ///     if cx.copy_text(link).await.is_err() {
+    ///         cx.update(|app| app.alert(Alert::new("Could not copy the link")));
+    ///     }
+    /// });
+    /// ```
+    pub async fn copy_text(&self, text: impl Into<String>) -> Result<(), DeviceError> {
+        self.device(DeviceCall::CopyText(text.into()))
+            .await
+            .map(|_| ())
     }
 
     /// The clipboard's text, `None` if empty, not text, or unavailable.

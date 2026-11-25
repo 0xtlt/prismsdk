@@ -481,6 +481,168 @@ fn browser_forward_navigates() {
 }
 
 #[test]
+fn browser_history_entries_show_their_path_at_their_depth() {
+    // #324: Back and Forward carry the entry's path and depth.
+    let (mut rt, first) = routed("/");
+    let (stack, _, _) = stack_of(&first);
+    rt.dispatch(UiEvent::Click(find_text(&first, "open 7")));
+    // Back to a screen still in the stack: popped to.
+    rt.dispatch(UiEvent::History(stack, 1, "/".into()));
+    assert_eq!(rt.app.current_path(), Some("/"));
+    assert_eq!(rt.app.stack_depth(), 1);
+    // Forward to one popped since: opened over the screens under it.
+    rt.dispatch(UiEvent::History(stack, 2, "/items/7".into()));
+    assert_eq!(rt.app.current_path(), Some("/items/7"));
+    assert_eq!(rt.app.stack_depth(), 2);
+    // A root entry of another page (a sidebar's `navigate_root`): alone.
+    rt.dispatch(UiEvent::History(stack, 1, "/items/9".into()));
+    assert_eq!(rt.app.current_path(), Some("/items/9"));
+    assert_eq!(rt.app.stack_depth(), 1);
+    // Back between two entries of the same depth changes the screen.
+    rt.dispatch(UiEvent::History(stack, 1, "/".into()));
+    assert_eq!(rt.app.current_path(), Some("/"));
+}
+
+#[test]
+fn replacing_the_path_in_place_is_counted_on_the_stack() {
+    // #324: the web replaces its history entry for these, pushes otherwise.
+    let (mut rt, first) = routed("/items/3");
+    let (stack, _, _) = stack_of(&first);
+    let replaces = |patches: &[Patch]| {
+        patches.iter().rev().find_map(|p| match p {
+            Patch::SetValue { id, value } if *id == stack => {
+                Some((*value as u64) >> crate::STACK_HISTORY_SHIFT)
+            }
+            _ => None,
+        })
+    };
+    rt.app.replace("/items/4");
+    assert_eq!(replaces(&rt.render()), Some(1));
+    rt.app.replace_query([("x", "1")]);
+    let patches = rt.render();
+    assert_eq!(replaces(&patches), Some(2));
+    assert_eq!(rt.app.current_path(), Some("/items/4?x=1"));
+    rt.app.navigate("/items/5");
+    assert_eq!(replaces(&rt.render()), None, "a push leaves it");
+}
+
+#[test]
+fn a_screen_hears_the_back_it_asked_to_hear() {
+    // #324: `on_back_request` marks the screen for the web, which sends
+    // the Back to it.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Edit(Arc<AtomicUsize>);
+    impl Render for Edit {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let asked = self.0.clone();
+            screen("Edit").on_back_request(cx.listener(move |_, e: &crate::BackEvent, _| {
+                asked.store(e.depth + 10, Ordering::SeqCst)
+            }))
+        }
+    }
+    let asked = Arc::new(AtomicUsize::new(0));
+    let seen = asked.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let asked = seen.clone();
+        let root = cx.new_entity(move |_| Edit(asked.clone()));
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    let first = rt.render();
+    let screen = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetBackRequests { id, on: true } => Some(*id),
+            _ => None,
+        })
+        .expect("SetBackRequests");
+    rt.dispatch(UiEvent::Back(screen, 1));
+    assert_eq!(asked.load(Ordering::SeqCst), 11);
+}
+
+/// A view that copies on click, recording what `on_copied` says.
+type Copies = Arc<std::sync::Mutex<Vec<Result<(), crate::DeviceError>>>>;
+struct Copier(Copies);
+impl Render for Copier {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let seen = self.0.clone();
+        button("copy").copy_on_click("hello").on_copied(cx.listener(
+            move |_, e: &crate::CopiedEvent, _| seen.lock().unwrap().push(e.result.clone()),
+        ))
+    }
+}
+
+fn copier(platform: crate::Platform) -> (Runtime, Vec<Patch>, Copies) {
+    let seen = Copies::default();
+    let inner = seen.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let seen = inner.clone();
+        let root = cx.new_entity(move |_| Copier(seen.clone()));
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::with_options(
+        &init,
+        crate::RuntimeOptions {
+            platform: Some(platform),
+            ..Default::default()
+        },
+    );
+    let first = rt.render();
+    (rt, first, seen)
+}
+
+#[test]
+fn copy_on_click_copies_natively_and_reports_it() {
+    // #323: off the web, the click copies and `on_copied` hears the answer.
+    let (mut rt, first, seen) = copier(crate::Platform::Macos);
+    let id = find_text(&first, "copy");
+    assert!(first.contains(&Patch::SetCopyOnClick {
+        id,
+        text: Some("hello".into())
+    }));
+    rt.take_requests();
+    rt.dispatch(UiEvent::Click(id));
+    rt.poll();
+    let call = rt
+        .take_requests()
+        .into_iter()
+        .find_map(|r| match r {
+            crate::PlatformRequest::Device {
+                id,
+                call: crate::DeviceCall::CopyText(t),
+            } => Some((id, t)),
+            _ => None,
+        })
+        .expect("a copy");
+    assert_eq!(call.1, "hello");
+    rt.device_reply(call.0, Ok(crate::DeviceValue::Done));
+    rt.poll();
+    assert_eq!(*seen.lock().unwrap(), vec![Ok(())]);
+}
+
+#[test]
+fn copy_on_click_on_the_web_is_the_pages() {
+    // #323: the page writes during the click; the app only hears the result.
+    let (mut rt, first, seen) = copier(crate::Platform::Web);
+    let id = find_text(&first, "copy");
+    rt.take_requests();
+    rt.dispatch(UiEvent::Click(id));
+    rt.poll();
+    assert!(
+        !rt.take_requests().iter().any(|r| matches!(
+            r,
+            crate::PlatformRequest::Device {
+                call: crate::DeviceCall::CopyText(_),
+                ..
+            }
+        )),
+        "no second write from the server"
+    );
+    rt.dispatch(UiEvent::Copied(id, Err(crate::DeviceError::Denied)));
+    assert_eq!(*seen.lock().unwrap(), vec![Err(crate::DeviceError::Denied)]);
+}
+
+#[test]
 fn unknown_route_shows_not_found() {
     let (_, first) = routed("/nope");
     find_text(&first, "Nothing at /nope");
@@ -1135,6 +1297,19 @@ fn snapshots_serialize_compact_json_with_adaptive_colors() {
         json,
         r##"{"k":"v","d":1,"g":8,"bg":["#FFFFFFFF","#000000FF"],"l":"/todos/1","c":[{"k":"i","fg":"#00FF00FF","s":"checkmark.circle.fill","ah":1},{"k":"t","fw":3,"s":"Hi \"you\""},{"k":"p","v":0.5}]}"##
     );
+}
+
+#[test]
+fn snapshots_carry_minimum_sizes() {
+    // #321: a pill sized with `min_w` keeps it in widgets.
+    let mut app = App::new();
+    let node = snapshot_one(
+        &mut app,
+        div().min_w(20.).min_h(18.).h(20.).child(text("B").nowrap()),
+    );
+    let json = node.to_json();
+    assert!(json.contains(r#""h":20,"mw":20,"mh":18"#), "{json}");
+    assert!(json.contains(r#""nw":1"#), "{json}");
 }
 
 #[test]

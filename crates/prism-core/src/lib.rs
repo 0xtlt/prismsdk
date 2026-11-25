@@ -67,7 +67,7 @@ pub use assets::EmbeddedAssets;
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
 pub use channel::{Receiver, Sender, channel};
-pub use clipboard::{ClipboardImage, ClipboardItem};
+pub use clipboard::{ClipboardImage, ClipboardItem, CopiedEvent};
 pub use controls::{
     Backdrop, Capitalize, DateMode, Keyboard, OverlayKind, PopoverAlign, PopoverSide, ReturnKey,
 };
@@ -100,7 +100,7 @@ pub use element::{
 };
 pub use element::{RemoteCaret, SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{RichInput, RichInputEvent, rich_input};
-pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
+pub use element::{STACK_CLOSABLE, STACK_HISTORY_SHIFT, STACK_NO_HEADER};
 pub use element::{cover_crop, picture_position, picture_source};
 pub use element::{picture_data, svg};
 pub use events::{
@@ -484,9 +484,20 @@ impl Runtime {
                     h(&ClickEvent, &mut self.app);
                 }
             }
+            UiEvent::Copied(id, result) => {
+                if let Some(h) = self.reconciler.copied_handler(id) {
+                    h(&clipboard::CopiedEvent { result }, &mut self.app);
+                }
+            }
             UiEvent::Navigate(id, path) => {
                 if let Some(h) = self.reconciler.navigate_handler(id) {
-                    h(&NavigateEvent { path }, &mut self.app);
+                    h(&NavigateEvent { path, depth: None }, &mut self.app);
+                }
+            }
+            UiEvent::History(id, depth, path) => {
+                if let Some(h) = self.reconciler.navigate_handler(id) {
+                    let depth = Some(depth.max(1));
+                    h(&NavigateEvent { path, depth }, &mut self.app);
                 }
             }
             UiEvent::Submit(id) => {
@@ -1278,19 +1289,19 @@ pub mod prelude {
         Accessible, Accuracy, Activity, Alert, Animations, App, AppleSignIn, AsyncApp, AuthRequest,
         BackEvent, BackgroundTask, BiometryKind, Breakpoint, Capitalize, CarButton, CarButtonStyle,
         CarItem, CarSection, CarTab, CarTemplate, CaretEdge, CaretEdges, ChangeEvent, ClickEvent,
-        ClipboardImage, ClipboardItem, Context, Corners, DateMode, DateStyle, DeviceInfo,
-        DeviceKind, DismissReason, Entity, FluentBuilder, FocusEvent, Handler, Haptic, InputEvent,
-        IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
-        NotificationAction, NotificationResponse, Orientation, Params, ParentElement, Path,
-        Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, Product,
-        PurchaseOutcome, PushEvent, PushMessage, PushService, PushSubscription, RemoteCaret,
-        Render, ReorderList, ReorderOptions, ReturnKey, Role, Router, SaveFile, SavedFile,
-        ScrollEvent, SecureOptions, SelectionEvent, Share, Styled, SwipeDirection, SystemAction,
-        Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig,
-        WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls, adaptive,
-        button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to, picker,
-        picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner, text,
-        text_area, text_input, timer, toggle,
+        ClipboardImage, ClipboardItem, Context, CopiedEvent, Corners, DateMode, DateStyle,
+        DeviceInfo, DeviceKind, DismissReason, Entity, FluentBuilder, FocusEvent, Handler, Haptic,
+        InputEvent, IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem, Motion,
+        Notification, NotificationAction, NotificationResponse, Orientation, Params, ParentElement,
+        Path, Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture,
+        Product, PurchaseOutcome, PushEvent, PushMessage, PushService, PushSubscription,
+        RemoteCaret, Render, ReorderList, ReorderOptions, ReturnKey, Role, Router, SaveFile,
+        SavedFile, ScrollEvent, SecureOptions, SelectionEvent, Share, Styled, SwipeDirection,
+        SystemAction, Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget,
+        WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls,
+        adaptive, button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to,
+        picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner,
+        text, text_area, text_input, timer, toggle,
     };
     pub use crate::{FrameInfo, FrameTicker};
     // One selection across several text fields (#231).

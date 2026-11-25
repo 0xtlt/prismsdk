@@ -1065,6 +1065,10 @@ fn flatten(doc: &RichText) -> RichText {
     RichText::new([RichBlock::paragraph(spans)])
 }
 
+/// The editor's inset around its text: the fields' padding (#322).
+const FRAME_X: f32 = 10.;
+const FRAME_Y: f32 = 8.;
+
 impl prism_core::Render for RichTextInput {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         self.hook(cx);
@@ -1081,6 +1085,7 @@ impl prism_core::Render for RichTextInput {
         let single = (self.selection.anchor.block == self.selection.head.block)
             .then_some(self.selection.head.block);
         let mut number = 0;
+        let gap = (t.font_size * 0.5).round();
         let blocks = self.value.blocks.len();
         let mut rows = Vec::with_capacity(blocks);
         for (i, block) in self.value.blocks.iter().enumerate() {
@@ -1151,25 +1156,59 @@ impl prism_core::Render for RichTextInput {
                 BlockKind::Numbered => Some(format!("{number}.")),
                 _ => None,
             };
+            // Every point of the editor belongs to a field (#322): the
+            // frame's padding and the space between blocks are the fields'
+            // own padding, and the last block takes the height left (an
+            // editor taller than its text), so a click anywhere in it lands
+            // in a field, which puts the caret at the nearest point, as in
+            // a `<textarea>`.
+            let last = i + 1 == blocks;
+            let (top, bottom) = (
+                if i == 0 { FRAME_Y } else { 0. },
+                if last { FRAME_Y } else { gap },
+            );
             // Each block takes its text's height and never shrinks below it,
             // so the editor grows with its text, or scrolls when the app caps
             // its height (#296).
             let row = match marker {
-                Some(m) => div()
-                    .flex_row()
-                    .items_start()
+                // The marker is drawn over the field's leading padding and
+                // lets clicks through to it.
+                Some(m) => {
+                    let marker_w = (size * 1.4).round();
+                    div()
+                        .w_full()
+                        .flex_shrink_0()
+                        .when(last, |d| d.flex_grow(1.))
+                        .child(
+                            field
+                                .w_full()
+                                .flex_grow(1.)
+                                .pl(FRAME_X + marker_w + 4.)
+                                .pr(FRAME_X)
+                                .pt(top)
+                                .pb(bottom),
+                        )
+                        .child(
+                            text(m)
+                                .text_size(size)
+                                .text_color(t.muted)
+                                .absolute()
+                                .left(px(FRAME_X))
+                                .top(px(top))
+                                .min_w(px(marker_w))
+                                .hit_test(false)
+                                .accessibility_hidden(),
+                        )
+                        .into_element()
+                }
+                None => field
+                    .w_full()
                     .flex_shrink_0()
-                    .gap(4.)
-                    .child(
-                        text(m)
-                            .text_size(size)
-                            .text_color(t.muted)
-                            .min_w(px((size * 1.4).round()))
-                            .accessibility_hidden(),
-                    )
-                    .child(field.flex_1().min_w(px(0.)))
+                    .when(last, |f| f.flex_grow(1.))
+                    .px(FRAME_X)
+                    .pt(top)
+                    .pb(bottom)
                     .into_element(),
-                None => field.w_full().flex_shrink_0().into_element(),
             };
             rows.push(row);
         }
@@ -1178,15 +1217,12 @@ impl prism_core::Render for RichTextInput {
                 .border(1.)
                 .border_color(t.border)
                 .rounded(t.radius)
-                .px(10.)
-                .py(8.)
                 .focus_within(move |s| s.border_color(t.accent))
         };
         let container = if self.inline {
             div().children(rows)
         } else {
             text_flow()
-                .gap((t.font_size * 0.5).round())
                 .children(rows)
                 .on_selection_across(cx.listener(|this, e: &SelectionAcross, _| this.across(e)))
                 .on_edit_across(cx.listener(|this, e: &EditAcross, cx| this.edit_across(e, cx)))

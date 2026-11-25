@@ -216,6 +216,7 @@ impl Backend for HtmlBackend {
                 | Patch::ScrollTo { .. }
                 | Patch::SetSelection { .. }
                 | Patch::SetSelectEvents { .. }
+                | Patch::SetBackRequests { .. }
                 | Patch::SetRemoteCarets { .. }
                 | Patch::Focus { .. }
                 | Patch::DismissKeyboard
@@ -228,7 +229,9 @@ impl Backend for HtmlBackend {
                 | Patch::InsertText { .. }
                 | Patch::SetSelectionGroup { .. }
                 | Patch::SetSelectionHighlight { .. }
-                | Patch::SetSelectionAcross { .. } => {}
+                | Patch::SetSelectionAcross { .. }
+                // The live page copies; the first paint has no script.
+                | Patch::SetCopyOnClick { .. } => {}
                 Patch::SetLayers { ids } => self.layers.clone_from(ids),
                 Patch::SetIsland {
                     id, tag, source, ..

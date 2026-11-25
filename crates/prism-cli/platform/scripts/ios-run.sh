@@ -436,6 +436,10 @@ plist_common() { # $1 executable, $2 bundle id, $3 package type
   <key>CFBundleSupportedPlatforms</key><array><string>$PLATFORM_NAME</string></array>
   <key>MinimumOSVersion</key><string>$MIN_IOS</string>
   <key>UIDeviceFamily</key><array>$DEVICE_FAMILY</array>
+$( # The binary is arm64 only: App Store Connect refuses a bundle (the app
+   # or an extension) without it (ITMS-90502). Not on watchOS, whose
+   # watches are arm64_32 too.
+   [[ "$OS" != watchos ]] && echo "  <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>" )
 $( [[ $WIDGETS == 1 ]] && echo "  <key>PrismAppGroup</key><string>$GROUP</string>" )
   <key>PrismURLScheme</key><string>$SCHEME</string>
 $BUILD_PLIST

@@ -527,7 +527,7 @@ mod bridge {
         fn prism_device_pick_files(id: u64, types: *const c_char, multiple: bool);
         fn prism_device_pick_folder(id: u64, title: *const c_char);
         fn prism_device_haptic(kind: *const c_char);
-        fn prism_device_copy(text: *const c_char);
+        fn prism_device_copy(id: u64, text: *const c_char);
         fn prism_device_paste(id: u64);
         fn prism_device_paste_item(id: u64);
         fn prism_device_copy_item(entries: *const c_char);
@@ -663,7 +663,8 @@ mod bridge {
                     prism_device_copy_item(c(&lines.join("\n")).as_ptr())
                 }
                 DeviceCall::Haptic(h) => prism_device_haptic(c(h.name()).as_ptr()),
-                DeviceCall::CopyText(t) => prism_device_copy(c(&t).as_ptr()),
+                // Answers once copied (#323).
+                DeviceCall::CopyText(t) => prism_device_copy(id, c(&t).as_ptr()),
                 DeviceCall::Share(s) => {
                     let text = s.text.as_deref().map(c);
                     let url = s.url.as_deref().map(c);

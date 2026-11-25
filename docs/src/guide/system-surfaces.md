@@ -12,6 +12,9 @@ cx.register_widget(
 );
 // A `.bg(..)` on the widget's root fills the whole widget (iOS and macOS:
 // its container background), not just the area inside the system's margins.
+// Sizes work as in the app: a `nowrap` text hugs its content (cut where its
+// parent ends) and `min_w` / `min_h` keep a pill at least that size (#321;
+// on Android, a box's `min_h` applies to texts only).
 cx.reload_widgets_on(&store);
 
 // A Live Activity: lock screen + Dynamic Island (compact, minimal, expanded).

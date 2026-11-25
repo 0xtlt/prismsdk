@@ -193,7 +193,7 @@ final class PrismSurface {
             default:
                 v = container(n, size, w, h);
         }
-        decorate(v, n);
+        decorate(v, n, size);
         return v;
     }
 
@@ -319,8 +319,18 @@ final class PrismSurface {
         return m == null ? 0 : (float) (m.optDouble(1) + m.optDouble(3));
     }
 
-    /** The natural width of a node, in dp (an estimate: what wrap_content would give). */
+    /** The width of a node in dp: its natural width, at least its `min_w`. */
     private float measure(JSONObject n) {
+        float w = natural(n);
+        Object mw = n.opt("mw");
+        if (mw instanceof Number && !(n.opt("w") instanceof Number)) {
+            w = Math.max(w, ((Number) mw).floatValue() + marginX(n));
+        }
+        return w;
+    }
+
+    /** The natural width of a node, in dp (an estimate: what wrap_content would give). */
+    private float natural(JSONObject n) {
         Object w = n.opt("w");
         if (w instanceof Number) return ((Number) w).floatValue() + marginX(n);
         JSONArray pd = n.optJSONArray("pd");
@@ -546,14 +556,27 @@ final class PrismSurface {
         return s;
     }
 
-    private void decorate(RemoteViews v, JSONObject n) {
+    private void decorate(RemoteViews v, JSONObject n, String size) {
         JSONArray pd = n.optJSONArray("pd");
         if (pd != null && pd.length() == 4) {
             // [top, right, bottom, left]
             v.setViewPadding(node, px(pd.optDouble(3)), px(pd.optDouble(0)), px(pd.optDouble(1)), px(pd.optDouble(2)));
         }
+        // Minimum sizes (`min_w`, `min_h`, #321): a text's own; a box
+        // wrapping its content as wide as `min_w` when narrower.
+        String k = n.optString("k", "v");
+        boolean text = k.equals("t") || k.equals("i") || k.equals("m");
+        Object mw = n.has("w") ? null : n.opt("mw"), mh = n.has("h") ? null : n.opt("mh");
+        if (text) {
+            if (mw instanceof Number) v.setInt(node, "setMinWidth", px(((Number) mw).doubleValue()));
+            if (mh instanceof Number) v.setInt(node, "setMinHeight", px(((Number) mh).doubleValue()));
+        }
         if (Build.VERSION.SDK_INT >= 31) {
             if (n.has("w") && !"f".equals(n.optString("w"))) v.setViewLayoutWidth(node, (float) n.optDouble("w"), TypedValue.COMPLEX_UNIT_DIP);
+            else if (!text && mw instanceof Number && "wrap".equals(size)
+                    && natural(n) - marginX(n) < ((Number) mw).floatValue()) {
+                v.setViewLayoutWidth(node, ((Number) mw).floatValue(), TypedValue.COMPLEX_UNIT_DIP);
+            }
             if (n.has("h") && !"f".equals(n.optString("h"))) v.setViewLayoutHeight(node, (float) n.optDouble("h"), TypedValue.COMPLEX_UNIT_DIP);
             // Margins; a negative one pulls the node over its previous sibling
             // (a chart's label over its ring).

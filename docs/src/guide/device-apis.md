@@ -41,7 +41,22 @@ On Apple platforms each one also compiles in the code that asks for it: App Stor
 
 ## Images and other types on the clipboard
 
-`cx.read_clipboard()` and `cx.copy_text()` move text. `cx.read_clipboard_item()` and `cx.write_clipboard()` move everything the clipboard holds, in every type at once (#246): a screenshot pasted as an image block, HTML from a browser, the files copied in the file manager, the app's own format next to text for other apps.
+`cx.read_clipboard()` and `cx.copy_text()` move text. In a task, `cx.copy_text(text).await` says whether it worked (#323): `Err(DeviceError::Unavailable)` on tvOS and watchOS, the platform's error otherwise.
+
+On the web, browsers accept a clipboard write only during a click (Safari refuses one that arrives later, which a write from the server does). A button that copies writes in the click itself with `copy_on_click`, on `div`, `button` and `text`; every platform hears the result:
+
+```rust
+button("Copy link")
+    .copy_on_click(url.clone())
+    .on_copied(cx.listener(|this, e: &CopiedEvent, cx| {
+        this.notice = if e.result.is_ok() { "Copied" } else { "Could not copy" };
+        cx.notify();
+    }))
+```
+
+The page writes the text before the click reaches the app (`on_click` still runs); elsewhere the app writes it when the click arrives.
+
+ `cx.read_clipboard_item()` and `cx.write_clipboard()` move everything the clipboard holds, in every type at once (#246): a screenshot pasted as an image block, HTML from a browser, the files copied in the file manager, the app's own format next to text for other apps.
 
 ```rust
 cx.spawn(async move |this, cx| {
