@@ -35,7 +35,8 @@ impl WatchServices {
             caps: Capabilities {
                 car: false,
                 notifications,
-                location: true,
+                // CoreLocation: the `location` feature ([permissions]).
+                location: cfg!(feature = "location"),
                 motion: true,
                 // No camera on a watch; photos come from the PhotosUI picker.
                 camera: false,

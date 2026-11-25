@@ -10,8 +10,10 @@ native = ["prism/native"]
 web = ["prism/web"]
 
 [dependencies]
-# The demo uses sign-in, passkeys and the photo picker (#314).
-prism = { workspace = true, features = ["db", "sign-in", "photo-picker", "purchases"] }
+# The demo uses sign-in, passkeys and the photo picker (#314). `prism`
+# turns on location, camera, photo-library and face-id itself from
+# Prism.toml's [permissions]; they are listed for plain `cargo build`s too.
+prism = { workspace = true, features = ["db", "sign-in", "photo-picker", "purchases", "location", "camera", "photo-library", "face-id"] }
 
 [build-dependencies]
 prism-build.workspace = true

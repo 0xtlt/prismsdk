@@ -20,7 +20,7 @@ The app runs in Rust, and a small Java host (`crates/prism-cli/platform/android`
   - haptics (`VibrationEffect`), clipboard;
   - share sheet (files through a small content provider), links;
   - secrets (Keystore), `BiometricPrompt`, sign-in in a Custom Tab, `cloud_storage` backed up (see [Security](../guide/security.md)).
-  Permissions come from `Prism.toml`'s `[permissions]`. Deep links and sign-in redirects arrive through `PrismLinkActivity`, which hands them to the running app.
+  Permissions come from `Prism.toml`'s `[permissions]` ([the names](../cli.md#permissions)). Deep links and sign-in redirects arrive through `PrismLinkActivity`, which hands them to the running app.
 - **Notifications:** actions and text replies; the first one asks for the permission (Android 13+), as on iOS. Alerts are `AlertDialog`s. Context menus (`PopupMenu`) open on press and hold. Also supported: swipes, scroll events, deep links (`prism-<package>:/path`) and the lifecycle.
 - **Background tasks:** JobScheduler, even with the app closed; the library then loads without the Activity and runs the task without a screen.
 - **Live Activities:** an ongoing notification drawing the lock-screen content, with timers counting natively (`Chronometer`).

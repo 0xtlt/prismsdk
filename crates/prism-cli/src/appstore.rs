@@ -291,6 +291,125 @@ pub fn check_info(r: &mut Report, info: &serde_json::Value, e: &Expected, dist: 
     }
 }
 
+/// A bundle's privacy manifest (`PrivacyInfo.xcprivacy`, as JSON; `Null`
+/// when absent): App Store Connect rejects a bundle referencing
+/// required-reason APIs without one (ITMS-91053) and a malformed one
+/// (ITMS-91056). `info`: the app's Info.plist, for tracking's prompt text.
+/// `required`: App Store Connect requires it (not on macOS).
+pub fn check_privacy(
+    r: &mut Report,
+    what: &str,
+    manifest: &serde_json::Value,
+    info: Option<&serde_json::Value>,
+    required: bool,
+) {
+    let mut fail = |msg: String| {
+        if required {
+            r.problems.push(msg)
+        } else {
+            r.warnings.push(msg)
+        }
+    };
+    let Some(m) = manifest.as_object() else {
+        fail(if manifest.is_null() {
+            format!(
+                "{what}: no PrivacyInfo.xcprivacy (ITMS-91053): build it with prism 0.4 or later"
+            )
+        } else {
+            format!("{what}: PrivacyInfo.xcprivacy is not a property list dictionary (ITMS-91056)")
+        });
+        return;
+    };
+    let mut bad = Vec::new();
+    let tracking = match m.get("NSPrivacyTracking") {
+        None => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(_) => {
+            bad.push("NSPrivacyTracking is not a boolean".to_string());
+            false
+        }
+    };
+    let domains = m
+        .get("NSPrivacyTrackingDomains")
+        .and_then(|d| d.as_array())
+        .map_or(0, Vec::len);
+    if tracking && domains == 0 {
+        bad.push("NSPrivacyTracking is true without NSPrivacyTrackingDomains".into());
+    }
+    if tracking
+        && info.is_some_and(|i| {
+            i["NSUserTrackingUsageDescription"]
+                .as_str()
+                .is_none_or(str::is_empty)
+        })
+    {
+        bad.push(
+            "NSPrivacyTracking is true without NSUserTrackingUsageDescription (Prism.toml [permissions] tracking)".into(),
+        );
+    }
+    let apis = m
+        .get("NSPrivacyAccessedAPITypes")
+        .map_or(&[][..], |a| a.as_array().map_or(&[][..], Vec::as_slice));
+    for api in apis {
+        let category = api["NSPrivacyAccessedAPIType"].as_str().unwrap_or("");
+        let reasons = api["NSPrivacyAccessedAPITypeReasons"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty() && r.iter().all(serde_json::Value::is_string));
+        if !category.starts_with("NSPrivacyAccessedAPICategory") || !reasons {
+            bad.push(format!(
+                "an accessed API entry without a category and reasons ({api})"
+            ));
+        }
+    }
+    for t in m
+        .get("NSPrivacyCollectedDataTypes")
+        .and_then(|c| c.as_array())
+        .map_or(&[][..], Vec::as_slice)
+    {
+        let kind = t["NSPrivacyCollectedDataType"].as_str().unwrap_or("");
+        if !kind.starts_with("NSPrivacyCollectedDataType")
+            || !t["NSPrivacyCollectedDataTypeLinked"].is_boolean()
+            || !t["NSPrivacyCollectedDataTypeTracking"].is_boolean()
+            || t["NSPrivacyCollectedDataTypePurposes"]
+                .as_array()
+                .is_none_or(Vec::is_empty)
+        {
+            bad.push(format!(
+                "a collected data entry without its type, flags and purposes ({t})"
+            ));
+        }
+    }
+    if bad.is_empty() {
+        r.ok.push(format!(
+            "{what}: privacy manifest ({} required-reason API{})",
+            apis.len(),
+            if apis.len() == 1 { "" } else { "s" }
+        ));
+    } else {
+        for b in bad {
+            fail(format!("{what}: PrivacyInfo.xcprivacy: {b}"));
+        }
+    }
+}
+
+/// The app icon's renditions in `assetutil --info`'s JSON that are not
+/// opaque: App Store Connect rejects an icon with transparency (ITMS-90717).
+pub fn transparent_icons(assets: &serde_json::Value, icon: &str) -> Vec<String> {
+    assets
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|a| a["Name"] == icon && a["Opaque"] == false)
+        .map(|a| {
+            format!(
+                "{} ({} px)",
+                a["RenditionName"].as_str().unwrap_or(icon),
+                a["PixelWidth"]
+            )
+        })
+        .collect()
+}
+
 /// A provisioning profile's kind for distribution.
 pub fn check_profile(r: &mut Report, profile: &serde_json::Value, bundle_id: &str) {
     let ent = &profile["Entitlements"];
@@ -424,6 +543,44 @@ fn entitlements(app: &Path) -> serde_json::Value {
     }
 }
 
+/// A bundle's `PrivacyInfo.xcprivacy` as JSON (`Null` when absent).
+fn privacy_manifest(path: &Path) -> serde_json::Value {
+    if path.is_file() {
+        plist_json(path).unwrap_or_else(|_| serde_json::json!("unreadable"))
+    } else {
+        serde_json::Value::Null
+    }
+}
+
+/// The app icon in the bundle's asset catalog is opaque (iOS, watchOS: the
+/// icon of tvOS and visionOS is layered).
+fn icon_opacity(r: &mut Report, app: &Path, info: &serde_json::Value) {
+    let car = app.join("Assets.car");
+    let name = info["CFBundleIcons"]["CFBundlePrimaryIcon"]["CFBundleIconName"]
+        .as_str()
+        .or(info["CFBundleIconName"].as_str())
+        .unwrap_or("AppIcon");
+    let platforms = info["CFBundleSupportedPlatforms"].to_string();
+    if !car.is_file() || platforms.contains("AppleTV") || platforms.contains("XR") {
+        return;
+    }
+    let Ok(out) = run("xcrun", &["assetutil", "--info", &car.to_string_lossy()]) else {
+        return;
+    };
+    let Ok(assets) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        return;
+    };
+    let transparent = transparent_icons(&assets, name);
+    r.check(
+        transparent.is_empty(),
+        "app icon opaque",
+        format!(
+            "the app icon has transparency (ITMS-90717): {}; rebuild it with prism 0.4 or later, which fills it",
+            transparent.join(", ")
+        ),
+    );
+}
+
 /// Checks an .ipa (iOS, iPadOS, tvOS, visionOS, watchOS).
 pub fn check_ipa(ipa: &Path, e: &Expected) -> Result<Report, String> {
     let mut r = Report::default();
@@ -449,11 +606,15 @@ pub fn check_ipa(ipa: &Path, e: &Expected) -> Result<Report, String> {
         "Payload/{}",
         app.file_name().unwrap_or_default().to_string_lossy()
     ));
-    check_info(
+    let info = plist_json(&app.join("Info.plist"))?;
+    check_info(&mut r, &info, e, Dist::AppStore);
+    icon_opacity(&mut r, &app, &info);
+    check_privacy(
         &mut r,
-        &plist_json(&app.join("Info.plist"))?,
-        e,
-        Dist::AppStore,
+        "app",
+        &privacy_manifest(&app.join("PrivacyInfo.xcprivacy")),
+        Some(&info),
+        true,
     );
     signature(&mut r, "app", &app, e);
     match profile_json(&app.join("embedded.mobileprovision")) {
@@ -462,6 +623,13 @@ pub fn check_ipa(ipa: &Path, e: &Expected) -> Result<Report, String> {
     }
     let appex = app.join("PlugIns/PrismWidgets.appex");
     if appex.exists() {
+        check_privacy(
+            &mut r,
+            "widget extension",
+            &privacy_manifest(&appex.join("PrivacyInfo.xcprivacy")),
+            None,
+            true,
+        );
         signature(&mut r, "widget extension", &appex, e);
         match profile_json(&appex.join("embedded.mobileprovision")) {
             Ok(p) => check_profile(&mut r, &p, &format!("{}.widgets", e.bundle_id)),
@@ -493,11 +661,14 @@ pub fn check_pkg(
         ..*e
     };
     identity(&mut r, "package", signer.as_deref(), &installer_expected);
-    check_info(
+    let info = plist_json(&app.join("Contents/Info.plist"))?;
+    check_info(&mut r, &info, e, Dist::MacAppStore);
+    check_privacy(
         &mut r,
-        &plist_json(&app.join("Contents/Info.plist"))?,
-        e,
-        Dist::MacAppStore,
+        "app",
+        &privacy_manifest(&app.join("Contents/Resources/PrivacyInfo.xcprivacy")),
+        Some(&info),
+        false,
     );
     signature(&mut r, "app", app, e);
     let ent = entitlements(app);
@@ -694,6 +865,70 @@ mod tests {
         let mut r = Report::default();
         check_info(&mut r, &info, &expected(), Dist::AppStore);
         assert_eq!(r.problems.len(), 3, "{r:?}");
+    }
+
+    #[test]
+    fn checks_privacy_manifests() {
+        let manifest = serde_json::json!({
+            "NSPrivacyTracking": false,
+            "NSPrivacyTrackingDomains": [],
+            "NSPrivacyCollectedDataTypes": [{
+                "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeEmailAddress",
+                "NSPrivacyCollectedDataTypeLinked": true,
+                "NSPrivacyCollectedDataTypeTracking": false,
+                "NSPrivacyCollectedDataTypePurposes": ["NSPrivacyCollectedDataTypePurposeAppFunctionality"],
+            }],
+            "NSPrivacyAccessedAPITypes": [{
+                "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+                "NSPrivacyAccessedAPITypeReasons": ["C617.1"],
+            }],
+        });
+        let info = serde_json::json!({});
+        let mut r = Report::default();
+        check_privacy(&mut r, "app", &manifest, Some(&info), true);
+        assert_eq!(r.ok, ["app: privacy manifest (1 required-reason API)"]);
+        assert!(r.problems.is_empty(), "{r:?}");
+
+        // Missing: a problem on iOS, a warning on macOS.
+        let mut r = Report::default();
+        check_privacy(&mut r, "app", &serde_json::Value::Null, None, true);
+        assert!(r.problems[0].contains("ITMS-91053"), "{r:?}");
+        let mut r = Report::default();
+        check_privacy(&mut r, "app", &serde_json::Value::Null, None, false);
+        assert_eq!((r.problems.len(), r.warnings.len()), (0, 1));
+
+        // Tracking needs domains and the prompt's text; reasons can't be empty.
+        let mut bad = manifest.clone();
+        bad["NSPrivacyTracking"] = true.into();
+        bad["NSPrivacyAccessedAPITypes"][0]["NSPrivacyAccessedAPITypeReasons"] =
+            serde_json::json!([]);
+        bad["NSPrivacyCollectedDataTypes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("NSPrivacyCollectedDataTypePurposes");
+        let mut r = Report::default();
+        check_privacy(&mut r, "app", &bad, Some(&info), true);
+        assert_eq!(r.problems.len(), 4, "{r:?}");
+        bad["NSPrivacyTrackingDomains"] = serde_json::json!(["ads.example.com"]);
+        let tracked = serde_json::json!({"NSUserTrackingUsageDescription": "Ads"});
+        let mut r = Report::default();
+        check_privacy(&mut r, "app", &bad, Some(&tracked), true);
+        assert_eq!(r.problems.len(), 2, "{r:?}");
+    }
+
+    #[test]
+    fn finds_transparent_icons() {
+        let assets = serde_json::json!([
+            {"AssetStorageVersion": "x"},
+            {"Name": "AppIcon", "RenditionName": "icon-1024.png", "Opaque": false, "PixelWidth": 1024},
+            {"Name": "AppIcon", "RenditionName": "icon-1024.png", "Opaque": true, "PixelWidth": 1024},
+            {"Name": "Other", "Opaque": false},
+        ]);
+        assert_eq!(
+            transparent_icons(&assets, "AppIcon"),
+            ["icon-1024.png (1024 px)"]
+        );
+        assert!(transparent_icons(&assets, "Icon").is_empty());
     }
 
     #[test]

@@ -31,6 +31,8 @@ cd "$ROOT"
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 PROFILE_DIR=debug CARGO_FLAGS=()
 if [[ "${PRISM_RELEASE:-}" == 1 ]]; then PROFILE_DIR=release CARGO_FLAGS=(--release); fi
+# The prismsdk features Prism.toml's [permissions] turn on (PRISM_FEATURES).
+[[ -n "${PRISM_FEATURES:-}" ]] && CARGO_FLAGS+=(--features "$PRISM_FEATURES")
 SLUG="${PKG//_/-}"
 BUNDLE_ID="${PRISM_BUNDLE_ID:-dev.prism.$SLUG}"
 GROUP="group.$BUNDLE_ID"
@@ -194,26 +196,7 @@ if [[ -n "${PRISM_LOCALES:-}" ]]; then
   LOC_PLIST+="</array>"
 fi
 # Permissions (Prism.toml [permissions]): the texts iOS/macOS show when asking.
-USAGE_PLIST="$(PLATFORM_KIND=macos python3 -c '
-import os
-from xml.sax.saxutils import escape
-keys = {
-    "location": ["NSLocationWhenInUseUsageDescription", "NSLocationUsageDescription"],
-    "location_always": ["NSLocationAlwaysAndWhenInUseUsageDescription", "NSLocationAlwaysUsageDescription"],
-    "camera": ["NSCameraUsageDescription"],
-    "photos": ["NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription"],
-    "microphone": ["NSMicrophoneUsageDescription"],
-    "motion": ["NSMotionUsageDescription"],
-    "face_id": ["NSFaceIDUsageDescription"],
-}
-for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
-    name, _, text = line.partition("\t")
-    if name not in keys:
-        print("<!-- unknown permission " + escape(name) + " -->")
-        continue
-    for key in keys[name]:
-        print("  <key>" + key + "</key><string>" + escape(text) + "</string>")
-')"
+USAGE_PLIST="$(python3 "$(dirname "$0")/apple-privacy.py" usage)"
 ICON_PLIST=""
 if [[ -n "${PRISM_ICON:-}" ]]; then
   bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" macosx 14.0 "$APP/Contents/Resources" "$GEN"
@@ -315,6 +298,12 @@ plist PrismWidgets "$BUNDLE_ID.widgets" XPC! "  <key>NSExtension</key>
   > "$APPEX/Contents/Info.plist"
 fi
 
+# Privacy manifests (PrivacyInfo.xcprivacy), as in ios-run.sh: Mac App Store
+# builds only warn (App Store Connect doesn't require the reasons on macOS).
+PRIVACY_BUNDLES=("$APP/Contents/Resources" "$APP/Contents/MacOS/$PKG")
+[[ $WIDGETS == 1 ]] && PRIVACY_BUNDLES+=("$APPEX/Contents/Resources" "$APPEX/Contents/MacOS/PrismWidgets")
+python3 "$(dirname "$0")/apple-privacy.py" manifest macos 0 "${PRIVACY_BUNDLES[@]}"
+
 # Entitlements. Widget extensions must be sandboxed; app and extension share
 # the App Group. Store builds are sandboxed too, with what Prism.toml's
 # [permissions] ask for (also needed under the hardened runtime), and carry
@@ -330,6 +319,11 @@ by_permission = {
     "location": ["com.apple.security.personal-information.location"],
     "location_always": ["com.apple.security.personal-information.location"],
     "photos": ["com.apple.security.personal-information.photos-library"],
+    "contacts": ["com.apple.security.personal-information.addressbook"],
+    "calendars": ["com.apple.security.personal-information.calendars"],
+    "reminders": ["com.apple.security.personal-information.calendars"],
+    "bluetooth": ["com.apple.security.device.bluetooth"],
+    "speech": ["com.apple.security.device.audio-input"],
 }
 asked = [l.partition("\t")[0] for l in os.environ.get("PRISM_PERMISSIONS", "").splitlines()]
 def profile(name):

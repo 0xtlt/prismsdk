@@ -1530,6 +1530,71 @@ test("shapes: unknown commands stop the path, bad lines are skipped, resizes red
   assert.equal(el.querySelectorAll("svg").length, 1, "one svg, reused");
 });
 
+test("shapes: a box without a size waits for one (#319)", () => {
+  // In a `display: none` ancestor: 0×0, nothing drawn yet.
+  const page = live([create(1, "shape"), root(1)]);
+  const el = page.node(1);
+  el.clientWidth = 0;
+  el.clientHeight = 0;
+  page.ws.deliver({ t: "patch", p: [textOp(1, "i0,0\n|M 0 0 L 1 1\n")] });
+  assert.equal(el.querySelectorAll("svg").length, 0, "no 0×0 viewBox");
+  // Shown: the observer sees its size and draws it.
+  el.clientWidth = 16;
+  el.clientHeight = 16;
+  const ro = page.window.resizeObservers[0];
+  ro.cb([{ target: el }]);
+  assert.equal(el.firstElementChild.getAttribute("viewBox"), "0 0 16 16");
+  assert.equal(el.firstElementChild.children[0].getAttribute("d"), "M0 0L16 16");
+  // Hidden again: the drawing stays as it was, and comes back at once.
+  el.clientWidth = 0;
+  ro.cb([{ target: el }]);
+  page.ws.deliver({ t: "patch", p: [textOp(1, "i0,0\n|M 0 1 L 1 0\n")] });
+  assert.equal(el.firstElementChild.getAttribute("viewBox"), "0 0 16 16");
+  assert.equal(el.firstElementChild.children[0].getAttribute("d"), "M0 0L16 16");
+  el.clientWidth = 16;
+  ro.cb([{ target: el }]);
+  assert.equal(el.firstElementChild.children[0].getAttribute("d"), "M0 16L16 0");
+});
+
+test("children a children op moves slide from where they were, with their transition (#319)", () => {
+  const spring = "transition:all 0.4s cubic-bezier(.34,1.56,.64,1) 0.1s;";
+  const page = live([
+    create(1, "view"), create(2, "view"), create(3, "view"), create(4, "view"), create(5, "view"),
+    children(1, [2, 3, 4, 5]), root(1),
+    { op: "style", id: 2, css: spring }, { op: "style", id: 3, css: spring }, { op: "style", id: 4, css: spring },
+  ]);
+  // Rows 40 px tall, laid out in order.
+  const list = page.node(1);
+  for (const id of [2, 3, 4, 5]) {
+    const el = page.node(id);
+    el.getBoundingClientRect = () => {
+      const top = list.children.indexOf(el) * 40;
+      return { left: 0, top, width: 100, height: 40, right: 100, bottom: top + 40 };
+    };
+  }
+  const slides = () => (page.document.animations || []).map((a) => [Number(a.el.dataset.pid), a.keyframes, a.options]);
+  // The last row moves to the top; the others shift down by one row.
+  page.ws.deliver({ t: "patch", p: [children(1, [4, 2, 3, 5])] });
+  assert.deepEqual(list.children.map((c) => Number(c.dataset.pid)), [4, 2, 3, 5]);
+  const timing = { duration: 400, easing: "cubic-bezier(.34,1.56,.64,1)", delay: 100 };
+  assert.deepEqual(JSON.parse(JSON.stringify(slides())), [
+    [2, [{ transform: "translate(0px,-40px)" }, { transform: "none" }], timing],
+    [3, [{ transform: "translate(0px,-40px)" }, { transform: "none" }], timing],
+    [4, [{ transform: "translate(0px,80px)" }, { transform: "none" }], timing],
+  ], "row 5 has no transition: it doesn't slide");
+  // A removed row: its siblings slide up into its place.
+  page.document.animations = [];
+  page.ws.deliver({ t: "patch", p: [children(1, [4, 3, 5])] });
+  assert.deepEqual(slides().map((s) => [s[0], s[1][0].transform]), [[3, "translate(0px,40px)"]]);
+  // A reconnect shows the tree as it is.
+  page.document.animations = [];
+  page.ws.deliver({ t: "reset", p: [
+    create(1, "view"), create(3, "view"), create(4, "view"), children(1, [3, 4]), root(1),
+    { op: "style", id: 3, css: spring }, { op: "style", id: 4, css: spring },
+  ] });
+  assert.equal(slides().length, 0);
+});
+
 test("timers count down by themselves", () => {
   const now = Math.floor(Date.now() / 1000);
   const page = live([create(1, "timer"), root(1), { op: "value", id: 1, value: now + 3725 }]);

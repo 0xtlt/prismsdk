@@ -49,10 +49,12 @@ pub struct Capabilities {
     /// A menu bar for app menus (`cx.set_app_menu`).
     pub app_menu: bool,
     /// Device APIs (see [`crate::device`]): `current_location`, `watch_location`.
+    /// On Apple platforms, for apps that declare `location` under
+    /// `[permissions]` in Prism.toml.
     pub location: bool,
     /// `watch_motion` (accelerometer, gyroscope, attitude).
     pub motion: bool,
-    /// `take_photo`.
+    /// `take_photo` (Apple platforms: with `camera` under `[permissions]`).
     pub camera: bool,
     /// `pick_images`.
     pub photos: bool,
@@ -71,8 +73,10 @@ pub struct Capabilities {
     pub secure_storage: bool,
     /// The biometric sensor (`BiometryKind::None` without one). Enrollment
     /// can change while the app runs: `cx.biometry()` says how it is now.
+    /// iOS and visionOS: for apps that declare `face_id` under `[permissions]`.
     pub biometry: crate::security::BiometryKind,
-    /// `authenticate` can check the owner (biometrics or a passcode).
+    /// `authenticate` can check the owner (biometrics or a passcode); on iOS
+    /// and visionOS, with `face_id` under `[permissions]`.
     pub device_auth: bool,
     /// `sign_in_with_apple` (AuthenticationServices, with the entitlement).
     pub sign_in_with_apple: bool,

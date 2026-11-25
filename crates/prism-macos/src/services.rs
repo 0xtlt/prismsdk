@@ -87,7 +87,8 @@ impl MacServices {
                 notifications: bundled,
                 tray: true,
                 app_menu: true,
-                location: true,
+                // CoreLocation: the `location` feature ([permissions]).
+                location: cfg!(feature = "location"),
                 motion: false,
                 camera: false,
                 photos: true,

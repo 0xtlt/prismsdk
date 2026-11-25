@@ -240,7 +240,7 @@ fn build_swift(dirs: &[&str], module: &str) {
             "-module-name",
             module,
         ])
-        .args(features.swift_flags())
+        .args(features.swift_flags(sdk))
         .arg("-o")
         .arg(&lib)
         .args(&sources)
@@ -319,9 +319,8 @@ fn build_swift(dirs: &[&str], module: &str) {
         "UserNotifications",
         "SwiftUI",
         "ActivityKit",
-        // Secure storage, owner authentication (PrismSecurity.swift).
+        // Secure storage (PrismSecurity.swift).
         "Security",
-        "LocalAuthentication",
         // Videos (PrismVideo.swift, #207).
         "AVFoundation",
         "AVKit",
@@ -331,6 +330,11 @@ fn build_swift(dirs: &[&str], module: &str) {
         {
             println!("cargo:rustc-link-lib=framework={fw}");
         }
+    }
+    // Owner authentication (PrismSecurity.swift): on macOS and watchOS, and
+    // with the `face-id` feature on iOS and visionOS.
+    if features.local_auth(sdk) && frameworks.join("LocalAuthentication.framework").exists() {
+        println!("cargo:rustc-link-lib=framework=LocalAuthentication");
     }
     // Sign-in (PrismSecurity.swift), with the `sign-in` feature only (#314).
     if features.sign_in {
@@ -343,11 +347,18 @@ fn build_swift(dirs: &[&str], module: &str) {
     }
 }
 
-/// The bridge's optional parts (#312, #314), from the cargo features of the
-/// backend whose build script calls [`build_bridge`] (`prismsdk`'s
-/// `sign-in`, `photo-picker` and `purchases` turn them on). Each one's framework drags
-/// ~1000 more images into every launch in the simulator (~1 s of dyld
-/// work), so an app links them only when it asks for them.
+/// The bridge's optional parts, from the cargo features of the backend whose
+/// build script calls [`build_bridge`].
+///
+/// - `prismsdk`'s `sign-in`, `photo-picker` and `purchases` (#312, #314):
+///   each one's framework drags ~1000 more images into every launch in the
+///   simulator (~1 s of dyld work), so an app links them only when it asks
+///   for them.
+/// - `location`, `location-always`, `camera`, `microphone`, `photo-library`
+///   and `face-id`: App Store Connect asks for a purpose string for each of
+///   these protected resources whose API the binary references, used or not
+///   (ITMS-90683). `prism` turns them on from `[permissions]` in Prism.toml,
+///   which also writes those strings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct BridgeFeatures {
     /// AuthenticationServices: Sign in with Apple, web sign-in, passkeys.
@@ -356,6 +367,19 @@ struct BridgeFeatures {
     photo_picker: bool,
     /// StoreKit: in-app purchases (`purchase`, `owns`…).
     purchases: bool,
+    /// CoreLocation: `current_location`, `watch_location`, its permission.
+    location: bool,
+    /// CoreLocation's « Always » authorization (`location_always`, iOS).
+    location_always: bool,
+    /// The camera: its permission and `take_photo`.
+    camera: bool,
+    /// The microphone's permission.
+    microphone: bool,
+    /// The photo library's permission (PHPhotoLibrary).
+    photo_library: bool,
+    /// LocalAuthentication on iOS and visionOS (Face ID): biometric secrets
+    /// and owner checks.
+    face_id: bool,
 }
 
 impl BridgeFeatures {
@@ -368,20 +392,38 @@ impl BridgeFeatures {
             sign_in: on("CARGO_FEATURE_SIGN_IN"),
             photo_picker: on("CARGO_FEATURE_PHOTO_PICKER"),
             purchases: on("CARGO_FEATURE_PURCHASES"),
+            location: on("CARGO_FEATURE_LOCATION"),
+            location_always: on("CARGO_FEATURE_LOCATION_ALWAYS"),
+            camera: on("CARGO_FEATURE_CAMERA"),
+            microphone: on("CARGO_FEATURE_MICROPHONE"),
+            photo_library: on("CARGO_FEATURE_PHOTO_LIBRARY"),
+            face_id: on("CARGO_FEATURE_FACE_ID"),
         }
     }
 
-    /// The `swiftc -D` conditions the Swift sources test.
-    fn swift_flags(self) -> Vec<&'static str> {
+    /// LocalAuthentication is compiled in: macOS (Touch ID needs no purpose
+    /// string) and watchOS (no biometrics), else with `face-id`.
+    fn local_auth(self, sdk: &str) -> bool {
+        self.face_id || sdk == "macosx" || sdk.starts_with("watch")
+    }
+
+    /// The `swiftc -D` conditions the Swift sources test, for an SDK.
+    fn swift_flags(self, sdk: &str) -> Vec<&'static str> {
         let mut flags = Vec::new();
-        if self.sign_in {
-            flags.extend(["-D", "PRISM_AUTH_SERVICES"]);
-        }
-        if self.photo_picker {
-            flags.extend(["-D", "PRISM_PHOTOS_PICKER"]);
-        }
-        if self.purchases {
-            flags.extend(["-D", "PRISM_STOREKIT"]);
+        for (on, condition) in [
+            (self.sign_in, "PRISM_AUTH_SERVICES"),
+            (self.photo_picker, "PRISM_PHOTOS_PICKER"),
+            (self.purchases, "PRISM_STOREKIT"),
+            (self.location || self.location_always, "PRISM_LOCATION"),
+            (self.location_always, "PRISM_LOCATION_ALWAYS"),
+            (self.camera, "PRISM_CAMERA"),
+            (self.microphone, "PRISM_MICROPHONE"),
+            (self.photo_library, "PRISM_PHOTO_LIBRARY"),
+            (self.local_auth(sdk), "PRISM_LOCAL_AUTH"),
+        ] {
+            if on {
+                flags.extend(["-D", condition]);
+            }
         }
         flags
     }
@@ -557,22 +599,57 @@ mod tests {
     #[test]
     fn bridge_features_become_swift_conditions() {
         use super::BridgeFeatures;
-        assert!(BridgeFeatures::default().swift_flags().is_empty());
+        assert!(BridgeFeatures::default().swift_flags("iphoneos").is_empty());
         let all = BridgeFeatures {
             sign_in: true,
             photo_picker: true,
             purchases: true,
+            location: true,
+            location_always: true,
+            camera: true,
+            microphone: true,
+            photo_library: true,
+            face_id: true,
+        };
+        let conditions = |f: BridgeFeatures, sdk| -> Vec<&str> {
+            f.swift_flags(sdk)
+                .into_iter()
+                .filter(|f| *f != "-D")
+                .collect()
         };
         assert_eq!(
-            all.swift_flags(),
+            conditions(all, "iphoneos"),
             [
-                "-D",
                 "PRISM_AUTH_SERVICES",
-                "-D",
                 "PRISM_PHOTOS_PICKER",
-                "-D",
-                "PRISM_STOREKIT"
+                "PRISM_STOREKIT",
+                "PRISM_LOCATION",
+                "PRISM_LOCATION_ALWAYS",
+                "PRISM_CAMERA",
+                "PRISM_MICROPHONE",
+                "PRISM_PHOTO_LIBRARY",
+                "PRISM_LOCAL_AUTH",
             ]
         );
+        // `location-always` brings the location code with it.
+        let always = BridgeFeatures {
+            location_always: true,
+            ..BridgeFeatures::default()
+        };
+        assert_eq!(
+            conditions(always, "iphoneos"),
+            ["PRISM_LOCATION", "PRISM_LOCATION_ALWAYS"]
+        );
+        // LocalAuthentication: always on macOS and watchOS (no purpose
+        // string there), with `face-id` on iOS and visionOS.
+        for sdk in ["macosx", "watchos", "watchsimulator"] {
+            assert_eq!(
+                conditions(BridgeFeatures::default(), sdk),
+                ["PRISM_LOCAL_AUTH"]
+            );
+        }
+        for sdk in ["iphoneos", "iphonesimulator", "xros", "appletvos"] {
+            assert!(conditions(BridgeFeatures::default(), sdk).is_empty());
+        }
     }
 }

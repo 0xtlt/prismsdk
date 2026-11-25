@@ -401,3 +401,40 @@ fn app_orientations() {
         "{err}"
     );
 }
+
+/// #318: each `[permissions]` name is one `prism` knows, and those whose
+/// code is compiled in only when declared turn on prismsdk's feature,
+/// through the key the app depends on prismsdk under.
+#[test]
+fn permissions_turn_on_prismsdk_features() {
+    const TOML: &str = "[permissions]\ncamera = \"Scans receipts.\"\nface_id = \"Unlocks.\"\nlocation_always = \"Tracks runs.\"\ncontacts = \"Finds friends.\"\n";
+    let with = |dep: &str| {
+        let dir = TempDir::new("features");
+        project(
+            &dir,
+            Some(TOML),
+            &format!("{CARGO}\n[dependencies]\n{dep}\n"),
+        )
+    };
+    let p = with("prism = { package = \"prismsdk\", version = \"0.3\" }").unwrap();
+    assert_eq!(p.prism_dependency.as_deref(), Some("prism"));
+    assert_eq!(
+        p.permission_features(),
+        ["prism/camera", "prism/face-id", "prism/location-always"]
+    );
+    let p = with("prismsdk = \"0.3\"").unwrap();
+    assert_eq!(p.permission_features()[0], "prismsdk/camera");
+    // A dev-dependency compiles no app code.
+    let p = with("\n[dev-dependencies]\nprismsdk = \"0.3\"").unwrap();
+    assert_eq!(p.prism_dependency, None);
+    assert!(p.permission_features().is_empty());
+
+    let dir = TempDir::new("unknown-permission");
+    let Err(err) = project(&dir, Some("[permissions]\nlocaton = \"x\"\n"), CARGO) else {
+        panic!("an unknown permission loads");
+    };
+    assert!(
+        err.contains("locaton") && err.contains("location_always"),
+        "{err}"
+    );
+}

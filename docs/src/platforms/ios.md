@@ -6,7 +6,11 @@
 Every node is a real UIKit view (`UIView`, `UILabel`, `UIButton`,
 `UITextField`), laid out by prism-native's flexbox. The app uses the UIScene
 lifecycle; `prism` writes the Info.plist (scene delegate, usage texts,
-languages, background tasks) and bundles the app.
+languages, background tasks) and the privacy manifest
+([`PrivacyInfo.xcprivacy`](../cli.md#privacy-manifest)), and bundles the
+app. The code of each protected resource (location, camera, microphone,
+photo library, Face ID) is compiled in only when
+[`[permissions]`](../cli.md#permissions) declares it.
 
 - **Simulators:** `--sim <name|udid>`, `PRISM_SIM` or `[ios] simulator` in
   `Prism.toml`. Simulators are slimmed with `simslim` when it is installed.

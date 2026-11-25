@@ -15,6 +15,10 @@
 # - tvOS: the brand assets the App Store requires: layered app icons
 #   (400×240 @1x/@2x, 1280×768) and top shelf images (1920×720, 2320×720),
 #   the icon filling each (centered, cropped).
+#
+# App Store Connect rejects an icon with an alpha channel (ITMS-90717), even
+# a fully opaque one: outside macOS the icon is redrawn without it, on
+# white (flatten-icon.swift), except visionOS and tvOS front layers.
 set -euo pipefail
 ICON="$1" SDK="$2" MIN="$3" RES="$4" WORK="$5"
 CAT="$WORK/Icon.xcassets"
@@ -23,11 +27,21 @@ rm -rf "$CAT" && mkdir -p "$CAT"
 echo "{$INFO}" > "$CAT/Contents.json"
 APP_ICON=AppIcon
 
-# The icon filling w×h: scaled to cover, centered, cropped.
-cover() { # out w h
-  local big=$(( $2 > $3 ? $2 : $3 ))
-  sips -z "$big" "$big" "$ICON" --out "$1" >/dev/null
-  [[ $2 == "$3" ]] || sips --cropToHeightWidth "$3" "$2" "$1" >/dev/null
+# The icon without an alpha channel (ITMS-90717).
+OPAQUE="$ICON"
+if [[ "$SDK" != macosx ]] && sips -g hasAlpha "$ICON" | grep -q 'hasAlpha: yes'; then
+  OPAQUE="$WORK/icon-opaque.png"
+  SEEN="$(xcrun --sdk macosx swift "$(dirname "$0")/flatten-icon.swift" "$ICON" "$OPAQUE")"
+  if [[ "$SEEN" == transparent ]]; then
+    echo "note: $(basename "$ICON") is transparent in places, and App Store Connect rejects app icons with an alpha channel: they show white (export the icon opaque to pick the color)" >&2
+  fi
+fi
+
+# An image filling w×h: scaled to cover, centered, cropped.
+cover() { # in out w h
+  local big=$(( $3 > $4 ? $3 : $4 ))
+  sips -z "$big" "$big" "$1" --out "$2" >/dev/null
+  [[ $3 == "$4" ]] || sips --cropToHeightWidth "$4" "$3" "$2" >/dev/null
 }
 
 case "$SDK" in
@@ -45,7 +59,7 @@ case "$SDK" in
     DEVICES=() ;;
   watchos | watchsimulator)
     SET="$CAT/AppIcon.appiconset" && mkdir -p "$SET"
-    sips -z 1024 1024 "$ICON" --out "$SET/icon-1024.png" >/dev/null
+    sips -z 1024 1024 "$OPAQUE" --out "$SET/icon-1024.png" >/dev/null
     echo "{\"images\":[{\"idiom\":\"universal\",\"platform\":\"watchos\",\"size\":\"1024x1024\",\"filename\":\"icon-1024.png\"}],$INFO}" > "$SET/Contents.json"
     DEVICES=(--target-device watch) ;;
   xros | xrsimulator)
@@ -56,7 +70,10 @@ case "$SDK" in
       SET="$STACK/$layer.solidimagestacklayer/Content.imageset"
       mkdir -p "$SET"
       echo "{$INFO}" > "$STACK/$layer.solidimagestacklayer/Contents.json"
-      sips -z 1024 1024 "$ICON" --out "$SET/icon.png" >/dev/null
+      # The back layer is opaque; the front one may let it show through.
+      src="$OPAQUE"
+      [[ $layer == Front ]] && src="$ICON"
+      sips -z 1024 1024 "$src" --out "$SET/icon.png" >/dev/null
       echo "{\"images\":[{\"idiom\":\"vision\",\"scale\":\"2x\",\"filename\":\"icon.png\"}],$INFO}" > "$SET/Contents.json"
     done
     DEVICES=(--target-device vision) ;;
@@ -70,11 +87,12 @@ case "$SDK" in
       mkdir -p "$dir"
       echo "{\"layers\":[{\"filename\":\"Front.imagestacklayer\"},{\"filename\":\"Back.imagestacklayer\"}],$INFO}" > "$dir/Contents.json"
       for layer in Front Back; do
-        local set="$dir/$layer.imagestacklayer/Content.imageset" images=""
+        local set="$dir/$layer.imagestacklayer/Content.imageset" images="" src="$OPAQUE"
+        [[ $layer == Front ]] && src="$ICON"
         mkdir -p "$set"
         echo "{$INFO}" > "$dir/$layer.imagestacklayer/Contents.json"
         for s in "$@"; do
-          cover "$set/icon@${s}x.png" $((w * s)) $((h * s))
+          cover "$src" "$set/icon@${s}x.png" $((w * s)) $((h * s))
           images+="{\"idiom\":\"tv\",\"scale\":\"${s}x\",\"filename\":\"icon@${s}x.png\"},"
         done
         echo "{\"images\":[${images%,}],$INFO}" > "$set/Contents.json"
@@ -84,7 +102,7 @@ case "$SDK" in
       local set="$BRAND/$1.imageset" images=""
       mkdir -p "$set"
       for s in 1 2; do
-        cover "$set/shelf@${s}x.png" $(($2 * s)) $(($3 * s))
+        cover "$OPAQUE" "$set/shelf@${s}x.png" $(($2 * s)) $(($3 * s))
         images+="{\"idiom\":\"tv\",\"scale\":\"${s}x\",\"filename\":\"shelf@${s}x.png\"},"
       done
       echo "{\"images\":[${images%,}],$INFO}" > "$set/Contents.json"
@@ -104,7 +122,7 @@ JSON
     DEVICES=(--target-device tv) ;;
   *)
     SET="$CAT/AppIcon.appiconset" && mkdir -p "$SET"
-    sips -z 1024 1024 "$ICON" --out "$SET/icon-1024.png" >/dev/null
+    sips -z 1024 1024 "$OPAQUE" --out "$SET/icon-1024.png" >/dev/null
     echo "{\"images\":[{\"idiom\":\"universal\",\"platform\":\"ios\",\"size\":\"1024x1024\",\"filename\":\"icon-1024.png\"}],$INFO}" > "$SET/Contents.json"
     DEVICES=(--target-device iphone --target-device ipad) ;;
 esac

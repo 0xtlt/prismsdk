@@ -12,14 +12,16 @@
 //! them to the app's view under them itself ([`route_strip_press`]).
 
 use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBackingStoreType, NSControl, NSEvent, NSEventType, NSImage, NSResponder, NSView, NSWindow,
     NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSString, NSUserDefaults};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSString};
 use prism_core::{WindowChrome, WindowControls};
 
 thread_local! {
@@ -408,24 +410,60 @@ pub(crate) fn along_top(view: &NSView) -> bool {
 /// A double click on a `.window_drag()` region: what System Settings ›
 /// Desktop & Dock › « Double-click a window's title bar » says.
 pub(crate) fn double_click(window: &NSWindow) {
-    let defaults = NSUserDefaults::standardUserDefaults();
-    let action = defaults
-        .stringForKey(&NSString::from_str("AppleActionOnDoubleClick"))
-        .map(|s| s.to_string());
-    match action.as_deref() {
+    match global_preference("AppleActionOnDoubleClick").as_deref() {
         Some("Minimize") => window.miniaturize(None),
         Some("None") => {}
         // "Maximize", "Fill" (no public API: zoom), unset.
         Some(_) => window.zoom(None),
-        None => {
-            // Before macOS 10.11: a boolean.
-            if defaults.boolForKey(&NSString::from_str("AppleMiniaturizeOnDoubleClick")) {
-                window.miniaturize(None)
-            } else {
-                window.zoom(None)
-            }
-        }
+        // Before macOS 10.11: a boolean.
+        None if global_flag("AppleMiniaturizeOnDoubleClick") => window.miniaturize(None),
+        None => window.zoom(None),
     }
+}
+
+// The system's settings, read through CFPreferences rather than
+// NSUserDefaults: App Store Connect counts NSUserDefaults as a
+// required-reason API (UserDefaults), and none of Apple's reasons covers
+// reading a system setting.
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    static kCFPreferencesCurrentApplication: *const c_void;
+    fn CFPreferencesCopyAppValue(key: *const c_void, app: *const c_void) -> *mut c_void;
+    fn CFPreferencesGetAppBooleanValue(
+        key: *const c_void,
+        app: *const c_void,
+        valid: *mut u8,
+    ) -> u8;
+}
+
+/// A string setting of the app's domain or, unset there, the global one.
+fn global_preference(key: &str) -> Option<String> {
+    let key = NSString::from_str(key);
+    // SAFETY: NSString is toll-free bridged to CFString; the copy is owned
+    // (+1), which `Retained::from_raw` takes over.
+    let value: Retained<AnyObject> = unsafe {
+        let raw = CFPreferencesCopyAppValue(
+            Retained::as_ptr(&key).cast(),
+            kCFPreferencesCurrentApplication,
+        );
+        Retained::from_raw(raw.cast())?
+    };
+    value.downcast::<NSString>().ok().map(|s| s.to_string())
+}
+
+/// A boolean setting, as `global_preference` finds it (false when unset).
+fn global_flag(key: &str) -> bool {
+    let key = NSString::from_str(key);
+    let mut valid = 0u8;
+    // SAFETY: as in `global_preference`.
+    let value = unsafe {
+        CFPreferencesGetAppBooleanValue(
+            Retained::as_ptr(&key).cast(),
+            kCFPreferencesCurrentApplication,
+            &mut valid,
+        )
+    };
+    valid != 0 && value != 0
 }
 
 #[cfg(test)]

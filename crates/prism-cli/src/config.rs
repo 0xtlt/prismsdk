@@ -25,9 +25,12 @@
 //! package_publisher = "CN=Example Ltd, O=Example Ltd, C=FR"  # MSIX Publisher (default: the
 //!                               # signing certificate's subject, else CN=<publisher>)
 //!
-//! [permissions]               # why the app asks (shown by the system)
-//! location = "Shows todos near you."
+//! [permissions]               # why the app asks (shown by the system); on Apple
+//! location = "Shows todos near you."  # platforms each one also builds its code in
 //! camera = "Takes a photo for a todo."
+//!
+//! [privacy]                   # the App Store privacy manifest (see `privacy.rs`)
+//! tracking = false
 //!
 //! [push]                      # remote push notifications
 //! enabled = true                # aps-environment, background pushes, Android receivers
@@ -97,8 +100,15 @@ pub struct Project {
     /// `[windows] package_publisher`: an MSIX's `Publisher`, a certificate
     /// subject (`CN=Example Ltd, O=Example Ltd, C=FR`).
     pub package_publisher: Option<String>,
-    /// `[permissions]`: why the app asks (Info.plist usage descriptions).
+    /// `[permissions]`: why the app asks (Info.plist usage descriptions),
+    /// names checked against [`crate::privacy::PERMISSIONS`].
     pub permissions: Vec<(String, String)>,
+    /// `[privacy]`: the app's part of its App Store privacy manifest.
+    pub privacy: crate::privacy::Privacy,
+    /// The key of the app's `prismsdk` dependency in its Cargo.toml
+    /// (`prism` for `prism = { package = "prismsdk", … }`), when it has one:
+    /// `prism` turns on the features `[permissions]` need through it.
+    pub prism_dependency: Option<String>,
     /// Languages with a catalog in `locales/` (`[app] locales` to move it).
     pub languages: Vec<String>,
     pub team: Option<String>,
@@ -291,8 +301,22 @@ impl Project {
                 .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
                 .unwrap_or_default()
         });
-        let (target_dir, workspace_root) = cargo_dirs(root)?;
+        let (target_dir, workspace_root, prism_dependency) = cargo_dirs(root, &package)?;
         let deployment_targets = deployment_targets(get)?;
+        let permissions = {
+            let mut p: Vec<(String, String)> = config
+                .iter()
+                .filter_map(|(k, v)| Some((k.strip_prefix("permissions.")?.to_string(), v.clone())))
+                .map(|(k, v)| crate::privacy::permission(&k).map(|k| (k, v)))
+                .collect::<Result<_, _>>()?;
+            p.sort();
+            p
+        };
+        let privacy = crate::privacy::Privacy::load(
+            &config,
+            root,
+            permissions.iter().any(|(k, _)| k == "tracking"),
+        )?;
         Ok(Project {
             bundle_id: bundle_id(
                 get("app.bundle_id")
@@ -327,16 +351,9 @@ impl Project {
             maintainer: get("linux.maintainer"),
             publisher: get("windows.publisher"),
             package_publisher: get("windows.package_publisher"),
-            permissions: {
-                let mut p: Vec<(String, String)> = config
-                    .iter()
-                    .filter_map(|(k, v)| {
-                        Some((k.strip_prefix("permissions.")?.to_string(), v.clone()))
-                    })
-                    .collect();
-                p.sort();
-                p
-            },
+            permissions,
+            privacy,
+            prism_dependency,
             languages: languages(&crate::resolve(
                 root,
                 &get("app.locales").unwrap_or_else(|| "locales".into()),
@@ -629,7 +646,9 @@ fn languages(dir: &Path) -> Vec<String> {
     langs
 }
 
-fn cargo_dirs(root: &Path) -> Result<(PathBuf, PathBuf), String> {
+/// Cargo's target directory, the workspace root, and the key of `package`'s
+/// `prismsdk` dependency (its rename, else `prismsdk`).
+fn cargo_dirs(root: &Path, package: &str) -> Result<(PathBuf, PathBuf, Option<String>), String> {
     let out = Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(root)
@@ -645,7 +664,46 @@ fn cargo_dirs(root: &Path) -> Result<(PathBuf, PathBuf), String> {
             .map(PathBuf::from)
             .ok_or_else(|| format!("cargo metadata: no {k}"))
     };
-    Ok((dir("target_directory")?, dir("workspace_root")?))
+    Ok((
+        dir("target_directory")?,
+        dir("workspace_root")?,
+        prism_dependency(&v, package),
+    ))
+}
+
+/// The key `package` depends on `prismsdk` under, in `cargo metadata`.
+pub(crate) fn prism_dependency(metadata: &serde_json::Value, package: &str) -> Option<String> {
+    let pkg = metadata["packages"]
+        .as_array()?
+        .iter()
+        .find(|p| p["name"] == package)?;
+    // A normal dependency (not dev or build), on every target or some.
+    let dep = pkg["dependencies"]
+        .as_array()?
+        .iter()
+        .find(|d| d["name"] == "prismsdk" && d["kind"].is_null())?;
+    Some(dep["rename"].as_str().unwrap_or("prismsdk").to_string())
+}
+
+impl Project {
+    /// The prismsdk features `[permissions]` need (`prism/location`…), as
+    /// `cargo build --features` takes them: the code of each protected
+    /// resource the app declares is compiled in on Apple platforms.
+    pub fn permission_features(&self) -> Vec<String> {
+        let Some(dep) = &self.prism_dependency else {
+            return Vec::new();
+        };
+        let mut features: Vec<String> = Vec::new();
+        for (name, _) in &self.permissions {
+            if let Some(f) = crate::privacy::permission_feature(name) {
+                let f = format!("{dep}/{f}");
+                if !features.contains(&f) {
+                    features.push(f);
+                }
+            }
+        }
+        features
+    }
 }
 
 #[cfg(test)]

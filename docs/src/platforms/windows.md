@@ -732,7 +732,7 @@ The manifest (`AppxManifest.xml`) comes from `Prism.toml`:
 | Logos | `StoreLogo` (50 px), `Square44x44Logo`, `Square150x150Logo`, scaled from `[app] icon` (a PNG, or the largest PNG in an `.ico`; a grey square without an icon) |
 | Notifications | `ToastNotificationActivation` and the COM server a click starts (`----AppNotificationActivated:`), its CLSID derived from the name and publisher |
 | Push | with `[push] wns_remote_id` and `wns_app_id` (both or neither, else the build stops): the COM server WNS starts the app with (`----WindowsAppRuntimePushServer:`), see [Remote push notifications](../guide/push.md#windows-wns) |
-| `DeviceCapability` | `[permissions]`: `location` and `location_always` give `location`, `camera` gives `webcam`, `microphone` gives `microphone` |
+| `DeviceCapability` | `[permissions]`: `location` and `location_always` give `location`, `camera` gives `webcam`, `microphone` gives `microphone`, `bluetooth` gives `bluetooth`, `nfc` gives `proximity` |
 
 Not in the manifest: URL schemes and app URI handlers (`Prism.toml`
 declares no URL scheme, and the Windows backend does not read a launch URL

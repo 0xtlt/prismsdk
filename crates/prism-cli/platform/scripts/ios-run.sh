@@ -95,6 +95,10 @@ else
 fi
 PROFILE_DIR=debug CARGO_FLAGS=()
 if [[ "${PRISM_RELEASE:-}" == 1 ]]; then PROFILE_DIR=release CARGO_FLAGS=(--release); fi
+# The prismsdk features Prism.toml's [permissions] turn on (the code of each
+# protected resource the app declares), for every cargo build below.
+FEATURES=()
+[[ -n "${PRISM_FEATURES:-}" ]] && FEATURES=(--features "$PRISM_FEATURES")
 SLUG="${PKG//_/-}"
 BUNDLE_ID="${PRISM_BUNDLE_ID:-dev.prism.$SLUG}"
 GROUP="group.$BUNDLE_ID"
@@ -112,7 +116,7 @@ mkdir -p "$GEN"
 #    compile and reach Application::run here: Prism's native backend can stay
 #    off on the Mac (docs: « What the bundlers ask the app »). The widget
 #    extension is generated only when something needs it.
-cargo build -q -p "$PKG" || {
+cargo build -q -p "$PKG" ${FEATURES[@]+"${FEATURES[@]}"} || {
   echo "prism: building $PKG for this Mac failed. The bundler runs that build to ask the app what it declares (PRISM_DESCRIBE): it must compile here, with Prism's native backend off if the app enables it only for $RUNTIME_NAME (see « What the bundlers ask the app » in the docs)." >&2
   exit 1
 }
@@ -320,7 +324,7 @@ PLIST
 fi
 
 # 4. Build the app (links the Swift bridge, see crates/prism-apple-build).
-cargo build -p "$PKG" --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
+cargo build -p "$PKG" --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"} ${FEATURES[@]+"${FEATURES[@]}"}
 
 # 5. Bundle: binary, assets, icon.
 rm -rf "$APP" && mkdir -p "$APP"
@@ -359,26 +363,7 @@ if [[ -n "${PRISM_LOCALES:-}" ]]; then
   LOC_PLIST+="</array>"
 fi
 # Permissions (Prism.toml [permissions]): the texts iOS/macOS show when asking.
-USAGE_PLIST="$(PLATFORM_KIND=ios python3 -c '
-import os
-from xml.sax.saxutils import escape
-keys = {
-    "location": ["NSLocationWhenInUseUsageDescription", "NSLocationUsageDescription"],
-    "location_always": ["NSLocationAlwaysAndWhenInUseUsageDescription", "NSLocationAlwaysUsageDescription"],
-    "camera": ["NSCameraUsageDescription"],
-    "photos": ["NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription"],
-    "microphone": ["NSMicrophoneUsageDescription"],
-    "motion": ["NSMotionUsageDescription"],
-    "face_id": ["NSFaceIDUsageDescription"],
-}
-for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
-    name, _, text = line.partition("\t")
-    if name not in keys:
-        print("<!-- unknown permission " + escape(name) + " -->")
-        continue
-    for key in keys[name]:
-        print("  <key>" + key + "</key><string>" + escape(text) + "</string>")
-')"
+USAGE_PLIST="$(python3 "$(dirname "$0")/apple-privacy.py" usage)"
 ICON_PLIST=""
 if [[ -n "${PRISM_ICON:-}" ]]; then
   bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" "$SDK" "$MIN_IOS" "$APP" "$GEN"
@@ -593,6 +578,15 @@ if [[ "$ACTIONS" == 1 ]]; then
     --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization 2>"$GEN/app-intents.log" \
     || { cat "$GEN/app-intents.log" >&2; exit 1; }
 fi
+
+# 6c. Privacy manifests (PrivacyInfo.xcprivacy): the required-reason APIs
+#     each binary references, [privacy] and the project's manifest for the
+#     app. App Store builds fail on what App Store Connect rejects.
+PRIVACY_BUNDLES=("$APP" "$APP/$PKG")
+[[ $WIDGETS == 1 ]] && PRIVACY_BUNDLES+=("$APPEX" "$APPEX/PrismWidgets")
+STRICT=0
+[[ "$DIST" == appstore ]] && STRICT=1
+python3 "$(dirname "$0")/apple-privacy.py" manifest "$OS" "$STRICT" "${PRIVACY_BUNDLES[@]}"
 
 # 7. Sign: ad hoc on the simulator, with the profile on a device.
 if [[ -n "$DEVICE_BUILD" ]]; then
