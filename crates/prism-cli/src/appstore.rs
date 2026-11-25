@@ -291,6 +291,33 @@ pub fn check_info(r: &mut Report, info: &serde_json::Value, e: &Expected, dist: 
     }
 }
 
+/// A bundle's `UIRequiredDeviceCapabilities` (its Info.plist as JSON): App
+/// Store Connect refuses an app or an extension with a 64-bit slice that
+/// does not require `arm64` (ITMS-90502). watchOS bundles are exempt (their
+/// watches are arm64_32 too).
+pub fn check_device_capabilities(r: &mut Report, what: &str, info: &serde_json::Value) {
+    if info["DTPlatformName"]
+        .as_str()
+        .is_some_and(|p| p.starts_with("watch"))
+    {
+        return;
+    }
+    let caps = &info["UIRequiredDeviceCapabilities"];
+    let arm64 = match caps {
+        serde_json::Value::Array(a) => a.iter().any(|c| c == "arm64"),
+        // The dictionary form: {"arm64": true}.
+        serde_json::Value::Object(o) => o.get("arm64") == Some(&serde_json::Value::Bool(true)),
+        _ => false,
+    };
+    r.check(
+        arm64,
+        format!("{what} requires arm64"),
+        format!(
+            "{what}: no arm64 in UIRequiredDeviceCapabilities (ITMS-90502): build it with prism 0.5.0 or later"
+        ),
+    );
+}
+
 /// A bundle's privacy manifest (`PrivacyInfo.xcprivacy`, as JSON; `Null`
 /// when absent): App Store Connect rejects a bundle referencing
 /// required-reason APIs without one (ITMS-91053) and a malformed one
@@ -608,6 +635,7 @@ pub fn check_ipa(ipa: &Path, e: &Expected) -> Result<Report, String> {
     ));
     let info = plist_json(&app.join("Info.plist"))?;
     check_info(&mut r, &info, e, Dist::AppStore);
+    check_device_capabilities(&mut r, "app", &info);
     icon_opacity(&mut r, &app, &info);
     check_privacy(
         &mut r,
@@ -623,6 +651,11 @@ pub fn check_ipa(ipa: &Path, e: &Expected) -> Result<Report, String> {
     }
     let appex = app.join("PlugIns/PrismWidgets.appex");
     if appex.exists() {
+        check_device_capabilities(
+            &mut r,
+            "widget extension",
+            &plist_json(&appex.join("Info.plist"))?,
+        );
         check_privacy(
             &mut r,
             "widget extension",
@@ -779,6 +812,24 @@ mod tests {
             identities: &["Apple Distribution"],
             strict: false,
         }
+    }
+
+    /// #325: an iOS bundle without arm64 in UIRequiredDeviceCapabilities is
+    /// refused at upload; watchOS bundles need none.
+    #[test]
+    fn requires_arm64_outside_watchos() {
+        let check = |info: serde_json::Value| {
+            let mut r = Report::default();
+            check_device_capabilities(&mut r, "app", &info);
+            r.problems
+        };
+        let ios = |caps: serde_json::Value| serde_json::json!({"DTPlatformName": "iphoneos", "UIRequiredDeviceCapabilities": caps});
+        assert!(check(ios(serde_json::json!(["arm64"]))).is_empty());
+        assert!(check(ios(serde_json::json!({"arm64": true}))).is_empty());
+        assert_eq!(check(ios(serde_json::Value::Null)).len(), 1);
+        assert_eq!(check(ios(serde_json::json!(["metal"]))).len(), 1);
+        assert!(check(serde_json::json!({"DTPlatformName": "watchos"})).is_empty());
+        assert!(check(serde_json::json!({"DTPlatformName": "appletvos"})).len() == 1);
     }
 
     #[test]

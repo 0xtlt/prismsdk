@@ -25,6 +25,16 @@ use crate::AsyncApp;
 use crate::app::App;
 use crate::device::{DeviceCall, DeviceValue, PickedFile};
 
+/// Whether the text of [`copy_on_click`](crate::Div::copy_on_click) reached
+/// the clipboard (#323), for [`on_copied`](crate::Div::on_copied).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CopiedEvent {
+    /// `Ok` once it is on the clipboard; the platform's error otherwise
+    /// ([`DeviceError::Unavailable`](crate::DeviceError::Unavailable) on
+    /// tvOS and watchOS, the browser's refusal on the web).
+    pub result: Result<(), crate::DeviceError>,
+}
+
 /// What is on the clipboard (or goes on it): the same content in several
 /// types, the richest first. A type set twice keeps its last data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

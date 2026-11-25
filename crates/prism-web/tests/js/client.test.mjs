@@ -600,10 +600,10 @@ test("stacks show the top screen, its title and a Back button", () => {
   assert.equal(page.history.entries.length, 2, "a pushed history entry");
   back.click();
   assert.deepEqual(lastSent(page), { t: "back", id: 1, depth: 1 });
-  // The browser's Back button too.
+  // The browser's Back button: the entry's path at its depth (#324).
   page.history.index = 0;
-  page.fire("popstate", { state: { prism: 1, tab: 0 } });
-  assert.deepEqual(lastSent(page), { t: "back", id: 1, depth: 1 });
+  page.fire("popstate", { state: page.history.entries[0].state });
+  assert.deepEqual(lastSent(page), { t: "history", id: 1, depth: 1, path: "/" });
   // Labels follow the app's language.
   page.ws.deliver({ t: "patch", p: [{ op: "env", lang: "fr", dir: "ltr", back: "Retour", close: "Fermer" }] });
   assert.equal(back.textContent, "‹ Retour");
@@ -840,6 +840,8 @@ test("device calls answer with the request id", async () => {
   const replies = page.ws.sent.filter((m) => m.t === "device_reply").sort((a, b) => a.id - b.id);
   assert.deepEqual(replies, [
     { t: "device_reply", id: 4, text: "copied" },
+    // Answered once written (#323).
+    { t: "device_reply", id: 5 },
     { t: "device_reply", id: 6, permission: "granted" },
     { t: "device_reply", id: 7, err: "unavailable" },
   ]);
@@ -1614,8 +1616,9 @@ test("query strings: the socket, pushes, replaces and Back keep them", () => {
   ] });
   assert.equal(page.window.location.pathname, "/app/analytics");
   assert.equal(page.window.location.search, "?period=7d&room=3");
-  // `cx.replace_query`: same screen, the URL is replaced, not pushed.
-  page.ws.deliver({ t: "patch", p: [textOp(1, "/analytics?period=30d")] });
+  // `cx.replace_query`: same screen, the URL is replaced, not pushed (the
+  // stack counts the replaces above its flags, #324).
+  page.ws.deliver({ t: "patch", p: [textOp(1, "/analytics?period=30d"), { op: "value", id: 1, value: 256 }] });
   assert.equal(page.window.location.search, "?period=30d");
   assert.equal(page.history.entries.length, 1, "no new history entry");
   // `cx.navigate` to another query pushes a screen: Back undoes it.
@@ -1623,19 +1626,96 @@ test("query strings: the socket, pushes, replaces and Back keep them", () => {
   assert.equal(page.history.entries.length, 2);
   assert.equal(page.history.entries[1].url, "/app/analytics?period=1d");
   page.history.index = 0;
-  page.fire("popstate", { state: { prism: 1, tab: 0 } });
-  assert.deepEqual(lastSent(page), { t: "back", id: 1, depth: 1 });
+  page.fire("popstate", { state: page.history.entries[0].state });
+  assert.deepEqual(lastSent(page), { t: "history", id: 1, depth: 1, path: "/analytics?period=30d" });
+  page.ws.deliver({ t: "patch", p: [textOp(1, "/analytics?period=30d"), children(1, [2])] });
+  assert.equal(page.history.entries.length, 2, "Back keeps the entry it left");
+  // Forward asks the app for the path, query included, at its depth.
+  page.history.index = 1;
+  page.fire("popstate", { state: page.history.entries[1].state });
+  assert.deepEqual(lastSent(page), { t: "history", id: 1, depth: 2, path: "/analytics?period=1d" });
+  page.ws.deliver({ t: "patch", p: [create(4, "screen"), textOp(1, "/analytics?period=1d"), children(1, [2, 4])] });
+  assert.equal(page.history.entries.length, 2);
   // The root path with a query, mounted under a prefix.
-  page.ws.deliver({ t: "patch", p: [textOp(1, "/?tab=2"), children(1, [2])] });
+  page.ws.deliver({ t: "patch", p: [textOp(1, "/?tab=2"), { op: "value", id: 1, value: 512 }] });
   assert.equal(page.window.location.pathname, "/app");
   assert.equal(page.window.location.search, "?tab=2");
-  // Forward asks the app for the path, query included.
-  page.history.entries.push({ state: { prism: 2, tab: 0 }, url: "/app/analytics?period=1d" });
+});
+
+test("history follows the path, not only the depth (#324)", () => {
+  // A sidebar app: every page is the stack's only screen (`navigate_root`).
+  const page = live([
+    create(1, "stack"), textOp(1, "/a"), create(2, "screen"), textOp(2, "A"), children(1, [2]), root(1),
+  ], { path: "/a" });
+  const states = () => page.history.entries.map((e) => e.state && e.state.path);
+  page.ws.deliver({ t: "patch", p: [create(3, "screen"), textOp(1, "/b"), children(1, [3])] });
+  page.ws.deliver({ t: "patch", p: [create(4, "screen"), textOp(1, "/c"), children(1, [4])] });
+  assert.deepEqual(states(), ["/a", "/b", "/c"], "an entry per page");
+  // Back between two entries of the same depth shows the entry's page.
   page.history.index = 1;
-  page.window.location.pathname = "/app/analytics";
-  page.window.location.search = "?period=1d";
-  page.fire("popstate", { state: { prism: 2, tab: 0 } });
-  assert.deepEqual(lastSent(page), { t: "navigate", id: 1, path: "/analytics?period=1d" });
+  page.fire("popstate", { state: page.history.entries[1].state });
+  assert.deepEqual(lastSent(page), { t: "history", id: 1, depth: 1, path: "/b" });
+  page.ws.deliver({ t: "patch", p: [create(5, "screen"), textOp(1, "/b"), children(1, [5])] });
+  assert.deepEqual(states(), ["/a", "/b", "/c"], "Forward stays possible");
+  page.history.index = 2;
+  page.fire("popstate", { state: page.history.entries[2].state });
+  assert.deepEqual(lastSent(page), { t: "history", id: 1, depth: 1, path: "/c" });
+});
+
+test("a deep link is one entry, and the app's Back returns to the entry it left (#324)", () => {
+  const page = live([
+    create(1, "stack"), textOp(1, "/todos/1"), create(2, "screen"), create(3, "screen"), textOp(3, "Todo"),
+    children(1, [2, 3]), root(1),
+  ], { path: "/todos/1" });
+  assert.equal(page.history.entries.length, 1, "no entry for the screen under it");
+  assert.equal(page.history.entries[0].state.path, "/todos/1");
+  // The page's Back: the screen under it gets an entry of its own.
+  page.ws.deliver({ t: "patch", p: [textOp(1, "/"), children(1, [2])] });
+  assert.equal(page.history.entries.length, 2);
+  assert.equal(page.window.location.pathname, "/");
+  // A push, then the app's Back (`cx.back`): the browser goes back.
+  page.ws.deliver({ t: "patch", p: [create(4, "screen"), textOp(1, "/todos/2"), children(1, [2, 4])] });
+  assert.equal(page.history.entries.length, 3);
+  page.ws.deliver({ t: "patch", p: [textOp(1, "/"), children(1, [2])] });
+  assert.equal(page.history.index, 1, "back to the entry it left");
+  assert.equal(page.window.location.pathname, "/");
+});
+
+test("a screen can refuse the browser's Back (#324)", () => {
+  const page = live([
+    create(1, "stack"), textOp(1, "/"), create(2, "screen"), children(1, [2]), root(1),
+  ]);
+  page.ws.deliver({ t: "patch", p: [create(3, "screen"), textOp(1, "/edit"), children(1, [2, 3]), { op: "backreq", id: 3, on: true }] });
+  assert.equal(page.history.entries.length, 2);
+  page.history.index = 0;
+  page.fire("popstate", { state: page.history.entries[0].state });
+  assert.equal(page.history.index, 1, "the entry comes back");
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 1 });
+  // The browser reports that `history.go`: nothing more is sent.
+  page.fire("popstate", { state: page.history.entries[1].state });
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 1 });
+  // The page's own Back button asks the screen too.
+  page.node(1).querySelector(".prism-back").click();
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 1 });
+  // Without the guard, Back goes.
+  page.ws.deliver({ t: "patch", p: [{ op: "backreq", id: 3, on: false }] });
+  page.history.index = 0;
+  page.fire("popstate", { state: page.history.entries[0].state });
+  assert.deepEqual(lastSent(page), { t: "history", id: 1, depth: 1, path: "/" });
+});
+
+test("copy_on_click writes during the click and says how it went (#323)", async () => {
+  const page = live([create(1, "view"), root(1), { op: "clickable", id: 1, on: true }, { op: "copy", id: 1, text: "hello" }]);
+  let written = null;
+  page.window.navigator.clipboard = { writeText: (t) => { written = t; return Promise.resolve(); } };
+  page.node(1).click();
+  assert.equal(written, "hello", "written in the click");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sent(page).filter((m) => m.t === "copied"), [{ t: "copied", id: 1 }]);
+  page.window.navigator.clipboard = { writeText: () => Promise.reject(Object.assign(new Error("no"), { name: "NotAllowedError" })) };
+  page.node(1).click();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sent(page).filter((m) => m.t === "copied").at(-1), { t: "copied", id: 1, err: "NotAllowedError\u001fno" });
 });
 
 test("the first screen names the page once live, header or not (#185)", () => {

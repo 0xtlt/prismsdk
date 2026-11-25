@@ -7,6 +7,48 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- `copy_text` says whether it worked (#323): `cx.copy_text(text).await`
+  in a task returns `Result<(), DeviceError>` (every backend answers;
+  `Unavailable` on tvOS and watchOS). `copy_on_click(text)` on `div`,
+  `button` and `text` copies when clicked: on the web the page writes it
+  during the click itself, which Safari requires; `on_copied` hears the
+  result (`CopiedEvent`) on every platform.
+- `Screen::on_back_request` (#324): on the web, the browser's Back and
+  Forward (and the page's Back button) leave the screen in place and ask
+  the app, which goes with `cx.back()` once the user agrees (unsaved
+  changes).
+- `prism publish` checks that the app and its widget extension require
+  `arm64` (ITMS-90502, outside watchOS).
+
+### Changed
+
+- **Breaking:** `NavigateEvent` has a `depth` (the browser's history
+  entry's depth, #324), `UiEvent` the `Copied` and `History` variants and
+  `Patch` the `SetCopyOnClick` and `SetBackRequests` ones (backends and
+  hosts matching them exhaustively add the arms).
+- The web's history follows the path (#324): each entry keeps its path and
+  depth, a sidebar's `navigate_root` adds an entry, `cx.replace` and
+  `replace_query` replace it, `cx.back()` returns to the entry it came
+  from, and Back or Forward between two entries of the same depth shows
+  the entry's screen. A deep link is one entry (none for the screen under
+  it).
+
+### Fixed
+
+- iOS, tvOS and visionOS bundles (the app and its widget extension)
+  require `arm64` in `UIRequiredDeviceCapabilities`: App Store Connect no
+  longer rejects the upload with ITMS-90502 (#325).
+- Widgets: a `nowrap` text hugs its content instead of stretching its
+  parent across the row, and `min_w` / `min_h` reach WidgetKit, Android
+  widgets and Live Activities on the web (#321).
+- `rich_text_input`: a click anywhere in the editor focuses it, below the
+  text (the caret goes to its end), beside a line or in its padding, as
+  in a `<textarea>` (#322).
+- The web's `copy` device call and Apple's answer, so `copy_text` no
+  longer leaves a task waiting (#323).
+
 ## 0.4.0 (2026-11-25)
 
 Store compliance, built in. Every Apple bundle carries a privacy manifest

@@ -49,6 +49,8 @@ pub struct HNode {
     pub selection: Option<(usize, usize)>,
     /// Selection changes reported (`Patch::SetSelectEvents`).
     pub select_events: bool,
+    /// A screen asks before the browser leaves it (`Patch::SetBackRequests`, #324).
+    pub back_requests: bool,
     /// Other people's carets drawn in it (`Patch::SetRemoteCarets`, #240).
     pub remote_carets: Vec<prism_core::RemoteCaret>,
     /// An island's tag (`Patch::SetIsland`).
@@ -57,6 +59,8 @@ pub struct HNode {
     pub island_props: std::collections::BTreeMap<String, String>,
     /// Where a link leads (`Patch::SetLink`).
     pub link: Option<String>,
+    /// What a click copies (`Patch::SetCopyOnClick`, #323).
+    pub copy_on_click: Option<String>,
     /// App-defined attributes (`Patch::SetAttributes`).
     pub attributes: Vec<(String, String)>,
     /// A rich input's encoded runs (`Patch::SetRichValue`, #115).
@@ -234,10 +238,12 @@ impl Backend for Host {
                             reports_layout: false,
                             selection: None,
                             select_events: false,
+                            back_requests: false,
                             remote_carets: Vec::new(),
                             island: None,
                             island_props: Default::default(),
                             link: None,
+                            copy_on_click: None,
                             attributes: Vec::new(),
                             runs: String::new(),
                             edit_events: 0,
@@ -314,6 +320,9 @@ impl Backend for Host {
                 Patch::SetSelection { id, start, end } => {
                     self.node(*id, "SetSelection").selection = Some((*start, *end))
                 }
+                Patch::SetBackRequests { id, on } => {
+                    self.node(*id, "SetBackRequests").back_requests = *on
+                }
                 Patch::SetSelectEvents { id, on } => {
                     self.node(*id, "SetSelectEvents").select_events = *on
                 }
@@ -348,6 +357,9 @@ impl Backend for Host {
                     self.node(*id, "SetScene");
                 }
                 Patch::SetLink { id, href } => self.node(*id, "SetLink").link = href.clone(),
+                Patch::SetCopyOnClick { id, text } => {
+                    self.node(*id, "SetCopyOnClick").copy_on_click = text.clone()
+                }
                 Patch::PostWebMessage { id, data } => {
                     self.node(*id, "PostWebMessage");
                     self.web_messages.push((*id, data.clone()));

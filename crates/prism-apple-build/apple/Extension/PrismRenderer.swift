@@ -118,6 +118,24 @@ private func prismFrameAlign(_ n: PNode) -> Alignment {
     return ta == "c" ? .center : ta == "r" ? .trailing : .leading
 }
 
+/// Where a node's content sits in a box larger than it (`min_w`, `min_h`):
+/// a text or a timer by its `ta`; a container by its `justify-content` on
+/// its main axis and its `align-items` across.
+private func prismContentAlign(_ n: PNode) -> Alignment {
+    let kind = n["k"] as? String ?? "v"
+    if kind == "t" || kind == "m" { return Alignment(horizontal: prismFrameAlign(n).horizontal, vertical: .center) }
+    guard kind == "v" else { return .center }
+    let ai = n["ai"] as? String, jc = n["jc"] as? String
+    let h = { (s: String?) -> HorizontalAlignment in s == "c" ? .center : s == "e" ? .trailing : .leading }
+    let v = { (s: String?) -> VerticalAlignment in s == "c" ? .center : s == "e" ? .bottom : .top }
+    if num(n["d"]) == 1 {
+        // A row centers its children vertically unless told otherwise.
+        let cross: VerticalAlignment = ai == "s" ? .top : ai == "e" ? .bottom : .center
+        return Alignment(horizontal: h(jc), vertical: cross)
+    }
+    return Alignment(horizontal: h(ai), vertical: v(jc))
+}
+
 /// A text node: typography keys `ff` `it` `ul` `st` `tn` `tt` `ls` `lh` `ml`
 /// `nw` (see prism-core `write_typography`).
 private func prismText(_ n: PNode, _ fg: Color?) -> AnyView {
@@ -133,7 +151,11 @@ private func prismText(_ n: PNode, _ fg: Color?) -> AnyView {
     if let ml = num(n["ml"]), ml > 0 {
         v = AnyView(v.lineLimit(Int(ml)).truncationMode(.tail))
     } else if num(n["nw"]) == 1 {
-        v = AnyView(v.fixedSize(horizontal: true, vertical: false).frame(maxWidth: .infinity, alignment: prismFrameAlign(n)).clipped())
+        // One line at its own width, cut where its parent ends: the frame
+        // takes the smaller of the two, so the text hugs its content and
+        // stretches only when the node fills (`w: f`, `f`, #321).
+        v = AnyView(v.lineLimit(1).fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: 0, alignment: prismFrameAlign(n)).clipped())
     }
     return v
 }
@@ -254,6 +276,13 @@ private func prismModifiers(_ base: AnyView, _ n: PNode) -> AnyView {
     let fill = { (key: String) -> Bool in (n[key] as? String) == "f" }
     if let w = num(n["w"]) { v = AnyView(v.frame(width: w)) }
     if let h = num(n["h"]) { v = AnyView(v.frame(height: h)) }
+    // Minimum sizes (`min_w`, `min_h`, #321): the content keeps its place in
+    // the larger box (a pill's centered label stays centered).
+    let mw = n["w"] == nil ? num(n["mw"]).map { CGFloat($0) } : nil
+    let mh = n["h"] == nil ? num(n["mh"]).map { CGFloat($0) } : nil
+    if mw != nil || mh != nil {
+        v = AnyView(v.frame(minWidth: mw, minHeight: mh, alignment: prismContentAlign(n)))
+    }
     if fill("w") || (num(n["f"]) ?? 0) > 0 { v = AnyView(v.frame(maxWidth: .infinity, alignment: prismFrameAlign(n))) }
     if fill("h") { v = AnyView(v.frame(maxHeight: .infinity)) }
     let radius = num(n["r"]) ?? 0

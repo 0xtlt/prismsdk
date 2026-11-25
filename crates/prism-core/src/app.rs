@@ -464,7 +464,7 @@ impl App {
         self.nav_queue.push(NavOp::Dismiss);
     }
 
-    /// Replaces the top screen.
+    /// Replaces the top screen (on the web, its history entry too, #324).
     pub fn replace(&mut self, path: impl Into<String>) {
         self.nav_queue.push(NavOp::Replace(path.into()));
     }
@@ -479,8 +479,9 @@ impl App {
     /// underneath (Back has nowhere to go, as on a tab's root) and the
     /// other tabs keep their screens; the screen stays as it is when the
     /// stack already starts with `path`. The sheet, if any, closes. On the
-    /// web the browser's history goes back to that entry. A link does it
-    /// with [`link_root`](crate::Div::link_root).
+    /// web each page opened this way is a history entry, so the browser's
+    /// Back and Forward go through them (#324). A link does it with
+    /// [`link_root`](crate::Div::link_root).
     pub fn navigate_root(&mut self, path: impl Into<String>) {
         self.nav_queue.push(NavOp::Root(path.into()));
     }

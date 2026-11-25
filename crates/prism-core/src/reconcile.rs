@@ -197,6 +197,15 @@ pub enum Patch {
         /// The carets, in characters.
         carets: Vec<crate::RemoteCaret>,
     },
+    /// Whether a screen asks the app before the browser leaves it
+    /// (`Screen::on_back_request`, #324). The web keeps the screen and
+    /// sends [`UiEvent::Back`] to it instead; native backends ignore it.
+    SetBackRequests {
+        /// The screen.
+        id: NodeId,
+        /// Ask first.
+        on: bool,
+    },
     /// Whether a text input or area reports its selection
     /// (`UiEvent::Select`): it has an `on_select` handler (#86).
     SetSelectEvents {
@@ -409,6 +418,17 @@ pub enum Patch {
         /// Its destination, as given to `.link(…)`.
         href: Option<String>,
     },
+    /// The text a clickable node puts on the clipboard when clicked
+    /// (`copy_on_click`, #323; `None`: no longer). Sent after its `Create`
+    /// and when it changes. The web writes it during the click (browsers
+    /// refuse a later write) and reports [`UiEvent::Copied`]; native
+    /// backends ignore it (the app copies when the click arrives).
+    SetCopyOnClick {
+        /// The node.
+        id: NodeId,
+        /// The text.
+        text: Option<String>,
+    },
 
     // --- App-defined attributes (#85) ---
     /// The node's app-defined attributes (`.attr(…)`), all of them: a name
@@ -539,6 +559,12 @@ pub enum UiEvent {
     Back(NodeId, usize),
     /// A stack was asked to show `path` (e.g. browser forward).
     Navigate(NodeId, String),
+    /// The browser went Back or Forward to a history entry of a stack
+    /// (#324): (stack, its depth when the entry was made, its path).
+    History(NodeId, usize, String),
+    /// The page wrote a node's `copy_on_click` text during its click (#323),
+    /// or failed to (web).
+    Copied(NodeId, Result<(), crate::DeviceError>),
     /// A toggle was flipped (0/1) or a tab selected (index).
     Change(NodeId, f64),
     /// A menu item was chosen (context menu, tray, app menu).
@@ -724,6 +750,8 @@ struct MNode {
     shown_selection: Option<SelectionEvent>,
     /// It reports its selection (`on_select`).
     select_events: bool,
+    /// A screen asks before the browser leaves it (`Patch::SetBackRequests`).
+    back_requests: bool,
     /// Other people's carets, as last sent (#240).
     remote_carets: Vec<crate::RemoteCaret>,
     /// Its `.id(…)`.
@@ -732,6 +760,8 @@ struct MNode {
     island: Option<MIsland>,
     /// Its `.link(…)` destination, as last sent (`Patch::SetLink`).
     link: Option<String>,
+    /// Its `copy_on_click` text, as last sent (`Patch::SetCopyOnClick`).
+    copy_on_click: Option<String>,
     /// Its own style animates changes (`.animate(…)`, `.transition(…)`;
     /// not an animated update's).
     animates: bool,
@@ -906,6 +936,7 @@ pub struct Reconciler {
     rich: IdMap<NodeId, RichState>,
     select: IdMap<NodeId, Handler<SelectionEvent>>,
     back: IdMap<NodeId, Handler<BackEvent>>,
+    copied: IdMap<NodeId, Handler<crate::CopiedEvent>>,
     navigate: IdMap<NodeId, Handler<NavigateEvent>>,
     change: IdMap<NodeId, Handler<ChangeEvent>>,
     scene_tap: IdMap<NodeId, Handler<crate::scene3d::SceneTapEvent>>,
@@ -1051,6 +1082,11 @@ impl Reconciler {
     /// The back handler of stack `id`, if any.
     pub fn back_handler(&self, id: NodeId) -> Option<Handler<BackEvent>> {
         self.back.get(&id).cloned()
+    }
+
+    /// The `on_copied` handler of node `id`, if any (#323).
+    pub fn copied_handler(&self, id: NodeId) -> Option<Handler<crate::CopiedEvent>> {
+        self.copied.get(&id).cloned()
     }
 
     /// The navigate handler of stack `id`, if any.
@@ -1833,6 +1869,13 @@ impl Reconciler {
                 });
                 m.link.clone_from(&vnode.link);
             }
+            if m.copy_on_click != vnode.copy_on_click {
+                self.patches.push(Patch::SetCopyOnClick {
+                    id,
+                    text: vnode.copy_on_click.clone(),
+                });
+                m.copy_on_click.clone_from(&vnode.copy_on_click);
+            }
         }
 
         // Ownership: which entity's root this node is.
@@ -1870,6 +1913,8 @@ impl Reconciler {
             link_root,
             context_menu,
             click_menu,
+            copy_on_click,
+            on_copied,
             on_scroll,
             on_swipe_left,
             on_swipe_right,
@@ -2136,6 +2181,31 @@ impl Reconciler {
             }
             None => on_click,
         };
+        // Copying on click (#323): the web page writes the text during the
+        // click and reports it (`UiEvent::Copied`); elsewhere the app copies
+        // it here, then runs `on_click`.
+        let on_click = match copy_on_click {
+            Some(text) => {
+                let copied = on_copied.clone();
+                let then = on_click;
+                let h: Handler<ClickEvent> =
+                    std::rc::Rc::new(move |e: &ClickEvent, app: &mut App| {
+                        if !app.platform().is_web() {
+                            let copied = copied.clone();
+                            app.copy_text_then(text.clone(), move |result, app| {
+                                if let Some(h) = copied {
+                                    h(&crate::CopiedEvent { result }, app);
+                                }
+                            });
+                        }
+                        if let Some(h) = &then {
+                            h(e, app);
+                        }
+                    });
+                Some(h)
+            }
+            None => on_click,
+        };
         let a11y = {
             let mut a = a11y;
             if a.label.is_none() {
@@ -2267,6 +2337,11 @@ impl Reconciler {
                     .push(Patch::SetSelectEvents { id, on: reports });
                 m.select_events = reports;
             }
+            let asks = kind == NodeKind::Screen && on_back.is_some();
+            if m.back_requests != asks {
+                self.patches.push(Patch::SetBackRequests { id, on: asks });
+                m.back_requests = asks;
+            }
         }
         match on_click {
             Some(h) => self.click.insert(id, h),
@@ -2287,6 +2362,10 @@ impl Reconciler {
         match on_back {
             Some(h) => self.back.insert(id, h),
             None => self.back.remove(&id),
+        };
+        match on_copied {
+            Some(h) => self.copied.insert(id, h),
+            None => self.copied.remove(&id),
         };
         match on_navigate {
             Some(h) => self.navigate.insert(id, h),
@@ -2787,9 +2866,11 @@ impl Reconciler {
                 shown_selection: None,
                 remote_carets: Vec::new(),
                 select_events: false,
+                back_requests: false,
                 name: None,
                 island: None,
                 link: None,
+                copy_on_click: None,
                 animates: false,
                 scene: None,
                 attributes: Vec::new(),
@@ -2830,6 +2911,7 @@ impl Reconciler {
         self.rich.remove(&id);
         self.select.remove(&id);
         self.back.remove(&id);
+        self.copied.remove(&id);
         self.navigate.remove(&id);
         self.change.remove(&id);
         self.scene_tap.remove(&id);

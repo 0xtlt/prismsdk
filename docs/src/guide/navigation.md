@@ -64,7 +64,21 @@ cx.navigate_root("/customers");                    // from code
 cx.stack_depth()                                   // screens in the stack: 1 afterwards
 ```
 
-Unlike `cx.reset(path)`, nothing is built underneath (no root screen: Back has nowhere to go, as on a tab's root), and in a tab bar app the other tabs keep their screens. When the stack already starts with `path`, that screen stays, state and all, and the screens over it are released. A sheet, if one is up, closes. On the web the link stays an `<a href>`, and the browser's history goes back to that entry.
+Unlike `cx.reset(path)`, nothing is built underneath (no root screen: Back has nowhere to go, as on a tab's root), and in a tab bar app the other tabs keep their screens. When the stack already starts with `path`, that screen stays, state and all, and the screens over it are released. A sheet, if one is up, closes. On the web the link stays an `<a href>`, and each page opened this way is an entry of the browser's history: Back and Forward go through the pages visited (#324).
+
+## The browser's history
+
+On the web each history entry remembers the path it shows and how deep the stack was (#324). Showing another screen adds an entry (a push, `navigate_root`, `reset`); `cx.replace` and `cx.replace_query` replace the current one; a tab switch updates it. `cx.back()` and the page's Back button return to the entry they came from, so Forward still works. The browser's Back and Forward open the entry's path: the stack pops to it while it is still there, otherwise it opens again at its depth (a root entry alone in its stack, a deeper one over the screens under it). A deep link is a single entry: Back from it leaves the site, as on any web page, while the page's own Back still shows the screen under it.
+
+A screen can ask before the browser leaves it, to keep unsaved changes:
+
+```rust
+screen("Edit").on_back_request(cx.listener(|this, e: &BackEvent, cx| {
+    if this.draft == this.saved { cx.back() } else { this.ask_discard = true; cx.notify() }
+}))
+```
+
+While it is set, the browser's Back and Forward (and the page's Back button) leave the screen and its entry in place and call the handler; `e.depth` is the depth the user asked for. The app asks the user, then goes with `cx.back()` or any navigation of its own. Web only: native Back gestures and buttons pop as before.
 
 ## Which screen is on top
 
@@ -127,7 +141,9 @@ window asks first; `cx.has_unsaved_changes()` reads it back.
 The question's texts are built in (`prism.unsaved_title`,
 `prism.unsaved_message`, `prism.discard`, `prism.cancel` to override them).
 Navigation inside the app (Back, a link to another screen) is the app's to
-guard: it knows what « leaving » means there.
+guard: it knows what « leaving » means there. On the web,
+[`on_back_request`](#the-browsers-history) lets a screen hear the
+browser's Back before it leaves.
 
 ## Query strings
 

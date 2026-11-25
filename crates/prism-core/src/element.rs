@@ -526,11 +526,17 @@ impl DismissReason {
     }
 }
 
-/// Reported by a stack when the host asks for a path (browser forward button).
+/// Reported by a stack when the host asks for a path: the browser's
+/// Forward button, or Back and Forward between history entries (#324).
 #[derive(Clone, Debug)]
 pub struct NavigateEvent {
     /// The requested path.
     pub path: String,
+    /// The browser's history entry for `path` was made with this many
+    /// screens on the stack (Back or Forward to it, #324): the screen is
+    /// shown at that depth, the stack popped to it when it is still there.
+    /// `None`: push `path`.
+    pub depth: Option<usize>,
 }
 
 /// Fired when a control's value changes: a toggle (0/1), a tab bar (index).
@@ -661,6 +667,11 @@ pub struct VNode {
     /// A menu opened below the element when it is clicked (#247), in
     /// place of `on_click`.
     pub click_menu: Option<crate::menu::Menu>,
+    /// Text put on the clipboard when the element is clicked (#323), on
+    /// the web by the page during the click.
+    pub copy_on_click: Option<String>,
+    /// Whether [`copy_on_click`](Self::copy_on_click) worked.
+    pub on_copied: Option<Handler<crate::CopiedEvent>>,
     /// Identity among siblings, so reordered children are moved rather than rebuilt.
     pub key: Option<String>,
     /// Child elements.
@@ -821,6 +832,8 @@ impl VNode {
             link_root: false,
             context_menu: None,
             click_menu: None,
+            copy_on_click: None,
+            on_copied: None,
             key: None,
             children: Vec::new(),
             on_click: None,
@@ -1266,6 +1279,30 @@ impl Text {
         self.0.link_root = true;
         self
     }
+
+    /// Puts `text` on the clipboard when the text is clicked or activated
+    /// (#323), before [`on_click`](Self::on_click) runs. On the web the page
+    /// writes it during the click itself, as browsers require (Safari
+    /// refuses a write that comes later, as `cx.copy_text` does from a
+    /// handler); elsewhere the app does. [`on_copied`](Self::on_copied)
+    /// says whether it worked.
+    ///
+    /// ```ignore
+    /// button("Copy link").copy_on_click(url).on_copied(cx.listener(|this, e: &CopiedEvent, _| {
+    ///     this.notice = if e.result.is_ok() { "Copied" } else { "Could not copy" };
+    /// }))
+    /// ```
+    pub fn copy_on_click(mut self, text: impl Into<String>) -> Self {
+        self.0.copy_on_click = Some(text.into());
+        self
+    }
+
+    /// Whether the text of [`copy_on_click`](Self::copy_on_click) reached
+    /// the clipboard (#323).
+    pub fn on_copied(mut self, handler: Handler<crate::CopiedEvent>) -> Self {
+        self.0.on_copied = Some(handler);
+        self
+    }
 }
 
 /// A native push button with a title.
@@ -1385,6 +1422,30 @@ impl Div {
         self.0.on_click = Some(handler);
         self
     }
+
+    /// Puts `text` on the clipboard when the container is clicked or activated
+    /// (#323), before [`on_click`](Self::on_click) runs. On the web the page
+    /// writes it during the click itself, as browsers require (Safari
+    /// refuses a write that comes later, as `cx.copy_text` does from a
+    /// handler); elsewhere the app does. [`on_copied`](Self::on_copied)
+    /// says whether it worked.
+    ///
+    /// ```ignore
+    /// button("Copy link").copy_on_click(url).on_copied(cx.listener(|this, e: &CopiedEvent, _| {
+    ///     this.notice = if e.result.is_ok() { "Copied" } else { "Could not copy" };
+    /// }))
+    /// ```
+    pub fn copy_on_click(mut self, text: impl Into<String>) -> Self {
+        self.0.copy_on_click = Some(text.into());
+        self
+    }
+
+    /// Whether the text of [`copy_on_click`](Self::copy_on_click) reached
+    /// the clipboard (#323).
+    pub fn on_copied(mut self, handler: Handler<crate::CopiedEvent>) -> Self {
+        self.0.on_copied = Some(handler);
+        self
+    }
 }
 
 impl Button {
@@ -1418,6 +1479,30 @@ impl Button {
     /// platform's own pop-up menu. See [`Div::on_click_menu`].
     pub fn on_click_menu(mut self, menu: crate::menu::Menu) -> Self {
         self.0.click_menu = Some(menu);
+        self
+    }
+
+    /// Puts `text` on the clipboard when the button is clicked or activated
+    /// (#323), before [`on_click`](Self::on_click) runs. On the web the page
+    /// writes it during the click itself, as browsers require (Safari
+    /// refuses a write that comes later, as `cx.copy_text` does from a
+    /// handler); elsewhere the app does. [`on_copied`](Self::on_copied)
+    /// says whether it worked.
+    ///
+    /// ```ignore
+    /// button("Copy link").copy_on_click(url).on_copied(cx.listener(|this, e: &CopiedEvent, _| {
+    ///     this.notice = if e.result.is_ok() { "Copied" } else { "Could not copy" };
+    /// }))
+    /// ```
+    pub fn copy_on_click(mut self, text: impl Into<String>) -> Self {
+        self.0.copy_on_click = Some(text.into());
+        self
+    }
+
+    /// Whether the text of [`copy_on_click`](Self::copy_on_click) reached
+    /// the clipboard (#323).
+    pub fn on_copied(mut self, handler: Handler<crate::CopiedEvent>) -> Self {
+        self.0.on_copied = Some(handler);
         self
     }
 }
@@ -2013,6 +2098,24 @@ impl Screen {
         self.0.value = Some(1.);
         self
     }
+
+    /// Makes leaving this screen with the browser's Back or Forward (and
+    /// the page's own Back button) ask the app first (#324): the screen
+    /// stays, its history entry too, and `handler` hears the request
+    /// ([`BackEvent::depth`]: the screens the user asked to keep). The app
+    /// asks the user (unsaved changes) and goes with
+    /// [`App::back`](crate::App::back) or any navigation of its own.
+    /// Web only: native Back gestures and buttons pop as before.
+    ///
+    /// ```ignore
+    /// screen("Edit").on_back_request(cx.listener(|this, _: &BackEvent, cx| {
+    ///     if this.dirty { this.confirm_leave = true; cx.notify() } else { cx.back() }
+    /// }))
+    /// ```
+    pub fn on_back_request(mut self, handler: Handler<BackEvent>) -> Self {
+        self.0.on_back = Some(handler);
+        self
+    }
 }
 
 /// A navigation stack. Prefer [`Router`](crate::Router), which manages one for you.
@@ -2328,9 +2431,25 @@ impl Stack {
     }
 
     fn set_flag(&mut self, flag: u32, on: bool) {
-        let bits = self.0.value.unwrap_or(0.) as u32;
-        let bits = if on { bits | flag } else { bits & !flag };
+        let bits = self.0.value.unwrap_or(0.) as u64;
+        let bits = if on {
+            bits | u64::from(flag)
+        } else {
+            bits & !u64::from(flag)
+        };
         self.0.value = Some(bits as f64);
+    }
+
+    /// How many times the router replaced the top screen's path in place
+    /// (`cx.replace`, `replace_query`), in the value's bits above the flags
+    /// ([`STACK_HISTORY_SHIFT`]): the web replaces the browser's history
+    /// entry for those path changes and adds one for the others (#324).
+    pub(crate) fn history_replaces(mut self, count: u64) -> Self {
+        let flags = self.0.value.unwrap_or(0.) as u64 & ((1 << STACK_HISTORY_SHIFT) - 1);
+        // Wrapping under 2^31: backends read the flags with `value as u32`.
+        let count = count & ((1 << (31 - STACK_HISTORY_SHIFT)) - 1);
+        self.0.value = Some((flags | (count << STACK_HISTORY_SHIFT)) as f64);
+        self
     }
 }
 
@@ -2339,6 +2458,9 @@ impl Stack {
 pub const STACK_CLOSABLE: u32 = 1;
 /// Bit 2 of a stack's value: no header bar ([`Stack::header`]).
 pub const STACK_NO_HEADER: u32 = 2;
+/// A stack's value above its flags (`value >> STACK_HISTORY_SHIFT`): how
+/// many times the router replaced its top screen's path in place (#324).
+pub const STACK_HISTORY_SHIFT: u32 = 8;
 
 /// A picture's [`object_position`](Picture::object_position) from its
 /// config (#218): `(x, y)` in fractions, the center when unset.
