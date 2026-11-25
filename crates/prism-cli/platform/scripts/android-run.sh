@@ -245,16 +245,10 @@ fi
 if [[ ${#ROOTS[@]} -gt 0 ]]; then
   CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/prism/maven"
   mkdir -p "$OUT/libres"
-  while IFS=$'\t' read -r kind a b; do
-    case $kind in
-      jar) LIB_JARS="$LIB_JARS:$a" ;;
-      res)
-        zip="$OUT/libres/${b//./_}.zip"
-        "$BUILD_TOOLS/aapt2" compile --dir "$a" -o "$zip"
-        LIB_RES+=(-R "$zip") LIB_PKGS="${LIB_PKGS:+$LIB_PKGS:}$b" ;;
-      aar) MERGE_DIRS+=("$a") ;;
-    esac
-  done < <(python3 "$(dirname "$0")/android-deps.py" "$CACHE" "${ROOTS[@]}" | python3 -c '
+  # Through files, not a pipe into `< <(…)`: a failed fetch stops the build
+  # here (process substitution drops its status).
+  python3 "$(dirname "$0")/android-deps.py" "$CACHE" "${ROOTS[@]}" > "$OUT/libs.json"
+  python3 -c '
 import json, os, sys
 for e in json.load(sys.stdin):
     for j in e["jars"]:
@@ -269,7 +263,17 @@ for e in json.load(sys.stdin):
                                        "com.android.billingclient:", "androidx.core:core:")) and e["jars"]:
         first = e["jars"][0]
         print("aar\t" + os.path.dirname(first) + "\t")
-')
+' < "$OUT/libs.json" > "$OUT/libs.tsv"
+  while IFS=$'\t' read -r kind a b; do
+    case $kind in
+      jar) LIB_JARS="$LIB_JARS:$a" ;;
+      res)
+        zip="$OUT/libres/${b//./_}.zip"
+        "$BUILD_TOOLS/aapt2" compile --dir "$a" -o "$zip"
+        LIB_RES+=(-R "$zip") LIB_PKGS="${LIB_PKGS:+$LIB_PKGS:}$b" ;;
+      aar) MERGE_DIRS+=("$a") ;;
+    esac
+  done < "$OUT/libs.tsv"
 fi
 # google-services.json → the resources Firebase reads at startup (what the
 # google-services Gradle plugin generates).

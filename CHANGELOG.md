@@ -64,6 +64,11 @@ bumps the minor version). Every crate of the workspace shares one version.
 - Web: an element with a transition (`.spring()`, `with_animation`) that
   moves among its siblings slides to its new place (FLIP), as natively
   (#319).
+- Android: a Maven repository that answers an error (429, 5xx) or doesn't
+  answer is asked again (as Retry-After says, else after 1, 3 and 9 s),
+  then stops the build with that error. It used to count as not having the
+  file, and the build went on to fail in `javac` on the car library's
+  classes.
 
 ## 0.3.0 (2026-11-25)
 

@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -132,19 +133,65 @@ def fetch(path):
     return data
 
 
+# Waits before each new try of a request the server failed or that did not
+# reach it (Maven Central answers 429 and 5xx under load), unless the answer
+# says how long (Retry-After).
+RETRY_DELAYS = (1, 3, 9)
+
+
 def download(url):
-    """The body of `url`, or None on 404. Python's TLS setup may lack the system
-    certificates: curl then does it."""
-    try:
-        with urllib.request.urlopen(url, timeout=60) as r:
-            return r.read()
-    except urllib.error.HTTPError:
-        return None
-    except Exception:
-        if not url.startswith("https:"):
+    """The body of `url`, or None when the repository doesn't have it (404,
+    410). Any other answer or a network error says nothing about the file: it
+    is tried again, then stops the build. Python's TLS setup may lack the
+    system certificates: curl then does it."""
+    if not url.startswith(("http:", "https:")):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r:
+                return r.read()
+        except OSError:
             return None  # a local mirror (file:) without the file
-        r = subprocess.run(["curl", "-fsSL", "--max-time", "120", url], capture_output=True)
-        return r.stdout if r.returncode == 0 else None
+    for n in range(1 + len(RETRY_DELAYS)):
+        wait = None
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code in (404, 410):
+                return None
+            error, wait = f"HTTP {e.code}", retry_after(e.headers.get("Retry-After"))
+        except Exception as e:
+            got = curl(url)
+            if got is None:
+                error = str(getattr(e, "reason", e))
+            elif got[0] == 200:
+                return got[1]
+            elif got[0] in (404, 410):
+                return None
+            else:
+                error = f"HTTP {got[0]}"
+        if n < len(RETRY_DELAYS):
+            time.sleep(RETRY_DELAYS[n] if wait is None else wait)
+    fail(f"{url}: {error} ({1 + len(RETRY_DELAYS)} tries)")
+
+
+def retry_after(value):
+    """The seconds a Retry-After header asks to wait (at most 30), or None."""
+    value = (value or "").strip()
+    return min(int(value), 30) if value.isdigit() else None
+
+
+def curl(url):
+    """(status, body) of `url` through curl, or None when curl got no answer."""
+    with tempfile.NamedTemporaryFile() as body:
+        r = subprocess.run(
+            ["curl", "-sSL", "--max-time", "120", "-o", body.name, "-w", "%{http_code}", url],
+            capture_output=True,
+            text=True,
+        )
+        status = r.stdout.strip()
+        if r.returncode != 0 or not status.isdigit() or status == "000":
+            return None
+        return int(status), open(body.name, "rb").read()
 
 
 def key(v):
