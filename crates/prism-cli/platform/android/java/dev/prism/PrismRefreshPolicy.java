@@ -9,6 +9,8 @@ package dev.prism;
 final class PrismRefreshPolicy {
     /** The shortest time between two refreshes of a widget (ms): a tighter policy would loop. */
     static final long MIN_REFRESH = 60_000;
+    /** The longest delay taken as one (ms): a year; longer is never. */
+    static final long MAX_REFRESH = 365L * 24 * 60 * 60 * 1000;
 
     private PrismRefreshPolicy() {}
 
@@ -23,7 +25,11 @@ final class PrismRefreshPolicy {
         if (!refresh) return 0;
         if (reload instanceof Number) {
             double ms = ((Number) reload).doubleValue() * 1000;
-            return now + Math.max(MIN_REFRESH, Double.isNaN(ms) ? 0 : Math.round(ms));
+            if (Double.isNaN(ms)) ms = 0;
+            // Past a year (`reload_after(Duration::MAX)`): never, rather
+            // than a sum that overflows into the past and fires at once.
+            if (ms > MAX_REFRESH) return 0;
+            return now + Math.max(MIN_REFRESH, Math.round(ms));
         }
         if ("end".equals(reload)) {
             // When the drawings ahead run out; never without any.

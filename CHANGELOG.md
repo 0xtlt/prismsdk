@@ -143,6 +143,9 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ### Fixed
 
+- `FileStorage`: two keys that differ only after their last dot (`board.today`,
+  `board.tomorrow`) no longer share one temp file, and each write has its
+  own, so the app and its widget extension (#331) can write at once.
 - iOS, tvOS, visionOS: a diagonal linear gradient in a box that is not
   square follows CSS's angle, as on macOS (#330): `CAGradientLayer` spaces
   colors in unit coordinates, so the CSS line is converted rather than

@@ -344,7 +344,7 @@ python3 "$(dirname "$0")/apple-privacy.py" manifest macos 0 "${PRIVACY_BUNDLES[@
 # the app id their profile grants.
 [[ "$DIST" == appstore ]] && security cms -D -i "$PROFILE" > "$GEN/profile.plist"
 [[ "$DIST" == appstore && $WIDGETS == 1 ]] && security cms -D -i "$WIDGETS_PROFILE" > "$GEN/widgets.profile.plist"
-DIST="$DIST" GROUP="$GROUP" GEN="$GEN" ICLOUD="${PRISM_ICLOUD:-}" PUSH_ENV="${PUSH_ENT:+$PRISM_PUSH}" WIDGETS="$WIDGETS" python3 <<'PY'
+DIST="$DIST" GROUP="$GROUP" GEN="$GEN" ICLOUD="${PRISM_ICLOUD:-}" PUSH_ENV="${PUSH_ENT:+$PRISM_PUSH}" WIDGETS="$WIDGETS" RUST_EXTENSION="$RUST_EXTENSION" python3 <<'PY'
 import os, plistlib
 dist, group, gen = os.environ["DIST"], os.environ["GROUP"], os.environ["GEN"]
 by_permission = {
@@ -371,6 +371,10 @@ def granted(p, e):
 widgets = os.environ["WIDGETS"] == "1"
 app = {"com.apple.security.application-groups": [group]} if widgets else {}
 appex = {"com.apple.security.app-sandbox": True, "com.apple.security.application-groups": [group]}
+# Refresh hooks (`Widget::refresh`, #331) fetch from the sandboxed
+# extension: it needs outgoing connections.
+if os.environ.get("RUST_EXTENSION") == "1":
+    appex["com.apple.security.network.client"] = True
 if dist:
     for name in asked:
         for key in by_permission.get(name, []):

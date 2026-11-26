@@ -89,6 +89,10 @@ const CASES: &[(bool, &str, &str, i64)] = &[
     (true, "null", "nan", 0),
     // No hook: the alarm only redraws.
     (false, "n:900", "nan", 0),
+    // Past a year (`reload_after(Duration::MAX)`): never, not an overflow
+    // into the past that fires at once and loops.
+    (true, "n:18446744073709551615", "nan", 0),
+    (true, "n:31536001", "nan", 0),
 ];
 
 #[test]
@@ -143,6 +147,11 @@ fn android_refresh_plumbing() {
         .unwrap();
     assert!(next < run, "the next try is set before the hook runs");
     assert!(receiver.contains("running.put(task, goAsync());"));
+    // A widget removed from every home screen stops refreshing, also when
+    // its last hook failed (no new drawing to cancel the alarm).
+    let gone = receiver.find("stopRefreshing(c, kind);").unwrap();
+    assert!(gone < next, "a removed widget is not re-armed");
+    assert!(java.contains("public void onDisabled(Context c)"));
     assert!(java.contains("prefs.putLong(name + REFRESH_AT, refreshAt(snap, now));"));
     let host =
         std::fs::read_to_string(platform().join("android/java/dev/prism/PrismHost.java")).unwrap();

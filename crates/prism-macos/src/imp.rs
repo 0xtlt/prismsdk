@@ -6831,8 +6831,12 @@ fn group_data_dir() -> Option<std::path::PathBuf> {
 /// `shared` may exist already: the widget extension can run after an
 /// update before the app does, and write there first (its widget-link key,
 /// what a refresh hook stored). The app's entries win over the extension's
-/// (they are what the user had), the extension's other entries stay.
-/// False when nothing could be moved (`shared` is on another volume…).
+/// (they are what the user had), except the widget-link folder: the
+/// extension signs its drawings with the key it made and keeps it while it
+/// runs, and the app redraws every widget with that key at launch, so the
+/// app's old key goes. The extension's other entries stay. An entry that
+/// can't be moved stays in `own`, tried again at the next launch. False
+/// when nothing could be moved (`shared` is on another volume…).
 fn move_data(own: &std::path::Path, shared: &std::path::Path) -> bool {
     if !shared.exists() {
         if let Some(parent) = shared.parent() {
@@ -6843,17 +6847,32 @@ fn move_data(own: &std::path::Path, shared: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(own) else {
         return false;
     };
+    let (mut moved, mut left) = (0, 0);
     for entry in entries.flatten() {
-        let to = shared.join(entry.file_name());
-        if to.is_dir() && !to.is_symlink() {
-            let _ = std::fs::remove_dir_all(&to);
+        let name = entry.file_name();
+        let to = shared.join(&name);
+        let exists = to.symlink_metadata().is_ok();
+        if exists && name == crate::widget_key::DIR {
+            let _ = std::fs::remove_dir_all(entry.path());
+            continue;
         }
-        if std::fs::rename(entry.path(), &to).is_err() {
-            return false;
+        if exists {
+            if to.is_dir() && !to.is_symlink() {
+                let _ = std::fs::remove_dir_all(&to);
+            } else {
+                let _ = std::fs::remove_file(&to);
+            }
+        }
+        if std::fs::rename(entry.path(), &to).is_ok() {
+            moved += 1;
+        } else {
+            left += 1;
         }
     }
-    let _ = std::fs::remove_dir(own);
-    true
+    if left == 0 {
+        let _ = std::fs::remove_dir(own);
+    }
+    moved > 0 || left == 0
 }
 
 /// The app's own data directory, in Application Support.
@@ -7336,8 +7355,8 @@ mod data_dir_tests {
     }
 
     /// #331: the widget extension ran first after an update and wrote to
-    /// the group: the app's data still moves, its entries win, and the
-    /// extension's others stay.
+    /// the group: the app's data still moves, its entries win (but for the
+    /// widget-link key), and the extension's others stay.
     #[test]
     fn the_apps_data_moves_after_the_extension_wrote_first() {
         let root = TempDir::new("data-merge");
@@ -7351,13 +7370,29 @@ mod data_dir_tests {
         assert!(move_data(&own, &shared));
         assert!(!own.exists());
         assert_eq!(fs::read_to_string(shared.join("notes")).unwrap(), "mine");
+        // The extension's key stays: it signed the links it drew with it.
         assert_eq!(
             fs::read_to_string(shared.join("widget-links/widget-link-key")).unwrap(),
-            "old key"
+            "new key"
         );
         assert_eq!(
             fs::read_to_string(shared.join("departures")).unwrap(),
             "fetched"
         );
+    }
+
+    /// #331: a folder of the app where the group has a file of that name
+    /// still moves (the app's entry wins).
+    #[test]
+    fn a_folder_replaces_a_file_of_the_same_name() {
+        let root = TempDir::new("data-kind");
+        let (own, shared) = (root.join("own"), root.join("group/prism-data"));
+        fs::create_dir_all(own.join("cache")).unwrap();
+        fs::write(own.join("cache/a"), "mine").unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("cache"), "a file").unwrap();
+        assert!(move_data(&own, &shared));
+        assert!(!own.exists());
+        assert_eq!(fs::read_to_string(shared.join("cache/a")).unwrap(), "mine");
     }
 }

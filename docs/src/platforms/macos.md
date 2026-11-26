@@ -50,7 +50,9 @@ registers a widget. An app with widgets keeps its data in the App Group
 `~/Library/Application Support/<bundle id>` on the first run), so that a
 widget's refresh hook, which runs in the sandboxed extension, shares it
 ([Refreshing a widget without the app](../guide/system-surfaces.md#refreshing-a-widget-without-the-app)):
-the extension's executable is then a copy of the app's binary.
+the extension's executable is then a copy of the app's binary, and its
+sandbox allows outgoing connections (`com.apple.security.network.client`)
+so the hook can fetch.
 
 Development hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SCROLL=600 PRISM_DELAY=2
 PRISM_SNAPSHOT=out.png cargo run -p counter` ([Development](../development.md)).

@@ -90,11 +90,22 @@ impl Storage for FileStorage {
 
     fn set(&mut self, key: &str, value: &str) {
         let path = self.path(key);
-        let tmp = path.with_extension("tmp~");
+        // A temp file of this write alone: the app and its widget extension
+        // (#331) can write one key at once, and `with_extension` would give
+        // `a.b` and `a.c` the same one.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(format!(
+            ".{}-{}.tmp~",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let tmp = PathBuf::from(tmp);
         if std::fs::write(&tmp, value)
             .and_then(|_| std::fs::rename(&tmp, &path))
             .is_err()
         {
+            let _ = std::fs::remove_file(&tmp);
             eprintln!("prism: could not persist {key:?} in {}", self.dir.display());
         }
     }

@@ -109,6 +109,20 @@ public class PrismWidget extends AppWidgetProvider {
         return PrismRefreshPolicy.refreshAt(snap.optBoolean("refresh"), snap.opt("reload"), lastAhead, now);
     }
 
+    /** The last instance of this widget was removed: its refresh alarm goes. */
+    @Override
+    public void onDisabled(Context c) {
+        super.onDisabled(c);
+        JSONObject snap = saved(c);
+        if (snap != null && snap.optBoolean("refresh")) stopRefreshing(c, snap.optString("kind"));
+    }
+
+    /** Widget `kind` is on no home screen: cancels its refresh alarm. */
+    static void stopRefreshing(Context c, String kind) {
+        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(className(kind) + REFRESH_AT).apply();
+        scheduleRefresh(c, kind, 0);
+    }
+
     /** Runs widget `kind`'s refresh hook at `at` (ms; inexact, like the drawing alarm), or never (0). */
     static void scheduleRefresh(Context c, String kind, long at) {
         AlarmManager alarms = c.getSystemService(AlarmManager.class);
@@ -358,6 +372,11 @@ public class PrismWidget extends AppWidgetProvider {
             // again, which sets it anew).
             String name = className(kind);
             SharedPreferences prefs = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            // Removed from every home screen: no more refreshes.
+            if (AppWidgetManager.getInstance(c).getAppWidgetIds(new ComponentName(c, name)).length == 0) {
+                stopRefreshing(c, kind);
+                return;
+            }
             JSONObject snap = null;
             try {
                 String json = prefs.getString(name, null);
