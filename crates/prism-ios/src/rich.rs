@@ -84,6 +84,15 @@ pub fn setup(tv: &UITextView) {
     tap.setDelaysTouchesEnded(false);
     tap.setDelegate(Some(ProtocolObject::from_ref(&*taps)));
     tv.addGestureRecognizer(&tap);
+    // Chips' tool tips (#329), where UIKit shows them (a pointer or gaze
+    // hover: iPad with a pointer, visionOS, Mac Catalyst).
+    if let Some(cls) = objc2::runtime::AnyClass::get(c"UIToolTipInteraction") {
+        unsafe {
+            let tips: Retained<AnyObject> = msg_send![msg_send![cls, alloc], init];
+            let _: () = msg_send![&*tips, setDelegate: target];
+            let _: () = msg_send![tv, addInteraction: &*tips];
+        }
+    }
 }
 
 pub fn forget(id: NodeId) {
@@ -279,8 +288,12 @@ fn piece(
                 }
             }
         };
-        let boxed = run.chip.is_some();
-        let (image, bounds) = chip_image(label, icon, &s.font, &font, &color, &bg, boxed, traits);
+        let (image, bounds) = if run.chip.is_some() {
+            let text = s.color.unwrap_or_else(prism_native::label_color);
+            styled_chip_image(run, &s.font, &font, &color, text, &bg, traits)
+        } else {
+            chip_image(label, icon, &s.font, &font, &color, &bg, false, traits)
+        };
         let a = NSTextAttachment::new();
         a.setImage(Some(&image));
         a.setBounds(bounds);
@@ -294,9 +307,25 @@ fn piece(
         ]
     };
     let mut values: Vec<&AnyObject> = vec![&font, &color, &paragraph];
+    // A chip's state and test id (#329), where an in-process test reads
+    // the text's attributes.
+    let state = run.chip_state.as_deref().map(NSString::from_str);
+    let test_id = run.chip_test_id.as_deref().map(NSString::from_str);
+    let (state_key, test_key) = (
+        NSString::from_str(CHIP_STATE_KEY),
+        NSString::from_str(CHIP_TEST_ID_KEY),
+    );
     if let Some(a) = &attachment {
         keys.push(unsafe { NSAttachmentAttributeName });
         values.push(a);
+        if let Some(v) = &state {
+            keys.push(&state_key);
+            values.push(v);
+        }
+        if let Some(v) = &test_id {
+            keys.push(&test_key);
+            values.push(v);
+        }
         return (
             OBJECT_CHAR.to_string(),
             NSDictionary::from_slices(&keys, &values),
@@ -327,6 +356,176 @@ fn piece(
         values.push(&one);
     }
     (s.text.clone(), NSDictionary::from_slices(&keys, &values))
+}
+
+/// The attribute naming a chip's state on its character (#329).
+pub(crate) const CHIP_STATE_KEY: &str = "PrismChipState";
+/// The attribute naming a chip's test id on its character (#329).
+pub(crate) const CHIP_TEST_ID_KEY: &str = "PrismChipTestID";
+
+/// A chip's label as an attributed string (#329): its runs, each in the
+/// chip's font with its own weight and italic, in its color or the
+/// chip's, cut at the end with an ellipsis when drawn narrower.
+fn label_string(
+    run: &TextRun,
+    spec: &FontSpec,
+    color: &UIColor,
+    traits: &UITraitCollection,
+) -> Retained<NSMutableAttributedString> {
+    use objc2_ui_kit::{
+        NSFontAttributeName, NSForegroundColorAttributeName, NSParagraphStyleAttributeName,
+    };
+    let out = NSMutableAttributedString::new();
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setLineBreakMode(objc2_ui_kit::NSLineBreakMode::ByTruncatingTail);
+    for l in run.label_runs() {
+        let font = crate::label::ui_font(&FontSpec {
+            weight: l.weight.unwrap_or(spec.weight),
+            italic: l.italic || spec.italic,
+            ..spec.clone()
+        });
+        let ink = l
+            .color
+            .map(ui_color)
+            .unwrap_or_else(|| color.retain())
+            .resolvedColorWithTraitCollection(traits);
+        let (f, c, p): (&AnyObject, &AnyObject, &AnyObject) = (&font, &ink, &paragraph);
+        let attrs = unsafe {
+            NSDictionary::from_slices(
+                &[
+                    NSFontAttributeName,
+                    NSForegroundColorAttributeName,
+                    NSParagraphStyleAttributeName,
+                ],
+                &[f, c, p],
+            )
+        };
+        let piece = unsafe {
+            NSAttributedString::initWithString_attributes(
+                NSAttributedString::alloc(),
+                &NSString::from_str(&l.text),
+                Some(&attrs),
+            )
+        };
+        out.appendAttributedString(&piece);
+    }
+    out
+}
+
+/// A chip as an image (#115, #329): its box (background, radius, ring,
+/// height, largest width), its icon (a symbol or a drawing) and its label
+/// runs, cut with an ellipsis; on the baseline like the text around it,
+/// centered on it when taller; in the colors of appearance `traits`
+/// (drawn again when it changes). Its test id is the image's
+/// accessibility identifier.
+fn styled_chip_image(
+    run: &TextRun,
+    spec: &FontSpec,
+    font: &UIFont,
+    color: &UIColor,
+    text_color: prism_core::Color,
+    bg: &UIColor,
+    traits: &UITraitCollection,
+) -> (Retained<UIImage>, CGRect) {
+    use objc2_ui_kit::NSAttributedStringNSStringDrawing;
+    let color = color.resolvedColorWithTraitCollection(traits);
+    let bg = bg.resolvedColorWithTraitCollection(traits);
+    let label = label_string(run, spec, &color, traits);
+    let text = label.size();
+    let em = unsafe { font.pointSize() };
+    let descender = unsafe { font.descender() };
+    let text_h = (unsafe { font.ascender() } - descender).ceil();
+    let b = prism_native::chips::chip_box(run, em as f32, text_h as f32, text.width as f32);
+    let symbol = run
+        .chip_icon
+        .as_deref()
+        .filter(|_| run.chip_drawing.is_none())
+        .and_then(|name| crate::label::symbol(name, spec, &color));
+    let size = CGSize::new(b.width as f64, b.height as f64);
+    let mut paths = prism_native::chips::icon_paths(run, b.icon_w, b.icon_h, text_color);
+    prism_native::chips::offset(&mut paths, b.pad, ((b.height - b.icon_h) / 2.).max(0.));
+    let ring = run.chip_ring.map(|(w, c)| {
+        (
+            w as f64,
+            ui_color(c).resolvedColorWithTraitCollection(traits),
+        )
+    });
+    let dark = unsafe { traits.userInterfaceStyle() } == objc2_ui_kit::UIUserInterfaceStyle::Dark;
+    let paths: Vec<prism_core::Path> = paths
+        .into_iter()
+        .map(|mut p| {
+            // The appearance's variant: drawn outside of a view.
+            let pick = |c: prism_core::Color| {
+                if dark {
+                    c.dark_variant()
+                } else {
+                    c.light_variant()
+                }
+            };
+            p.fill = p.fill.map(pick);
+            p.stroke = p.stroke.map(pick);
+            p
+        })
+        .collect();
+    let draw = block2::RcBlock::new(move |_context: *mut AnyObject| {
+        let r = b.radius as f64;
+        bg.setFill();
+        UIBezierPath::bezierPathWithRoundedRect_cornerRadius(CGRect::new(CGPoint::ZERO, size), r)
+            .fill();
+        if let Some((w, c)) = &ring {
+            let path = UIBezierPath::bezierPathWithRoundedRect_cornerRadius(
+                CGRect::new(
+                    CGPoint::new(w / 2., w / 2.),
+                    CGSize::new(size.width - w, size.height - w),
+                ),
+                (r - w / 2.).max(0.),
+            );
+            path.setLineWidth(*w);
+            c.setStroke();
+            path.stroke();
+        }
+        let mut x = b.pad as f64;
+        if let Some(img) = &symbol {
+            let isz = unsafe { img.size() };
+            let side = b.icon_h as f64;
+            let w = if isz.height > 0. {
+                isz.width * side / isz.height
+            } else {
+                side
+            };
+            img.drawInRect(CGRect::new(
+                CGPoint::new(x + (b.icon_w as f64 - w) / 2., (size.height - side) / 2.),
+                CGSize::new(w, side),
+            ));
+        } else {
+            crate::imp::draw_paths(&paths);
+        }
+        if b.icon_w > 0. {
+            x += (b.icon_w + b.gap) as f64;
+        }
+        let y = (size.height - text.height) / 2.;
+        label.drawInRect(CGRect::new(
+            CGPoint::new(x, y),
+            CGSize::new(b.label_w as f64 + 0.5, text.height),
+        ));
+    });
+    let image: Retained<UIImage> = unsafe {
+        let renderer: Retained<AnyObject> = msg_send![
+            msg_send![class!(UIGraphicsImageRenderer), alloc],
+            initWithSize: size
+        ];
+        msg_send![&*renderer, imageWithActions: &*draw]
+    };
+    unsafe {
+        let label = NSString::from_str(run.chip_label.as_deref().unwrap_or(""));
+        let _: () = msg_send![&*image, setAccessibilityLabel: &*label];
+        if let Some(id) = &run.chip_test_id {
+            let id = NSString::from_str(id);
+            let _: () = msg_send![&*image, setAccessibilityIdentifier: &*id];
+        }
+    }
+    let below = descender - (b.height as f64 - text_h) / 2.;
+    (image, CGRect::new(CGPoint::new(0., below), size))
 }
 
 /// A chip as an image: a rounded box (when `boxed`) with its symbol and
@@ -524,6 +723,50 @@ fn tapped_link(tv: &UITextView, point: CGPoint) -> Option<u64> {
         .and_then(|r| r.link)
 }
 
+/// The chip (or icon) drawn under `point` of `tv` and its rectangle in
+/// `tv` (#329: its tool tip).
+fn object_at(tv: &UITextView, point: CGPoint) -> Option<(TextRun, CGRect)> {
+    let runs = shown_runs(tv.tag() as NodeId, tv)?;
+    let inset = tv.textContainerInset();
+    let p = CGPoint::new(point.x - inset.left, point.y - inset.top);
+    let layout = tv.layoutManager();
+    let container = tv.textContainer();
+    let glyph = unsafe {
+        layout.glyphIndexForPoint_inTextContainer_fractionOfDistanceThroughGlyph(
+            p,
+            &container,
+            std::ptr::null_mut(),
+        )
+    };
+    let rect = layout.boundingRectForGlyphRange_inTextContainer(NSRange::new(glyph, 1), &container);
+    let inside = p.x >= rect.origin.x
+        && p.x <= rect.origin.x + rect.size.width
+        && p.y >= rect.origin.y
+        && p.y <= rect.origin.y + rect.size.height;
+    if !inside {
+        return None;
+    }
+    let index = layout.characterIndexForGlyphAtIndex(glyph);
+    let run = chip_at(&runs, index).filter(|r| r.is_object())?.clone();
+    let at = CGRect::new(
+        CGPoint::new(rect.origin.x + inset.left, rect.origin.y + inset.top),
+        rect.size,
+    );
+    Some((run, at))
+}
+
+/// The tool tip configuration of the chip under `point` of the text view
+/// of tool tip `interaction` (#329).
+fn tool_tip_at(interaction: &AnyObject, point: CGPoint) -> Option<Retained<AnyObject>> {
+    let view: Option<Retained<objc2_ui_kit::UIView>> = unsafe { msg_send![interaction, view] };
+    let view = view?;
+    let tv = view.downcast_ref::<UITextView>()?;
+    let (run, rect) = object_at(tv, point)?;
+    let tip = NSString::from_str(run.tooltip.as_deref()?);
+    let cls = objc2::runtime::AnyClass::get(c"UIToolTipConfiguration")?;
+    unsafe { msg_send![cls, configurationWithToolTip: &*tip, inRect: rect] }
+}
+
 define_class!(
     /// Taps on chips: the recognizers' target, recognizing with the text
     /// view's own (the caret still moves).
@@ -552,6 +795,13 @@ define_class!(
             if let Some(link) = tapped_link(tv, point) {
                 crate::imp::dispatch(UiEvent::MenuSelect(link));
             }
+        }
+
+        /// `UIToolTipInteractionDelegate`: the tool tip of the chip under
+        /// the pointer (#329), over the chip.
+        #[unsafe(method_id(toolTipInteraction:configurationAtPoint:))]
+        fn tool_tip(&self, interaction: &AnyObject, point: CGPoint) -> Option<Retained<AnyObject>> {
+            tool_tip_at(interaction, point)
         }
     }
 );

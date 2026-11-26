@@ -101,7 +101,7 @@ pub(crate) fn dark() -> bool {
 }
 
 /// Fills, then strokes, each path with cairo.
-fn draw_paths(cr: &gtk::cairo::Context, paths: &[prism_core::Path]) {
+pub(crate) fn draw_paths(cr: &gtk::cairo::Context, paths: &[prism_core::Path]) {
     use prism_core::Segment as S;
     let dark = SHAPE_DARK.with(|d| d.get());
     let source = |c: Color| {

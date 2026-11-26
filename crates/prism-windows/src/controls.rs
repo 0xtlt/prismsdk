@@ -152,26 +152,16 @@ pub fn is_field(k: NodeKind) -> bool {
 /// A rich input's runs as its measure lays them out: its bold or larger
 /// words, and each chip (one character in the field) as wide as its
 /// picture (`chips.rs`): its label, 0.35 em of padding on each side and,
-/// with a symbol, the symbol (1 em) and a 0.25 em gap. Em and en spaces
-/// stand for those, joined to the label so they never break from it.
+/// with a symbol, the symbol (1 em) and a 0.25 em gap, cut at its largest
+/// width: prism-native's `chips::stand_in`.
 fn rich_label(runs: &str, s: &Style) -> StyledText {
-    const JOIN: char = '\u{2060}';
     let mut runs = prism_core::decode_runs(runs);
     for r in &mut runs {
         if r.chip.is_none() {
             continue;
         }
-        let label = r
-            .chip_label
-            .as_deref()
-            .unwrap_or_default()
-            .replace(' ', "\u{a0}");
-        let room = if r.chip_icon.is_some() {
-            format!("\u{2003}{JOIN}\u{2003}")
-        } else {
-            format!("\u{2002}{JOIN}\u{2009}")
-        };
-        r.text = format!("{JOIN}{room}{JOIN}{label}{JOIN}");
+        let em = (r.size.unwrap_or(1.) * s.font_size).max(1.);
+        r.text = prism_native::chips::stand_in(r, em);
         r.icon = None;
     }
     let text: String = runs.iter().map(|r| r.text.as_str()).collect();
@@ -965,6 +955,15 @@ pub fn measure(
                     lh
                 } else {
                     m.measure(&st, w).1
+                };
+                // Chips taller than a line (#329) make their lines taller.
+                let text_h = match rich {
+                    Some(runs) if k == NodeKind::RichInput => {
+                        let runs = prism_core::decode_runs(runs);
+                        let lines = (text_h / lh).round();
+                        text_h + prism_native::chips::extra_height(&runs, lh, lines)
+                    }
+                    _ => text_h,
                 };
                 text_h.max(lh * rows)
             };
