@@ -1,6 +1,25 @@
 /* Prism's base styles (served as /_prism/prism.<hash>.css). */
 :root { color-scheme: light dark; }
 [dir="rtl"] { --prism-dir: -1; }
+/* Animatable gradients (#330, `css::gradient_css`): the angle and stops of a
+   gradient on a node with a transition, interpolated by `transition: all`. */
+@property --prism-ga { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+@property --prism-gc0 { syntax: "<color>"; inherits: false; initial-value: transparent; }
+@property --prism-gp0 { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@property --prism-gc1 { syntax: "<color>"; inherits: false; initial-value: transparent; }
+@property --prism-gp1 { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@property --prism-gc2 { syntax: "<color>"; inherits: false; initial-value: transparent; }
+@property --prism-gp2 { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@property --prism-gc3 { syntax: "<color>"; inherits: false; initial-value: transparent; }
+@property --prism-gp3 { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@property --prism-gc4 { syntax: "<color>"; inherits: false; initial-value: transparent; }
+@property --prism-gp4 { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@property --prism-gc5 { syntax: "<color>"; inherits: false; initial-value: transparent; }
+@property --prism-gp5 { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@property --prism-gc6 { syntax: "<color>"; inherits: false; initial-value: transparent; }
+@property --prism-gp6 { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@property --prism-gc7 { syntax: "<color>"; inherits: false; initial-value: transparent; }
+@property --prism-gp7 { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
 html, body { margin: 0; height: 100%; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 1rem; background: Canvas; color: CanvasText; }
 #prism-root { display: flex; flex-direction: column; min-height: 100%; }

@@ -1,5 +1,6 @@
 //! The Decorations card of the Components tab: shadows (drop, inset,
-//! stacked), dashed and per-side borders, gradients, clipping to rounded
+//! stacked), dashed and per-side borders, gradients (a scrolling list fading
+//! out at its end, its fill swapped at run time), clipping to rounded
 //! corners (all, or only some), a frosted (backdrop-blurred) bar, colors relative to the text
 //! color, and interaction states (hover, press, focus within, groups).
 
@@ -12,6 +13,9 @@ use crate::strings;
 pub struct Decor {
     query: String,
     pressed: u32,
+    /// The list's fade: 0 the card's color, 1 the accent (both gradients,
+    /// so the change animates), 2 a solid tint.
+    fade: u8,
 }
 
 impl Render for Decor {
@@ -45,6 +49,34 @@ impl Render for Decor {
                 .child(text("›").text_color(t.muted))
         });
         let stripes = [0xFF453A, 0xFF9F0A, 0xFFD60A, 0x30D158, 0x0A84FF, 0xBF5AF2];
+        // #330: the end of a scrolling list fades into the card, a smooth
+        // linear gradient (top to bottom: 180°) instead of stacked strips.
+        let fade = div()
+            .absolute()
+            .left(0.)
+            .right(0.)
+            .bottom(0.)
+            .h(64.)
+            .hit_test(false)
+            .transition(Transition::ease(400));
+        let fade = match self.fade {
+            0 => fade.bg_linear_gradient(180., [(t.surface.with_alpha(0.), 0.), (t.surface, 0.85)]),
+            1 => fade.bg_linear_gradient(
+                180.,
+                [
+                    (t.accent.with_alpha(0.), 0.),
+                    (t.accent.with_alpha(0.55), 0.85),
+                ],
+            ),
+            _ => fade.bg_fill(t.accent.with_alpha(0.18)),
+        };
+        let items = (1..=12).map(|n| {
+            div()
+                .px(14.)
+                .py(10.)
+                .border_bottom(1., tint(0.08))
+                .child(text(strings::decor_fade_item(cx, n)).text_color(t.text))
+        });
         ui::card()
             .child(ui::heading(strings::decor_title(cx)))
             .child(
@@ -112,6 +144,26 @@ impl Render for Decor {
                             ]))
                             .accessibility_label(strings::decor_radial(cx)),
                     ),
+            )
+            .child(
+                text(strings::decor_fade_hint(cx))
+                    .text_size(13.)
+                    .text_color(t.muted),
+            )
+            .child(
+                div()
+                    .h(150.)
+                    .rounded(12.)
+                    .clip()
+                    .border(1.)
+                    .border_color(t.border)
+                    .child(scroll().size_full().children(items))
+                    .child(fade),
+            )
+            .child(
+                ui::button(strings::decor_fade_swap(cx))
+                    .small()
+                    .on_click(cx.listener(|this, _, _| this.fade = (this.fade + 1) % 3)),
             )
             .child(
                 // A conic gradient, and a border of a different color on

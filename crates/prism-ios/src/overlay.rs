@@ -37,6 +37,13 @@
 //! there, and a `sourceRect` on the part of the anchor it lines up with
 //! (`PopoverAlign::arrow_span`).
 //!
+//! An overlay anchored at a caret (#328) goes against the caret of the
+//! text field in its parent (`caretRectForPosition:` of the selection's
+//! end, in the parent's coordinates, kept inside the field): the popover's
+//! `sourceRect`, or the placed card's anchor. It follows the caret
+//! (`follow_caret`) as the field's text, selection or scrolling changes
+//! and after each layout.
+//!
 //! A keyboard bar (#242) is never presented: its content lives in an input
 //! view (`UIInputView`, keyboard style) that the text fields it serves take
 //! as their `inputAccessoryView` (`Widgets::set_keyboard_bar`), laid out at
@@ -56,7 +63,7 @@ use objc2_ui_kit::{
     UITapGestureRecognizer, UITraitCollection, UIView, UIViewController,
 };
 use prism_core::NodeId;
-use prism_core::controls::{Backdrop, OverlayConfig, OverlayKind, place_beside};
+use prism_core::controls::{Backdrop, OverlayAnchor, OverlayConfig, OverlayKind, place_beside};
 use prism_native::Viewport;
 
 /// What UIKit tells a popover's background (it reads them back).
@@ -663,11 +670,12 @@ impl Overlay {
                         if let Some(s) = &source {
                             let rtl = s.effectiveUserInterfaceLayoutDirection()
                                 == objc2_ui_kit::UIUserInterfaceLayoutDirection::RightToLeft;
+                            let anchor = self.anchor_rect(s);
                             let room = window
                                 .as_ref()
-                                .map(|w| (s.convertRect_toView(s.bounds(), Some(w)), w.bounds()));
+                                .map(|w| (s.convertRect_toView(anchor, Some(w)), w.bounds()));
                             let (rect, arrows) =
-                                popover_placement(s.bounds(), self.size.get(), c, rtl, room);
+                                popover_placement(anchor, self.size.get(), c, rtl, room);
                             pc.setSourceRect(rect);
                             pc.setPermittedArrowDirections(arrows);
                         }
@@ -776,7 +784,7 @@ impl Overlay {
         let side = c.anchored_side()?;
         let anchor = self.anchor.superview()?;
         let window = anchor.window()?;
-        let a = anchor.convertRect_toView(anchor.bounds(), None);
+        let a = anchor.convertRect_toView(self.anchor_rect(&anchor), None);
         let (b, i) = (window.bounds(), window.safeAreaInsets());
         let rtl = anchor.effectiveUserInterfaceLayoutDirection()
             == objc2_ui_kit::UIUserInterfaceLayoutDirection::RightToLeft;
@@ -801,6 +809,75 @@ impl Overlay {
             8.,
         )?;
         Some(CGPoint::new(f64::from(x), f64::from(y)))
+    }
+
+    /// What it goes against, in `source`'s coordinates (its parent):
+    /// `source`'s bounds, or the caret of a text field in it (#328).
+    fn anchor_rect(&self, source: &UIView) -> CGRect {
+        let c = self.config.get();
+        match c.anchor {
+            #[cfg(not(target_os = "tvos"))]
+            OverlayAnchor::Caret => {
+                let Some(caret) = caret_anchor(source) else {
+                    return source.bounds();
+                };
+                // UIKit centers a popover on its source: a bare one (no
+                // arrow) lines up with the caret as `align` says when the
+                // source spans its width from the caret.
+                let w = self.size.get().0;
+                if !(c.kind == OverlayKind::Popover && c.bare && !c.side.beside() && w > 0.) {
+                    return caret;
+                }
+                let rtl = source.effectiveUserInterfaceLayoutDirection()
+                    == objc2_ui_kit::UIUserInterfaceLayoutDirection::RightToLeft;
+                let x = caret.origin.x;
+                let left = match c.align {
+                    prism_core::PopoverAlign::Center => return caret,
+                    prism_core::PopoverAlign::Start if !rtl => x,
+                    prism_core::PopoverAlign::End if rtl => x,
+                    _ => x - w,
+                };
+                CGRect::new(
+                    CGPoint::new(left, caret.origin.y),
+                    CGSize::new(w, caret.size.height),
+                )
+            }
+            _ => source.bounds(),
+        }
+    }
+
+    /// An overlay at the caret follows it (#328): the card moves, or the
+    /// popover's `sourceRect` (UIKit moves the popover on its next layout,
+    /// asked for now).
+    pub fn follow_caret(&self) {
+        let c = self.config.get();
+        if c.anchor != OverlayAnchor::Caret || !self.presented() || self.is_keyboard() {
+            return;
+        }
+        if self.custom() {
+            self.place_card();
+            return;
+        }
+        #[cfg(not(target_os = "tvos"))]
+        if c.kind == OverlayKind::Popover
+            && let Some(pc) = self.vc.popoverPresentationController()
+            && let Some(s) = self.anchor.superview()
+        {
+            let rtl = s.effectiveUserInterfaceLayoutDirection()
+                == objc2_ui_kit::UIUserInterfaceLayoutDirection::RightToLeft;
+            let anchor = self.anchor_rect(&s);
+            let room = s
+                .window()
+                .map(|w| (s.convertRect_toView(anchor, Some(&w)), w.bounds()));
+            let (rect, _) = popover_placement(anchor, self.size.get(), c, rtl, room);
+            if pc.sourceRect() != rect {
+                pc.setSourceRect(rect);
+                if let Some(container) = pc.containerView() {
+                    container.setNeedsLayout();
+                    container.layoutIfNeeded();
+                }
+            }
+        }
     }
 
     /// The content's laid-out size: the popover's or card's size.
@@ -891,6 +968,76 @@ impl Overlay {
             insets: prism_native::Insets::default(),
         }
     }
+}
+
+/// The caret an overlay anchored at it goes against (#328), in `source`'s
+/// coordinates: the caret of the text field inside `source` that is first
+/// responder (`caretRectForPosition:` at the selection's end), kept inside
+/// the field's visible part; the whole first field there when none is;
+/// `None` without one.
+#[cfg(not(target_os = "tvos"))]
+fn caret_anchor(source: &UIView) -> Option<CGRect> {
+    use objc2_ui_kit::{UITextField, UITextInput, UITextView};
+    fn caret<T: UITextInput + Message>(input: &T, field: &UIView) -> Option<CGRect> {
+        let end = input.selectedTextRange()?.end();
+        let r = input.caretRectForPosition(&end);
+        if !r.origin.x.is_finite() || !r.origin.y.is_finite() {
+            return None;
+        }
+        Some(field.convertRect_fromView(r, Some(&input.textInputView())))
+    }
+    let in_source = |v: &UIView, r: CGRect| source.convertRect_fromView(r, Some(v));
+    if let Some(focused) = first_responder(source) {
+        let found = if let Some(f) = focused.downcast_ref::<UITextField>() {
+            caret(f, &focused)
+        } else if let Some(t) = focused.downcast_ref::<UITextView>() {
+            caret(t, &focused)
+        } else {
+            None
+        };
+        if let Some(r) = found {
+            let f = |r: CGRect| {
+                (
+                    r.origin.x as f32,
+                    r.origin.y as f32,
+                    r.size.width as f32,
+                    r.size.height as f32,
+                )
+            };
+            // A text view's bounds are its visible part (scrolled).
+            let (x, y, w, h) = prism_core::controls::caret_in_field(f(r), f(focused.bounds()));
+            let r = CGRect::new(
+                CGPoint::new(f64::from(x), f64::from(y)),
+                CGSize::new(f64::from(w), f64::from(h)),
+            );
+            return Some(in_source(&focused, r));
+        }
+    }
+    let first = first_field(source)?;
+    Some(in_source(&first, first.bounds()))
+}
+
+/// The first editable text field in `view` (a text input, or a text area's
+/// or rich input's text view), in tree order.
+#[cfg(not(target_os = "tvos"))]
+fn first_field(view: &UIView) -> Option<Retained<UIView>> {
+    for v in view.subviews().iter() {
+        if v.isHidden() {
+            continue;
+        }
+        let editable = v
+            .downcast_ref::<objc2_ui_kit::UITextField>()
+            .is_some_and(|f| f.isEnabled())
+            || v.downcast_ref::<objc2_ui_kit::UITextView>()
+                .is_some_and(|t| t.isEditable());
+        if editable {
+            return Some(v.clone());
+        }
+        if let Some(f) = first_field(&v) {
+            return Some(f);
+        }
+    }
+    None
 }
 
 #[cfg(not(target_os = "tvos"))]

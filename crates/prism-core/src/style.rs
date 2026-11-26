@@ -2294,9 +2294,42 @@ pub trait Styled: Sized {
     fn clip(self) -> Self {
         self.with_style(|s| s.clip = true)
     }
-    /// A gradient background: `.bg_gradient(Gradient::linear(180., [a, b]))`.
+    /// A gradient background: `.bg_gradient(Gradient::linear(180., [a, b]))`,
+    /// drawn over the [`bg`](Self::bg) color (which shows through its
+    /// translucent stops), clipped to the rounded corners. Its stops are
+    /// [normalized](crate::Gradient::normalized); a gradient without stops
+    /// removes it.
     fn bg_gradient(self, gradient: crate::decoration::Gradient) -> Self {
-        self.with_style(|s| s.gradient = Some(gradient))
+        self.with_style(|s| s.gradient = gradient.normalized())
+    }
+    /// A linear gradient background through `(color, position)` stops
+    /// (positions `0.0..=1.0` along the gradient line, at least two stops
+    /// for a gradient), at `angle` degrees in the CSS convention: `0` to
+    /// the top, `90` to the right, `180` to the bottom, `270` to the left.
+    /// Shorthand for `.bg_gradient(Gradient::linear_stops(angle, stops))`.
+    ///
+    /// The end of a scrolling list fading into its background:
+    /// `.bg_linear_gradient(180., [(bg.with_alpha(0.), 0.), (bg, 1.)])`.
+    fn bg_linear_gradient(self, angle: f32, stops: impl IntoIterator<Item = (Color, f32)>) -> Self {
+        self.bg_gradient(crate::decoration::Gradient::linear_stops(angle, stops))
+    }
+    /// The whole background: a solid color (`.bg_fill(rgb(0x007AFF))`) or a
+    /// gradient (`.bg_fill(Gradient::linear(90., [a, b]))`), replacing
+    /// whatever was there, where `bg` and `bg_gradient` layer. Handy in
+    /// state refinements, which start from the base style:
+    /// `.bg_gradient(g).hover(|s| s.bg_fill(accent))`.
+    fn bg_fill(self, fill: impl Into<crate::decoration::Fill>) -> Self {
+        let fill = fill.into();
+        self.with_style(|s| match fill {
+            crate::decoration::Fill::Solid(c) => {
+                s.background = Some(c);
+                s.gradient = None;
+            }
+            crate::decoration::Fill::Gradient(g) => {
+                s.background = None;
+                s.gradient = g.normalized();
+            }
+        })
     }
     /// Blurs what is behind the node (`radius` points), under a translucent
     /// `bg`: frosted bars and panels.

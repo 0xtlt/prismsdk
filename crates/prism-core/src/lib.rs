@@ -69,10 +69,12 @@ pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplat
 pub use channel::{Receiver, Sender, channel};
 pub use clipboard::{ClipboardImage, ClipboardItem, CopiedEvent};
 pub use controls::{
-    Backdrop, Capitalize, DateMode, Keyboard, OverlayKind, PopoverAlign, PopoverSide, ReturnKey,
+    Backdrop, Capitalize, DateMode, Keyboard, OverlayAnchor, OverlayKind, PopoverAlign,
+    PopoverSide, ReturnKey,
 };
 pub use decoration::{
-    BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
+    BorderSide, BorderSides, BorderStyle, Cursor, Fill, Gradient, GradientKind, GradientStop,
+    Shadow,
 };
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
@@ -1322,7 +1324,7 @@ pub mod prelude {
     pub use crate::{ClipboardContent, CopyEvent, PasteEvent, SelectionRectEvent, SpanClickEvent};
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
-    pub use crate::{Color, Cursor, Gradient, Shadow};
+    pub use crate::{Color, Cursor, Fill, Gradient, Shadow};
     pub use crate::{picture_data, svg};
     // Navigation bar buttons (#30).
     pub use crate::bar_button;
@@ -1334,8 +1336,8 @@ pub mod prelude {
         PointerPhase, PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog,
         keyboard_toolbar, popover, radio_group, sheet, time_picker, time_picker_opt,
     };
-    // Anchored overlays without a dim (#79).
-    pub use crate::Backdrop;
+    // Anchored overlays without a dim (#79), at a text field's caret (#328).
+    pub use crate::{Backdrop, OverlayAnchor};
     // Islands: client-side Web Components.
     pub use crate::{IslandEvent, island, web_component};
     // 3D scenes (the nodes, lights and camera: `use prism::scene3d::*`).

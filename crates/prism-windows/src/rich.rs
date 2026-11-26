@@ -88,6 +88,7 @@ impl Rich {
                 crate::imp::typed(id, text);
                 crate::edit::changed(id, &r);
                 crate::carets::changed(id);
+                crate::overlay::caret_moved();
             }
             Ok(())
         }))?;
@@ -98,6 +99,7 @@ impl Rich {
                 let (a, b) = (sel.StartPosition()?, sel.EndPosition()?);
                 crate::imp::selected(id, &text(&doc)?, a.max(0) as usize, b.max(0) as usize);
                 crate::edit::changed(id, &r);
+                crate::overlay::caret_moved();
             }
             Ok(())
         }))?;

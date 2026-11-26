@@ -7,13 +7,43 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
-Chips in a `rich_input` take a vector icon, styled label runs, a ring, a
-radius, a height and a largest width, a tool tip, a state and a test id
-(#329).
-**Breaking:** `TextRun` has new fields.
-
 ### Added
 
+- Linear gradient fills (#330): `.bg_linear_gradient(angle, [(color, stop), …])`
+  on `div` and every styled box, shorthand for
+  `.bg_gradient(Gradient::linear_stops(angle, stops))`, in the CSS
+  convention everywhere (`0` to the top, `90` to the right, `180` to the
+  bottom; the first and last colors reach the corners). The end of a
+  scrolling list fades into its background in one box instead of stacked
+  strips. `.bg_fill(fill)` sets the whole background to a `Fill` (a solid
+  color or a gradient), replacing the other, where `.bg` and `.bg_gradient`
+  layer: `.hover(|s| s.bg_fill(accent))` turns a gradient button solid.
+  `Gradient::normalized` places stops like CSS (clamped, never going back,
+  one stop a solid fill), applied by the builders, so native APIs always get
+  increasing positions and two colors at least; `Gradient::unit_points` and
+  `Gradient::interpolates_with` serve backends.
+- Gradients animate (#330): with a transition, a gradient changing into one
+  of the same kind with as many stops animates its colors, positions and
+  angle on the web (registered custom properties, named in the transition:
+  `transition: all` leaves them out), iOS, tvOS and visionOS (Core Animation
+  on the gradient layer) and Android (the box drawable, which now animates
+  its background color too).
+- Widgets and Live Activities draw gradients (#330): snapshots carry them
+  (`gr`); SwiftUI draws them on iOS and macOS (a root gradient fills the
+  whole widget, under the system's margins too), CSS on the web, and
+  Android's `RemoteViews` a stretched bitmap under the node.
+- A popover or dialog can open at the caret of a text field (#328):
+  `Overlay::anchor(OverlayAnchor::Caret)`, or `anchor_caret()`, anchors
+  it at the caret of the field inside its parent (`text_input`,
+  `text_area`, `rich_input`, `rich_text_input`), with the usual side,
+  flip and keep-inside-the-window rules. Every backend measures the caret
+  when it lays the overlay out and follows it as the user types, selects
+  or scrolls, without asking the app; with `take_focus(false)` the field
+  keeps the focus and the keys. `OverlayAnchor` (`Parent`, the default,
+  or `Caret`) can gain kinds of anchors; `OverlayConfig::anchor`
+  (`anchor=caret` in the config string) and `controls::caret_in_field`
+  for backends. The counter example's Forms section has a template field with a
+  `{{` completion list.
 - Chip options for `rich_input` (#329), on the web, macOS, iOS, iPadOS,
   visionOS, Android, Linux and Windows. A chip stays one character:
   - a vector icon: `chip_icon` takes an SVG (`ChipIcon::svg`), a
@@ -37,6 +67,16 @@ radius, a height and a largest width, a tool tip, a state and a test id
 
 ### Changed
 
+- **Breaking:** a push within the app stays in the selected tab (#332).
+  `navigate`, `navigate_to`, `navigate_with` and `replace` to a path
+  under another tab's root (`/devices/7` from the Rooms tab) no longer
+  switch to that tab: the screen goes on the selected tab's stack, so
+  Back returns to the screen the user came from and the tab bar stays,
+  as on iOS and Android. Only a tab's root exactly, or a link from
+  outside (a deep link at launch, `Runtime::open_link` from a widget or
+  a notification), selects another tab. On the web each history entry
+  is reopened in the tab it was made in, and a reload gives the screen
+  back to that tab; the URL is still the pushed path.
 - On the web, a chip with a `bg` keeps the stylesheet's 4 px radius (or
   its `chip_radius`) instead of the 3 px inline radius a highlighted span
   gets; plain chips look as before (#329).
@@ -48,6 +88,20 @@ radius, a height and a largest width, a tool tip, a state and a test id
 - Android measures a rich input with its runs, its chips as wide and tall
   as they are drawn: a field whose chips wrap to more lines is tall
   enough for them (#329).
+
+### Fixed
+
+- iOS, tvOS, visionOS: a diagonal linear gradient in a box that is not
+  square follows CSS's angle, as on macOS (#330): `CAGradientLayer` spaces
+  colors in unit coordinates, so the CSS line is converted rather than
+  divided by the size.
+- Web: a state that changes the background color of a box with a gradient
+  (`.bg_gradient(g).hover(|s| s.bg(c))`) keeps the gradient over the new
+  color, as natively; the `background` shorthand of the state's rule used
+  to remove it (#330).
+- macOS: the `PRISM_TAP` test hook scrolls its target into view and does
+  not click a text field that is already editing (the click went to the
+  container's key handler instead of the field).
 
 ## 0.5.0 (2026-11-25)
 

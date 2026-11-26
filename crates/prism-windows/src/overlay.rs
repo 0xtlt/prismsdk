@@ -18,6 +18,14 @@
 //!   transient and lets the click through. A bare one (#287) has a clear
 //!   presenter: no background, border, corners, shadow or animation.
 //!
+//! A popover or placed dialog anchored at a caret (#328) opens at the
+//! caret of the text field in its parent (`GetRectFromCharacterIndex` of a
+//! text box, the selection's end of a rich edit box), the flyout's
+//! `Position` beside it and its rectangle the `ExclusionRect` WinUI keeps
+//! clear (flipping without room). It is shown there again (WinUI moves an
+//! open flyout) as the field's text, selection or scrolling changes and
+//! after each layout.
+//!
 //! The content node is laid out by prism-native in the area
 //! `Widgets::overlay_viewport` gives; its canvas (`View::kids`) moves into
 //! the panel or the flyout.
@@ -26,7 +34,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use prism_core::controls::{Backdrop, OverlayConfig};
+use prism_core::controls::{Backdrop, OverlayAnchor, OverlayConfig};
 use prism_core::{Color, DismissReason, NodeId, OverlayKind, Transition, UiEvent};
 use windows::Foundation::TypedEventHandler;
 use windows_core::{IInspectable, Interface, Result};
@@ -40,11 +48,13 @@ use crate::widgets::Win;
 use crate::winui::xaml::Controls::Primitives::{
     FlyoutBase, FlyoutBaseClosingEventArgs, FlyoutPlacementMode, FlyoutShowMode, FlyoutShowOptions,
 };
-use crate::winui::xaml::Controls::{Border, Canvas, Flyout};
+use crate::winui::xaml::Controls::{Border, Canvas, Flyout, RichEditBox, TextBox};
 use crate::winui::xaml::Input::{FocusManager, KeyboardNavigationMode, TappedEventHandler};
 use crate::winui::xaml::Markup::XamlReader;
 use crate::winui::xaml::Media::{AcrylicBrush, Brush, VisualTreeHelper};
-use crate::winui::xaml::{FocusState, Style, UIElement, Visibility};
+use crate::winui::xaml::{
+    DependencyObject, FocusState, FrameworkElement, Style, UIElement, Visibility,
+};
 use crate::winui::{brush, h, radius, ui, uniform, win_color};
 
 /// How an overlay shows.
@@ -136,6 +146,11 @@ pub struct Overlay {
     flyout: Option<Flyout>,
     host: Canvas,
     state: Rc<FlyoutState>,
+    /// Where the flyout was shown: its anchor, the layout direction, and
+    /// the caret it was shown at (#328).
+    anchor: Option<UIElement>,
+    rtl: bool,
+    caret: Option<(f32, f32, f32, f32)>,
 }
 
 thread_local! {
@@ -199,6 +214,9 @@ impl Overlay {
             flyout: None,
             host: Canvas::new()?,
             state,
+            anchor: None,
+            rtl: false,
+            caret: None,
         })
     }
 
@@ -551,14 +569,11 @@ impl Win {
                     }
                     // A bare one appears at once, like a bare dialog.
                     base.SetAreOpenCloseAnimationsEnabled(!config.bare)?;
-                    let options = FlyoutShowOptions::new()?;
-                    options.SetPlacement(placement(config, rtl))?;
+                    let options = show_options(config, rtl)?;
                     let transient = config.keep_focus;
-                    options.SetShowMode(if transient {
-                        FlyoutShowMode::Transient
-                    } else {
-                        FlyoutShowMode::Standard
-                    })?;
+                    o.caret = at_caret(&options, &anchor, config)?;
+                    o.anchor = Some(anchor.clone());
+                    o.rtl = rtl;
                     base.SetAllowFocusOnInteraction(!config.keep_focus)?;
                     // Presses outside reach the page when it is not modal.
                     if config.keep_focus || config.manual {
@@ -587,11 +602,224 @@ impl Win {
                         let _ = fe.UpdateLayout();
                     }
                     base.ShowAtWithOptions(&anchor, &options)?;
+                } else {
+                    // At a caret: where the field moved (#328).
+                    o.follow_caret()?;
                 }
             }
         }
         Ok(())
     }
+
+    /// Flyouts at a caret follow it (#328).
+    pub fn follow_carets(&mut self) {
+        for o in self.layers.values_mut() {
+            if let Err(e) = o.follow_caret() {
+                crate::win::log!("overlay {}: following the caret: {e}", o.id);
+            }
+        }
+    }
+}
+
+impl Overlay {
+    /// A flyout at a caret follows it (#328): shown again at the caret's
+    /// new place, which moves the open flyout.
+    fn follow_caret(&mut self) -> Result<()> {
+        let c = self.state.config.get();
+        if c.anchor != OverlayAnchor::Caret
+            || self.shown != Some(Mode::Flyout)
+            || !self.state.shown.get()
+        {
+            return Ok(());
+        }
+        let (Some(anchor), Some(flyout)) = (self.anchor.clone(), self.flyout.clone()) else {
+            return Ok(());
+        };
+        let options = show_options(c, self.rtl)?;
+        let caret = at_caret(&options, &anchor, c)?;
+        if caret == self.caret {
+            return Ok(());
+        }
+        self.caret = caret;
+        flyout
+            .cast::<FlyoutBase>()?
+            .ShowAtWithOptions(&anchor, &options)
+    }
+}
+
+thread_local! {
+    /// A caret moved: flyouts at a caret follow on the next turn.
+    static CARET_DUE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A field's text, selection or scrolling changed: flyouts at a caret
+/// follow it on the next turn, once XAML has laid the field out (#328).
+pub fn caret_moved() {
+    if CARET_DUE.replace(true) {
+        return;
+    }
+    let queued =
+        crate::winui::bindings::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread()
+            .and_then(|q| {
+                q.TryEnqueue(
+                &crate::winui::bindings::Microsoft::UI::Dispatching::DispatcherQueueHandler::new(
+                    || {
+                        CARET_DUE.set(false);
+                        crate::imp::with_state(|s| s.renderer.widgets.follow_carets());
+                        Ok(())
+                    },
+                ),
+            )
+            });
+    if !queued.unwrap_or(false) {
+        CARET_DUE.set(false);
+    }
+}
+
+/// The flyout's placement and show mode.
+fn show_options(c: OverlayConfig, rtl: bool) -> Result<FlyoutShowOptions> {
+    let options = FlyoutShowOptions::new()?;
+    options.SetPlacement(placement(c, rtl))?;
+    options.SetShowMode(if c.keep_focus {
+        FlyoutShowMode::Transient
+    } else {
+        FlyoutShowMode::Standard
+    })?;
+    Ok(options)
+}
+
+/// At a caret (#328): the flyout opens at the caret's edge on its side
+/// (`Position`, in `anchor`'s coordinates), the caret kept clear
+/// (`ExclusionRect`). Returns the caret, `None` when the overlay is not
+/// anchored at one or has no field.
+fn at_caret(
+    options: &FlyoutShowOptions,
+    anchor: &UIElement,
+    c: OverlayConfig,
+) -> Result<Option<(f32, f32, f32, f32)>> {
+    if c.anchor != OverlayAnchor::Caret {
+        return Ok(None);
+    }
+    let Some((x, y, w, h)) = caret_anchor(anchor) else {
+        return Ok(None);
+    };
+    use prism_core::PopoverSide as S;
+    let (px, py) = match c.anchored_side().unwrap_or(S::Bottom) {
+        S::Bottom => (x, y + h),
+        S::Top => (x, y),
+        // The placement mode puts it on the point's right or left.
+        S::Trailing | S::Leading => (x + w / 2., y),
+    };
+    use windows::Foundation::{IReference, Point, PropertyValue, Rect};
+    use windows_core::Interface as _;
+    options.SetPosition(
+        &PropertyValue::CreatePoint(Point { X: px, Y: py })?.cast::<IReference<Point>>()?,
+    )?;
+    let exclusion = Rect {
+        X: x,
+        Y: y,
+        Width: w,
+        Height: h,
+    };
+    options.SetExclusionRect(&PropertyValue::CreateRect(exclusion)?.cast::<IReference<Rect>>()?)?;
+    Ok(Some((x, y, w, h)))
+}
+
+/// The caret an overlay anchored at it goes against (#328), in `anchor`'s
+/// coordinates: the caret of the text field inside `anchor` that has the
+/// focus, kept inside the field; the whole first field there when none
+/// has it; `None` without one.
+fn caret_anchor(anchor: &UIElement) -> Option<(f32, f32, f32, f32)> {
+    let size = |e: &UIElement| {
+        let fe: FrameworkElement = e.cast().ok()?;
+        Some((
+            fe.ActualWidth().ok()? as f32,
+            fe.ActualHeight().ok()? as f32,
+        ))
+    };
+    let in_anchor = |e: &UIElement, (x, y, w, h): (f32, f32, f32, f32)| {
+        let p = e
+            .TransformToVisual(anchor)
+            .ok()?
+            .TransformPoint(windows::Foundation::Point { X: x, Y: y })
+            .ok()?;
+        Some((p.X, p.Y, w, h))
+    };
+    let root = anchor.XamlRoot().ok()?;
+    let focused = FocusManager::GetFocusedElementWithRoot(&root)
+        .ok()
+        .and_then(|e| e.cast::<UIElement>().ok())
+        .filter(|f| inside(f, anchor));
+    if let Some(f) = focused {
+        let caret = if let Ok(t) = f.cast::<TextBox>() {
+            text_box_caret(&t)
+        } else if let Ok(r) = f.cast::<RichEditBox>() {
+            crate::edit::caret_rect(&r).ok()
+        } else {
+            None
+        };
+        if let (Some(caret), Some((w, h))) = (caret, size(&f)) {
+            let r = prism_core::controls::caret_in_field(caret, (0., 0., w, h));
+            return in_anchor(&f, r);
+        }
+    }
+    let first = first_field(&anchor.cast().ok()?)?;
+    let (w, h) = size(&first)?;
+    in_anchor(&first, (0., 0., w, h))
+}
+
+/// A text box's caret (the selection's end), one point wide, in the box;
+/// `None` while it is empty.
+fn text_box_caret(t: &TextBox) -> Option<(f32, f32, f32, f32)> {
+    let len = t.Text().ok()?.to_string().encode_utf16().count() as i32;
+    let at = t.SelectionStart().ok()? + t.SelectionLength().ok()?;
+    if len == 0 {
+        return None;
+    }
+    let r = if at >= len {
+        t.GetRectFromCharacterIndex(len - 1, true)
+    } else {
+        t.GetRectFromCharacterIndex(at.max(0), false)
+    }
+    .ok()?;
+    Some((r.X, r.Y, 1., r.Height))
+}
+
+/// Whether `e` is `anchor` or inside it.
+fn inside(e: &UIElement, anchor: &UIElement) -> bool {
+    let Ok(target) = anchor.cast::<DependencyObject>() else {
+        return false;
+    };
+    let mut at = e.cast::<DependencyObject>().ok();
+    while let Some(n) = at {
+        if n == target {
+            return true;
+        }
+        at = VisualTreeHelper::GetParent(&n).ok();
+    }
+    false
+}
+
+/// The first text field (a text box or a rich edit box) inside `e`, in
+/// tree order.
+fn first_field(e: &DependencyObject) -> Option<UIElement> {
+    let n = VisualTreeHelper::GetChildrenCount(e).ok()?;
+    for i in 0..n {
+        let Ok(c) = VisualTreeHelper::GetChild(e, i) else {
+            continue;
+        };
+        if let Ok(u) = c.cast::<UIElement>()
+            && u.Visibility().is_ok_and(|v| v == Visibility::Visible)
+        {
+            if u.cast::<TextBox>().is_ok() || u.cast::<RichEditBox>().is_ok() {
+                return Some(u);
+            }
+            if let Some(f) = first_field(&c) {
+                return Some(f);
+            }
+        }
+    }
+    None
 }
 
 /// The panel's place, size, look and the smoke.

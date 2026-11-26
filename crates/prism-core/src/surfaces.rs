@@ -339,7 +339,8 @@ impl SNode {
     /// `sh` shape), `d` 1 = row, `g` gap, `pd` padding and `m` margin
     /// `[t,r,b,l]`, `w`/`h` size (number or `"f"` = fill), `f` flex grow,
     /// `ai`/`jc` alignment, `bg`/`fg`/`bc` colors (`"#RRGGBBAA"` or
-    /// `["#light","#dark"]`), `r` radius, `bw` border, `fs`/`fw`/`ta` font (`fw` 1-3
+    /// `["#light","#dark"]`), `gr` a gradient over `bg` (`{"k","a","s"}`,
+    /// see `write_gradient`), `r` radius, `bw` border, `fs`/`fw`/`ta` font (`fw` 1-3
     /// medium/semibold/bold, else a CSS weight; typography keys
     /// `ff`/`it`/`ul`/`st`/`tn`/`tt`/`ls`/`lh`/`ml`/`nw`, see `write_typography`),
     /// `o` opacity, `s` text, symbol or drawing, `v` value, `ph` a timer's
@@ -476,6 +477,9 @@ impl SNode {
                 let _ = write!(o, r#","{key}":{}"#, color_json(c));
             }
         }
+        if let Some(g) = &s.gradient {
+            write_gradient(o, g, s.text_color);
+        }
         if s.corner_radius > 0. {
             let _ = write!(o, r#","r":{}"#, num(s.corner_radius));
             // Some corners only (logical bits, see `Corners::bits`).
@@ -577,6 +581,37 @@ impl SNode {
         }
         o.push('}');
     }
+}
+
+/// A background gradient, over `bg` (#330): `"gr":{"k","a","s"}`, `k` the
+/// kind (`l` linear, `r` radial, `c` conic), `a` the angle in degrees (CSS
+/// convention: a linear one's direction, `0` to the top, `90` to the right;
+/// a conic one's start, clockwise from up; `0` for a radial one), `s` the
+/// stops `[[color, position], …]` (positions `0`-`1`, increasing, two at
+/// least). `Color::current()` stops are resolved against the node's text
+/// color, else the label color.
+fn write_gradient(o: &mut String, g: &crate::Gradient, text: Option<Color>) {
+    use crate::GradientKind;
+    let (k, a) = match g.kind {
+        GradientKind::Linear { angle } => ("l", angle),
+        GradientKind::Radial => ("r", 0.),
+        GradientKind::Conic { from } => ("c", from),
+    };
+    let label = Color::adaptive(Color::BLACK, Color::WHITE);
+    let text = text.map_or(label, |c| c.resolve_current(label));
+    let _ = write!(o, r#","gr":{{"k":"{k}","a":{},"s":["#, num(a));
+    for (i, st) in g.stops.iter().enumerate() {
+        if i > 0 {
+            o.push(',');
+        }
+        let _ = write!(
+            o,
+            "[{},{}]",
+            color_json(st.color.resolve_current(text)),
+            num(st.at)
+        );
+    }
+    o.push_str("]}");
 }
 
 /// Typography keys of a node (only what differs from the defaults): `ff`

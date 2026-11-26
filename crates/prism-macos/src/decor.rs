@@ -307,30 +307,14 @@ fn gradient_layer(g: &Gradient, size: NSSize, flipped: bool) -> Retained<CALayer
     match g.kind {
         prism_core::GradientKind::Linear { .. } => {
             // Core Animation spaces colors along the line in unit
-            // coordinates, then stretches to the box: pick the unit line
-            // whose stretched isobars are perpendicular to CSS's line.
-            let (gx, gy) = (c - a, e - b);
-            let (vx, vy) = (gx * w, gy * h);
-            let len2 = vx * vx + vy * vy;
-            let (sx, sy) = (
-                if w > 0. { a / w } else { 0.5 },
-                if h > 0. { b / h } else { 0.5 },
-            );
-            let (ex, ey) = (
-                if w > 0. { c / w } else { 0.5 },
-                if h > 0. { e / h } else { 0.5 },
-            );
-            let along = |x: f32, y: f32| {
-                if len2 > 0. {
-                    ((x - 0.5) * vx + (y - 0.5) * vy) / len2
-                } else {
-                    0.
-                }
-            };
-            let (t0, t1) = (along(sx, sy), along(ex, ey));
+            // coordinates, then stretches to the box: the unit line whose
+            // stretched isobars are perpendicular to CSS's line.
+            let [sx, sy, ex, ey] = g.unit_points(w, h);
+            let point =
+                |x: f32, y: f32| NSPoint::new(x as f64, if flipped { y } else { 1. - y } as f64);
             unsafe { l.setType(kCAGradientLayerAxial) };
-            l.setStartPoint(unit((0.5 + t0 * vx) * w, (0.5 + t0 * vy) * h));
-            l.setEndPoint(unit((0.5 + t1 * vx) * w, (0.5 + t1 * vy) * h));
+            l.setStartPoint(point(sx, sy));
+            l.setEndPoint(point(ex, ey));
         }
         prism_core::GradientKind::Radial => {
             // Center to (center + radii): an ellipse reaching the corners.

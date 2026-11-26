@@ -80,6 +80,13 @@ final class PrismDecor {
         final JSONObject grad;
         final float blur;
         final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        /**
+         * While a style transition runs: the box it started from and how far
+         * it is (0 to 1). The background color and the gradient (same kind
+         * and number of stops) are drawn in between (#330).
+         */
+        Box from;
+        float progress = 1;
         /** The backdrop (what is behind the view, downscaled), and its blurred node. */
         Bitmap backdrop;
         Object node;
@@ -132,16 +139,20 @@ final class PrismDecor {
                 }
             }
             if (blur > 0 && Backdrops.capturing == null) drawBackdrop(c, shape, b);
-            if (bg != null) {
+            Box was = progress < 1 ? from : null;
+            Integer fill = bg;
+            if (was != null && was.bg != null && bg != null) fill = mix(was.bg, bg, progress);
+            if (fill != null) {
                 paint.reset();
                 paint.setAntiAlias(true);
-                paint.setColor(bg);
+                paint.setColor(fill);
                 c.drawPath(shape, paint);
             }
             if (grad != null) {
                 paint.reset();
                 paint.setAntiAlias(true);
-                paint.setShader(gradient(grad, b));
+                paint.setShader(was != null && interpolates(was.grad, grad)
+                        ? gradient(was.grad, grad, progress, b) : gradient(grad, b));
                 c.drawPath(shape, paint);
                 paint.setShader(null);
             }
@@ -278,9 +289,90 @@ final class PrismDecor {
             }
         }
 
+        /** Animates from `was` (the view's previous background) to this box. */
+        void animateFrom(Box was, long duration, long delay, android.animation.TimeInterpolator curve) {
+            boolean colors = was.bg != null && bg != null && !was.bg.equals(bg);
+            boolean stops = interpolates(was.grad, grad) && !was.grad.toString().equals(grad.toString());
+            if (!colors && !stops) return;
+            from = was.progress < 1 ? was.frozen() : was;
+            progress = 0;
+            android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(0, 1);
+            a.setDuration(duration);
+            a.setStartDelay(delay);
+            a.setInterpolator(curve);
+            a.addUpdateListener(x -> {
+                progress = (Float) x.getAnimatedValue();
+                if (progress >= 1) from = null;
+                invalidateSelf();
+                view.invalidate();
+            });
+            a.start();
+        }
+
+        /** This box as drawn now, for a transition that starts mid-way. */
+        Box frozen() {
+            Box was = from;
+            if (was == null) return this;
+            try {
+                JSONObject s = new JSONObject();
+                Integer fill = was.bg != null && bg != null ? mix(was.bg, bg, progress) : bg;
+                if (fill != null) s.put("bg", rgba(fill));
+                if (grad != null) s.put("grad", interpolates(was.grad, grad) ? mix(was.grad, grad, progress) : grad);
+                return new Box(view, s);
+            } catch (org.json.JSONException e) {
+                return this;
+            }
+        }
+
         @Override public void setAlpha(int alpha) {}
         @Override public void setColorFilter(ColorFilter f) {}
         @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    /** `a` to `b` at `t` (0 to 1), channel by channel. */
+    static int mix(int a, int b, float t) {
+        return (Integer) new android.animation.ArgbEvaluator().evaluate(t, a, b);
+    }
+
+    /** A color as the `[r, g, b, a]` (0 to 1) PrismHost.color reads. */
+    static JSONArray rgba(int c) throws org.json.JSONException {
+        return new JSONArray().put(android.graphics.Color.red(c) / 255.0).put(android.graphics.Color.green(c) / 255.0)
+                .put(android.graphics.Color.blue(c) / 255.0).put(android.graphics.Color.alpha(c) / 255.0);
+    }
+
+    /** Whether a transition can go from gradient `a` to `b`: same kind, same number of stops (prism_core Gradient::interpolates_with). */
+    static boolean interpolates(JSONObject a, JSONObject b) {
+        if (a == null || b == null || !a.optString("kind").equals(b.optString("kind"))) return false;
+        JSONArray sa = a.optJSONArray("stops"), sb = b.optJSONArray("stops");
+        return sa != null && sb != null && sa.length() == sb.length();
+    }
+
+    /** Gradient `a` to `b` at `t`: colors, positions and angle in between. */
+    static JSONObject mix(JSONObject a, JSONObject b, float t) {
+        try {
+            JSONObject g = new JSONObject();
+            g.put("kind", b.optString("kind"));
+            double from = a.optDouble("angle", 0), to = b.optDouble("angle", 0);
+            g.put("angle", from + (to - from) * t);
+            JSONArray sa = a.getJSONArray("stops"), sb = b.getJSONArray("stops"), stops = new JSONArray();
+            for (int i = 0; i < sb.length(); i++) {
+                JSONArray x = sa.optJSONArray(i), y = sb.optJSONArray(i);
+                Integer cx = x == null ? null : PrismHost.color(x.optJSONArray(0));
+                Integer cy = y == null ? null : PrismHost.color(y.optJSONArray(0));
+                int c = cx != null && cy != null ? mix(cx, cy, t) : cy != null ? cy : 0;
+                double px = x == null ? 0 : x.optDouble(1, 0), py = y == null ? 0 : y.optDouble(1, 0);
+                stops.put(new JSONArray().put(rgba(c)).put(px + (py - px) * t));
+            }
+            g.put("stops", stops);
+            return g;
+        } catch (org.json.JSONException e) {
+            return b;
+        }
+    }
+
+    /** The shader of gradient `a` on its way to `b`, at `t`. */
+    static Shader gradient(JSONObject a, JSONObject b, float t, Rect r) {
+        return gradient(mix(a, b, t), r);
     }
 
     /** CSS gradient geometry (prism_core Gradient::geometry) as a shader in `b`. */
@@ -299,8 +391,17 @@ final class PrismDecor {
             colors[1] = colors[0];
             at[1] = 1;
         }
+        return gradient(g.optString("kind"), g.optDouble("angle", 180), colors, at, b);
+    }
+
+    /**
+     * A `kind` gradient (`linear`, `radial`, `conic`) at `angle` degrees
+     * through `colors` at positions `at` (two at least, increasing), as a
+     * shader in `b`: the CSS geometry of prism_core Gradient::geometry.
+     */
+    static Shader gradient(String kind, double angle, int[] colors, float[] at, Rect b) {
         float w = b.width(), h = b.height(), cx = b.left + w / 2, cy = b.top + h / 2;
-        if ("radial".equals(g.optString("kind"))) {
+        if ("radial".equals(kind)) {
             float k = (float) Math.sqrt(2) / 2, rx = Math.max(1, w * k), ry = Math.max(1, h * k);
             RadialGradient r = new RadialGradient(cx, cy, rx, colors, at, Shader.TileMode.CLAMP);
             Matrix m = new Matrix();
@@ -308,16 +409,16 @@ final class PrismDecor {
             r.setLocalMatrix(m);
             return r;
         }
-        if ("conic".equals(g.optString("kind"))) {
+        if ("conic".equals(kind)) {
             // CSS `conic-gradient(from <angle>)`: 0 is up, clockwise. A
             // SweepGradient starts at 3 o'clock and turns clockwise too.
             SweepGradient s = new SweepGradient(cx, cy, colors, at);
             Matrix m = new Matrix();
-            m.setRotate((float) g.optDouble("angle", 0) - 90, cx, cy);
+            m.setRotate((float) angle - 90, cx, cy);
             s.setLocalMatrix(m);
             return s;
         }
-        double a = Math.toRadians(g.optDouble("angle", 180));
+        double a = Math.toRadians(angle);
         float dx = (float) Math.sin(a), dy = (float) -Math.cos(a);
         float half = (w * Math.abs(dx) + h * Math.abs(dy)) / 2;
         return new LinearGradient(cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half, colors, at, Shader.TileMode.CLAMP);

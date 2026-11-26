@@ -820,3 +820,185 @@ fn navigate_root_opens_in_the_tab_the_path_belongs_to() {
     assert_eq!(path(&h), "/c");
     assert_eq!(h.rt.app.stack_depth(), 2);
 }
+
+// --- Pushes stay in the selected tab (#332) ----------------------------------
+
+/// Tabs `/`, `/rooms` and `/devices`: a room's screen links to its devices.
+fn home_app_on(path: &str, platform: Option<prism_core::Platform>) -> Harness {
+    let init = |cx: &mut App| {
+        let router = Router::new()
+            .tab("Home", "house", "/")
+            .tab("Rooms", "square.split.2x2", "/rooms")
+            .tab("Devices", "lightbulb", "/devices")
+            .route("/", |cx, _| page(cx, "home".into()))
+            .route("/rooms", |cx, _| page(cx, "rooms".into()))
+            .route("/rooms/:id", |cx, p| {
+                page(cx, format!("room {}", p.get("id").unwrap()))
+            })
+            .route("/devices", |cx, _| page(cx, "devices".into()))
+            .route("/devices/:id", |cx, p| {
+                page(cx, format!("device {}", p.get("id").unwrap()))
+            })
+            .build(cx);
+        cx.set_root(router);
+    };
+    let path = path.to_string();
+    Harness::with_runtime(
+        move |init| {
+            prism_core::Runtime::with_options(
+                init,
+                prism_core::RuntimeOptions {
+                    path,
+                    platform,
+                    ..Default::default()
+                },
+            )
+        },
+        init,
+    )
+}
+
+fn home_app(path: &str) -> Harness {
+    home_app_on(path, None)
+}
+
+/// The stack of tab `i`.
+fn tab_stack(h: &Harness, i: usize) -> u64 {
+    let tab = h.host.get(tabs_node(h)).children[i];
+    h.host.get(tab).children[0]
+}
+
+fn selected(h: &Harness) -> Option<f64> {
+    h.host.get(tabs_node(h)).value
+}
+
+#[test]
+fn a_push_under_another_tabs_root_stays_in_the_selected_tab() {
+    let mut h = home_app("/rooms/4");
+    assert_eq!(selected(&h), Some(1.));
+    let rooms = tab_stack(&h, 1);
+    h.rt.app.navigate("/devices/7");
+    h.render();
+    // The tab bar keeps « Rooms »; the URL is the pushed path.
+    assert_eq!(selected(&h), Some(1.));
+    assert_eq!(path(&h), "/devices/7");
+    assert_eq!(screens(&h, rooms), ["rooms", "room 4", "device 7"]);
+    // Back returns to the screen the user came from.
+    h.rt.app.back();
+    h.render();
+    assert_eq!(path(&h), "/rooms/4");
+    assert_eq!(selected(&h), Some(1.));
+    // The Devices tab did not get the screen.
+    h.rt.app.navigate("/devices");
+    h.render();
+    assert_eq!(selected(&h), Some(2.));
+    assert_eq!(screens(&h, tab_stack(&h, 2)), ["devices"]);
+    // From the `/` tab too.
+    h.rt.app.navigate("/");
+    h.render();
+    h.rt.app.navigate("/devices/7");
+    h.render();
+    assert_eq!(selected(&h), Some(0.));
+    assert_eq!(screens(&h, tab_stack(&h, 0)), ["home", "device 7"]);
+}
+
+#[test]
+fn a_push_to_another_tabs_root_switches_tab_and_keeps_both_stacks() {
+    let mut h = home_app("/rooms/4");
+    h.rt.app.navigate("/devices");
+    h.render();
+    assert_eq!(selected(&h), Some(2.));
+    assert_eq!(path(&h), "/devices");
+    h.rt.app.navigate("/devices/7");
+    h.render();
+    assert_eq!(screens(&h, tab_stack(&h, 2)), ["devices", "device 7"]);
+    // Back to Rooms: its stack is as it was.
+    h.rt.app.navigate("/rooms");
+    h.render();
+    assert_eq!(selected(&h), Some(1.));
+    assert_eq!(path(&h), "/rooms/4");
+    // A root with a query switches, then pushes there.
+    h.rt.app.navigate("/devices?sort=name");
+    h.render();
+    assert_eq!(selected(&h), Some(2.));
+    assert_eq!(path(&h), "/devices?sort=name");
+}
+
+#[test]
+fn a_link_from_outside_opens_in_the_tab_its_path_belongs_to() {
+    let mut h = home_app("/rooms/4");
+    h.open_link("/devices/7");
+    assert_eq!(selected(&h), Some(2.));
+    assert_eq!(path(&h), "/devices/7");
+    assert_eq!(screens(&h, tab_stack(&h, 2)), ["devices", "device 7"]);
+    assert_eq!(screens(&h, tab_stack(&h, 1)), ["rooms", "room 4"]);
+    h.rt.app.back();
+    h.render();
+    assert_eq!(path(&h), "/devices");
+    // A path under no other tab's root opens in the `/` tab.
+    h.open_link("/elsewhere");
+    assert_eq!(selected(&h), Some(0.));
+}
+
+#[test]
+fn replace_stays_in_the_selected_tab_unless_the_path_is_another_tabs_root() {
+    let mut h = home_app("/rooms/4");
+    let rooms = tab_stack(&h, 1);
+    h.rt.app.replace("/devices/7");
+    h.render();
+    assert_eq!(selected(&h), Some(1.));
+    assert_eq!(path(&h), "/devices/7");
+    assert_eq!(screens(&h, rooms), ["rooms", "device 7"]);
+    // Another tab's root: that tab is selected, this one keeps its root.
+    h.rt.app.replace("/devices");
+    h.render();
+    assert_eq!(selected(&h), Some(2.));
+    assert_eq!(path(&h), "/devices");
+    assert_eq!(screens(&h, rooms), ["rooms"]);
+}
+
+#[test]
+fn browser_history_shows_each_entry_in_the_tab_it_was_made_in() {
+    let mut h = home_app("/rooms/4");
+    let (home, rooms) = (tab_stack(&h, 0), tab_stack(&h, 1));
+    h.rt.app.navigate("/devices/7");
+    h.render();
+    // Back: the web asks the entry's stack (the Rooms tab) for its path.
+    h.dispatch(UiEvent::History(rooms, 2, "/rooms/4".into()));
+    assert_eq!(selected(&h), Some(1.));
+    assert_eq!(path(&h), "/rooms/4");
+    // Forward: opened again in Rooms, over the screens under it.
+    h.dispatch(UiEvent::History(rooms, 3, "/devices/7".into()));
+    assert_eq!(selected(&h), Some(1.));
+    assert_eq!(screens(&h, rooms), ["rooms", "room 4", "device 7"]);
+    // An entry of another tab selects it.
+    h.dispatch(UiEvent::History(home, 1, "/".into()));
+    assert_eq!(selected(&h), Some(0.));
+    assert_eq!(path(&h), "/");
+    // Nothing moved out of the Rooms tab.
+    assert_eq!(screens(&h, rooms), ["rooms", "room 4", "device 7"]);
+}
+
+#[test]
+fn a_reload_reopens_the_screen_in_the_tab_its_entry_was_in() {
+    // `/devices/7` was pushed in Rooms, then the page reloads: the server
+    // opens the URL like a deep link (in Devices), and the page's history
+    // entry gives it back to Rooms.
+    let mut h = home_app_on("/devices/7", Some(prism_core::Platform::Web));
+    assert_eq!(selected(&h), Some(2.));
+    let rooms = tab_stack(&h, 1);
+    h.dispatch(UiEvent::History(rooms, 3, "/devices/7".into()));
+    assert_eq!(selected(&h), Some(1.));
+    assert_eq!(path(&h), "/devices/7");
+    assert_eq!(screens(&h, rooms), ["rooms", "device 7"]);
+    // The Devices tab is back on its root, built now.
+    assert_eq!(screens(&h, tab_stack(&h, 2)), ["devices"]);
+    // Later history events leave the other tabs alone.
+    h.rt.app.navigate("/devices");
+    h.render();
+    h.rt.app.navigate("/devices/8");
+    h.render();
+    h.dispatch(UiEvent::History(rooms, 2, "/devices/7".into()));
+    assert_eq!(selected(&h), Some(1.));
+    assert_eq!(screens(&h, tab_stack(&h, 2)), ["devices", "device 8"]);
+}

@@ -297,6 +297,8 @@ pub fn scrolled(sv: &ScrollViewer, id: NodeId) -> Result<()> {
         if let Some(sv) = s.as_ref().and_then(|s| s.cast::<ScrollViewer>().ok()) {
             let (x, y) = (sv.HorizontalOffset()? as f32, sv.VerticalOffset()? as f32);
             crate::imp::scrolled(id, x, y);
+            // A list at a caret in the page follows it (#328).
+            crate::overlay::caret_moved();
         }
         Ok(())
     }))?;

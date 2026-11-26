@@ -888,6 +888,8 @@
     // size (#79).
     el._placed = kind === "dialog" && t.includes("placed");
     const opt = (name) => (t.find((x) => x.startsWith(`${name}=`)) || "").slice(name.length + 1);
+    // Anchored at a text field's caret instead of the parent (#328).
+    el._anchor = opt("anchor") || "parent";
     const [w, h] = opt("size").split("x").map(Number);
     let box = el._box;
     if (!box || el._boxKind !== kind) {
@@ -1039,7 +1041,8 @@
     if (!box || !anchor || !el._open) return;
     const popover = el._boxKind === "popover";
     if (!popover && !(el._boxKind === "dialog" && el._placed)) return;
-    const a = anchor.getBoundingClientRect(), b = box.getBoundingClientRect();
+    const a = el._anchor === "caret" ? caretAnchor(anchor, el) : anchor.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
     const rtl = document.documentElement.dir === "rtl";
     const { left, top, side, fits } = placeBeside(a, b.width, b.height, el._side, el._align, rtl, popover ? 6 : 8, 8);
     if (!popover) {
@@ -1062,6 +1065,79 @@
   const replace = () => placedOverlays.forEach(placeOverlay);
   addEventListener("resize", replace);
   addEventListener("scroll", replace, true);
+
+  // --- Overlays at a text field's caret (#328) ---------------------------------
+  // The field is the focused one inside the overlay's parent, else the first
+  // one there (never one inside the overlay). Its caret is measured in the
+  // page: a range of a rich input, a hidden copy of an input or a text area
+  // (as other people's carets are, #240), kept inside the field's box. A
+  // field without the focus has no caret: the whole field is the anchor.
+  // Placed again, in the same frame, when the caret moves: input, selection
+  // changes, focus, the field's or the page's scrolling, each batch of
+  // patches (the field moved, the list changed).
+  function caretField(anchor, el) {
+    const a = document.activeElement;
+    if (a && a !== anchor && anchor.contains(a) && !el.contains(a) && isTextField(a)) return a;
+    const walk = (n) => {
+      for (const c of n.children) {
+        if (c === el) continue;
+        if (isTextField(c)) return c;
+        const f = walk(c);
+        if (f) return f;
+      }
+      return null;
+    };
+    return walk(anchor);
+  }
+  const box4 = (x, y, w, h) => ({ left: x, top: y, width: w, height: h, right: x + w, bottom: y + h });
+  /** The rectangle an overlay at the caret goes against, in the viewport. */
+  function caretAnchor(anchor, el) {
+    const field = caretField(anchor, el);
+    if (!field) return anchor.getBoundingClientRect();
+    const r = field.getBoundingClientRect();
+    if (document.activeElement !== field) return r;
+    let bar = null;
+    try {
+      if (field._rich) bar = richCaretBox(field);
+      else if (typeof field.selectionStart === "number") {
+        const v = field.value || "";
+        const back = field.selectionDirection === "backward";
+        const at = clen(v.slice(0, back ? field.selectionStart : field.selectionEnd));
+        const g = mirrorGeometry(field, r)(at, at, at).bar;
+        bar = { left: r.left + g.x, top: r.top + g.y, height: g.h };
+      }
+    } catch { /* no layout yet */ }
+    if (!bar) return r;
+    // As `caret_in_field` in prism-core: inside the field, 1 px wide.
+    const h = Math.max(0, Math.min(bar.height, r.height));
+    const x = Math.max(r.left, Math.min(bar.left, r.right - 1));
+    const y = Math.max(r.top, Math.min(bar.top, r.bottom - h));
+    return box4(x, y, 1, h);
+  }
+  /** A rich input's caret (the selection's moving end) in the viewport. */
+  function richCaretBox(el) {
+    const sel = richSelection(el);
+    const s = document.getSelection && document.getSelection();
+    if (!sel || !s || !s.rangeCount) return null;
+    const range = s.getRangeAt(0);
+    if (sel[0] !== sel[1]) {
+      const rects = [...range.getClientRects()].filter((b) => b.height > 0);
+      const back = richOffset(el, s.focusNode, s.focusOffset) === sel[0];
+      const b = back ? rects[0] : rects[rects.length - 1];
+      if (b) return { left: back ? b.left : b.right, top: b.top, height: b.height };
+    }
+    const r = rangeBox(el, range, sel[0]);
+    return { left: r.left, top: r.top, height: r.height };
+  }
+  function replaceAtCaret() {
+    for (const el of placedOverlays) if (el._anchor === "caret") placeOverlay(el);
+  }
+  document.addEventListener("selectionchange", replaceAtCaret);
+  for (const t of ["input", "keyup", "pointerup", "focusin"]) document.addEventListener(t, replaceAtCaret, true);
+  // Once the focus has moved on: another field's caret, or a whole field.
+  document.addEventListener("focusout", () => setTimeout(replaceAtCaret, 0), true);
+  // An input scrolls to its caret in the frame after the one that typed.
+  document.addEventListener("input", () => requestAnimationFrame(replaceAtCaret), true);
 
   // --- Choice controls (#18) ----------------------------------------------------
   function radioOptions(el, id, config) {
@@ -2566,6 +2642,23 @@
     if (at === null) at = n;
     return Math.max(n, Math.min(n + len - 1, at));
   }
+  /** The viewport box of `range` in rich input `el` (starting at character
+   *  `at`): a collapsed caret between two runs (or in an empty field) has
+   *  no box: the first of its client rects, else the run beside it, else
+   *  the field's first line. */
+  function rangeBox(el, range, at) {
+    const r = range.getBoundingClientRect();
+    if (r.width || r.height) return r;
+    const rects = range.getClientRects();
+    if (rects.length) return rects[0];
+    const [node] = richPoint(el, at);
+    const box = (node.nodeType === 3 ? node.parentNode : node);
+    const b = box && box !== el ? box.getBoundingClientRect() : null;
+    const cs = getComputedStyle(el);
+    const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2 || 16;
+    const er = el.getBoundingClientRect();
+    return b ? { left: b.right, top: b.top, width: 0, height: b.height } : { left: er.left + (parseFloat(cs.paddingLeft) || 0), top: er.top + (parseFloat(cs.paddingTop) || 0), width: 0, height: lh };
+  }
   /** Reports where field `el`'s caret or selection is (`selrect`), once per frame. */
   function trackSelectionRect(el, id) {
     let queued = false;
@@ -2575,22 +2668,7 @@
       const sel = richSelection(el);
       const s = document.getSelection && document.getSelection();
       if (!sel || !s || !s.rangeCount) return;
-      const range = s.getRangeAt(0);
-      let r = range.getBoundingClientRect();
-      if (!r.width && !r.height) {
-        // A collapsed caret between two runs (or in an empty field) has
-        // no box: the first of its client rects, else the run beside it.
-        const rects = range.getClientRects();
-        if (rects.length) r = rects[0];
-        else {
-          const [node] = richPoint(el, sel[0]);
-          const box = (node.nodeType === 3 ? node.parentNode : node);
-          const b = box && box !== el ? box.getBoundingClientRect() : null;
-          const lh = parseFloat(getComputedStyle(el).lineHeight) || parseFloat(getComputedStyle(el).fontSize) * 1.2 || 16;
-          const er = el.getBoundingClientRect();
-          r = b ? { left: b.right, top: b.top, width: 0, height: b.height } : { left: er.left + (parseFloat(getComputedStyle(el).paddingLeft) || 0), top: er.top + (parseFloat(getComputedStyle(el).paddingTop) || 0), width: 0, height: lh };
-        }
-      }
+      const r = rangeBox(el, s.getRangeAt(0), sel[0]);
       const er = el.getBoundingClientRect();
       const msg = { t: "selrect", id, start: sel[0], end: sel[1], x: r.left - er.left, y: r.top - er.top, w: sel[0] === sel[1] ? Math.max(1, r.width) : r.width, h: r.height };
       const key = JSON.stringify(msg);
@@ -2672,6 +2750,8 @@
     setRichSelection(el, caret, caret);
     richSend(el, id);
     if (el._selCheck) el._selCheck();
+    // Its caret moved: a list open at it follows in this frame (#328).
+    replaceAtCaret();
   }
 
   function richHistory(el, id, undo) {
@@ -2686,6 +2766,7 @@
     setRichSelection(el, step.sel[0], step.sel[1]);
     richSend(el, id);
     if (el._selCheck) el._selCheck();
+    replaceAtCaret();
   }
 
   /** Sends the runs and remembers them (an echo of them is no change). */
@@ -6290,6 +6371,14 @@
   }
 
   const isMainStack = (st) => navState()?.stack === st;
+  /** The stack of tab `tab` of a tab bar root (a lazy tab's too, empty
+   *  until first shown), else null. */
+  function tabStack(tab) {
+    const root = mount.firstElementChild;
+    if (!root || root.dataset.kind !== "tabs") return null;
+    const panel = nodes.get((root._tabs || [])[tab]);
+    return (panel && panel.querySelector(".prism-stack")) || null;
+  }
   // --- Element frames (#192): measured by the page, sent when they change ---
   /** Elements that report their frame, with the frame last sent. */
   const layoutEls = new Map();
@@ -6365,9 +6454,17 @@
     if (!hist) {
       // The first tree: this entry is the page's own, a deep link's too
       // (no entries for the screens under it). A reload keeps its number.
-      const n = (history.state && history.state.prism) || 1;
+      const was = history.state;
+      const n = (was && was.prism) || 1;
       history.replaceState(entryOf(n, s), "", urlFor(s.path));
-      return record(n);
+      record(n);
+      // A reload or a reconnection opens the URL like a deep link, in the
+      // tab its path belongs to; a screen pushed in another tab (#332)
+      // goes back to the tab its entry was in.
+      const home = was && was.prism && was.path === s.path && typeof was.tab === "number" && was.tab !== s.tab
+        ? tabStack(was.tab) : null;
+      if (home) send({ t: "history", id: Number(home.dataset.pid), depth: Math.max(1, was.depth | 0), path: was.path });
+      return;
     }
     if (hist.path === s.path && hist.depth === s.depth && hist.tab === s.tab) {
       hist.replaces = replaces;
@@ -6419,9 +6516,10 @@
     }
     entries[st.prism] = { depth: st.depth, tab: st.tab, path: st.path };
     hist = { prism: st.prism, depth: st.depth, tab: st.tab, path: st.path, replaces: hist.replaces };
-    // The entry's path at its depth: popped to while still in the stack,
-    // opened again otherwise.
-    send({ t: "history", id: Number(s.stack.dataset.pid), depth: st.depth, path: st.path });
+    // The entry's path at its depth, in the tab it was made in (#332):
+    // popped to while still in the stack, opened again otherwise.
+    const target = (typeof st.tab === "number" && tabStack(st.tab)) || s.stack;
+    send({ t: "history", id: Number(target.dataset.pid), depth: st.depth, path: st.path });
   });
 
   // --- Scroll events (virtualized lists) -------------------------------------
@@ -6691,6 +6789,13 @@
   // --- Static snapshots (Live Activities on the web) --------------------------
   // Mirrors the SwiftUI renderer used by widgets and the Dynamic Island.
   const color = (c) => (Array.isArray(c) ? `light-dark(${c[0]}, ${c[1]})` : c);
+  // A snapshot gradient (`gr`: kind `k`, angle `a`, stops `s`, #330) as CSS.
+  function snodeGradient(g) {
+    const stops = (g.s || []).map(([c, at]) => `${color(c)} ${at * 100}%`).join(", ");
+    if (g.k === "r") return `radial-gradient(${stops})`;
+    if (g.k === "c") return `conic-gradient(from ${g.a || 0}deg, ${stops})`;
+    return `linear-gradient(${g.a || 0}deg, ${stops})`;
+  }
   function snode(n) {
     const tag = { t: "span", i: "span", m: "span", p: "progress" }[n.k] || "div";
     const el = document.createElement(tag);
@@ -6716,6 +6821,7 @@
     if (n.ai) st.alignItems = { s: "flex-start", c: "center", e: "flex-end" }[n.ai];
     if (n.jc) st.justifyContent = { c: "center", e: "flex-end", b: "space-between", a: "space-around", v: "space-evenly" }[n.jc];
     if (n.bg) st.background = color(n.bg);
+    if (n.gr) st.backgroundImage = snodeGradient(n.gr);
     if (n.fg) { st.color = color(n.fg); st.accentColor = color(n.fg); }
     if (n.bw) st.border = `${n.bw}px solid ${color(n.bc || "currentColor")}`;
     if (n.r) st.borderRadius = n.r + "px";
@@ -7787,6 +7893,8 @@
     msg.p.forEach(apply);
     if (radiosDirty) roveRadios();
     flushOverlays();
+    // The field moved or the list changed size (#328).
+    replaceAtCaret();
     focusAsked = null;
     flushStates();
     slideMoved();

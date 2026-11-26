@@ -116,6 +116,12 @@ pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
 
+/// Overlays anchored at a caret follow it (#328): called as soon as a
+/// field's text, selection or scrolling changes.
+pub(crate) fn follow_carets() {
+    with_state(|s| s.renderer.widgets.ix.follow_carets());
+}
+
 /// Lays everything out again, measures included (a video's size became
 /// known, #207).
 pub(crate) fn relayout_all() {
@@ -591,6 +597,8 @@ impl State {
         if let Some(main) = w.root.window() {
             w.ix.follow(&main);
         }
+        // Overlays at a caret follow the field's new place (#328).
+        w.ix.follow_carets();
         // Elements that report their frame and moved (#192).
         let more = prism_native::report_layout(&mut self.runtime, &mut self.renderer);
         if !more.is_empty() {
@@ -2118,6 +2126,8 @@ define_class!(
             }
             // Its rectangle (#217).
             crate::edit::rect_changed(&tv, id);
+            // A list open at its caret follows it, before the frame (#328).
+            follow_carets();
         }
 
         /// A clip view scrolled: other people's carets in the text it
@@ -2127,6 +2137,8 @@ define_class!(
             if let Some(v) = n.object().and_then(|o| o.downcast::<NSView>().ok()) {
                 crate::carets::scrolled(&v);
             }
+            // The field or the page scrolled under a list at a caret (#328).
+            follow_carets();
         }
 
         #[unsafe(method(onEnvironment:))]
@@ -2268,6 +2280,7 @@ define_class!(
             }
             let grew = text.chars().count() > LAST_LEN.with(|l| l.replace(text.chars().count()));
             dispatch(UiEvent::Input(id, text));
+            follow_carets();
             // Suggestions: AppKit's completion list as the user types.
             if suggests
                 && grew
@@ -2355,6 +2368,7 @@ define_class!(
             dispatch(UiEvent::Input(tv.ivars().id.get(), tv.string().to_string()));
             // The text under the selection moved (#217).
             crate::edit::rect_changed(&tv, tv.ivars().id.get());
+            follow_carets();
         }
     }
 
@@ -6584,6 +6598,13 @@ fn run_automation(mtm: MainThreadMarker) {
             NSApplication::sharedApplication(mtm).isActive(),
             window.isKeyWindow()
         );
+        // Scrolled into view first, with room around it: the click lands
+        // on it, and what it opens shows.
+        let b = target.bounds();
+        target.scrollRectToVisible(NSRect::new(
+            NSPoint::new(b.origin.x, b.origin.y - 240.),
+            NSSize::new(b.size.width, b.size.height + 480.),
+        ));
         // A window that isn't key (the app may not get activated from a
         // terminal) swallows the first click of most views: focus directly.
         if target.acceptsFirstResponder() {
@@ -6597,8 +6618,15 @@ fn run_automation(mtm: MainThreadMarker) {
         let to = std::env::var("PRISM_DRAG_TO")
             .ok()
             .and_then(|l| find_labelled(&root, &l));
+        // A text input already being edited takes no click: sent to the
+        // field itself (not its field editor), it would go up the
+        // responder chain to a container that handles keys.
+        let editing = target
+            .downcast_ref::<NSTextField>()
+            .is_some_and(|f| f.currentEditor().is_some());
         on_main_after(std::time::Duration::ZERO, move || match to {
             Some(to) => post_drag(&w, &t, &to),
+            None if editing => {}
             None => post_click(&w, &t),
         });
         if let Ok(text) = std::env::var("PRISM_TYPE") {

@@ -356,6 +356,15 @@ fn caret_at(doc: &RichEditTextDocument, at: i32, origin: (f32, f32)) -> Result<(
     Ok((rect.X + origin.0, rect.Y + origin.1, rect.Height.max(1.)))
 }
 
+/// The caret of `r` (the selection's end): its box, one point wide, in
+/// the box (#328).
+pub fn caret_rect(r: &RichEditBox) -> Result<(f32, f32, f32, f32)> {
+    let doc = r.Document()?;
+    let at = doc.Selection()?.EndPosition()?;
+    let (x, y, h) = caret_at(&doc, at, client_origin(r))?;
+    Ok((x, y, 1., h))
+}
+
 /// The selection, and the caret's box (one point wide) or the box around
 /// the selected text (on several lines, the whole width), in the field.
 fn selection_rect(r: &RichEditBox) -> Result<(SelectionEvent, Rect)> {

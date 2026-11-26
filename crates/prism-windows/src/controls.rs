@@ -339,6 +339,7 @@ fn field(id: NodeId, single: bool) -> Result<Content> {
         if let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) {
             typed(id, t.Text()?.to_string());
             crate::carets::changed(id);
+            crate::overlay::caret_moved();
         }
         Ok(())
     }))?;
@@ -352,6 +353,7 @@ fn field(id: NodeId, single: bool) -> Result<Content> {
             let a = t.SelectionStart()?.max(0) as usize;
             let b = a + t.SelectionLength()?.max(0) as usize;
             crate::imp::selected(id, &text, a, b);
+            crate::overlay::caret_moved();
         }
         Ok(())
     }))?;

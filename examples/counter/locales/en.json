@@ -380,6 +380,8 @@
     "note": "Rich note",
     "note_placeholder": "Select words for the toolbar",
     "note_bold": "Bold",
+    "template": "Template",
+    "template_placeholder": "Type {open} to insert a field",
     "note_copied": "Copied {count} characters with Markdown",
     "note_pasted": "Pasted, the clipboard had {count} types",
     "note_clicked": "Modifier-clicked span {count}",
@@ -488,7 +490,10 @@
     "frosted": "Frosted bar",
     "search": "Search",
     "clear": "Clear",
-    "focus_hint": "Focus the field: the card rings, the Clear button appears."
+    "focus_hint": "Focus the field: the card rings, the Clear button appears.",
+    "fade_hint": "Scroll the list: its end fades into the card (a linear gradient over it). Tap the button to change the fill.",
+    "fade_item": "Item {n}",
+    "fade_swap": "Change the fill"
   },
   "interact": {
     "heading": "Interaction",
