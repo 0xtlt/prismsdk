@@ -6781,33 +6781,79 @@ fn schedule_timer(at: Option<std::time::Instant>) {
     });
 }
 
-/// `~/Library/Application Support/<bundle id>` (or `prism.<title>` when run
-/// unbundled with `cargo run`). `PRISM_DATA_DIR` overrides it.
-/// Where the app keeps its data. An app with widgets keeps it in its App
-/// Group, as on iOS: its widget extension reads and writes the same storage
-/// when it refreshes the widgets without the app (`Widget::refresh`, #331).
-/// The data an earlier version kept in Application Support moves there once.
+/// Where the app keeps its data: `~/Library/Application Support/<bundle id>`
+/// (or `prism.<title>` when run unbundled with `cargo run`), or, for an app
+/// with widgets, `prism-data` in its App Group, as on iOS: its widget
+/// extension reads and writes the same storage when it refreshes the
+/// widgets without the app (`Widget::refresh`, #331). The data an earlier
+/// version kept in Application Support moves there ([`move_data`]).
+/// `PRISM_DATA_DIR` overrides it.
 pub(crate) fn data_dir(title: &str) -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("PRISM_DATA_DIR") {
         return dir.into();
     }
     let own = own_data_dir(title);
-    let bundle = objc2_foundation::NSBundle::mainBundle();
-    let group = bundle
+    let Some(shared) = group_data_dir() else {
+        return own;
+    };
+    if own.exists() && !move_data(&own, &shared) {
+        // Not moved (another volume…): the app keeps its data where it was.
+        return own;
+    }
+    shared
+}
+
+/// The widget extension's data directory: the App Group's `prism-data`,
+/// the app's. The extension never moves the app's data (its sandbox can't
+/// reach Application Support): the app does when it next runs, even when
+/// the extension wrote there first. `PRISM_DATA_DIR` overrides it.
+pub(crate) fn extension_data_dir(title: &str) -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("PRISM_DATA_DIR") {
+        return dir.into();
+    }
+    group_data_dir().unwrap_or_else(|| own_data_dir(title))
+}
+
+/// `prism-data` in the App Group named by the bundle's `PrismAppGroup`.
+fn group_data_dir() -> Option<std::path::PathBuf> {
+    let group = objc2_foundation::NSBundle::mainBundle()
         .objectForInfoDictionaryKey(&NSString::from_str("PrismAppGroup"))
         .and_then(|g| g.downcast::<NSString>().ok())
         .and_then(|g| {
             objc2_foundation::NSFileManager::defaultManager()
                 .containerURLForSecurityApplicationGroupIdentifier(&g)
         })
-        .and_then(|url| url.path());
-    let Some(group) = group else { return own };
-    let shared = std::path::PathBuf::from(group.to_string()).join("prism-data");
-    if !shared.exists() && own.exists() && std::fs::rename(&own, &shared).is_err() {
-        // Not moved (another volume…): the app keeps its data where it was.
-        return own;
+        .and_then(|url| url.path())?;
+    Some(std::path::PathBuf::from(group.to_string()).join("prism-data"))
+}
+
+/// Moves the app's data from `own` into `shared`, then removes `own`.
+/// `shared` may exist already: the widget extension can run after an
+/// update before the app does, and write there first (its widget-link key,
+/// what a refresh hook stored). The app's entries win over the extension's
+/// (they are what the user had), the extension's other entries stay.
+/// False when nothing could be moved (`shared` is on another volume…).
+fn move_data(own: &std::path::Path, shared: &std::path::Path) -> bool {
+    if !shared.exists() {
+        if let Some(parent) = shared.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        return std::fs::rename(own, shared).is_ok();
     }
-    shared
+    let Ok(entries) = std::fs::read_dir(own) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let to = shared.join(entry.file_name());
+        if to.is_dir() && !to.is_symlink() {
+            let _ = std::fs::remove_dir_all(&to);
+        }
+        if std::fs::rename(entry.path(), &to).is_err() {
+            return false;
+        }
+    }
+    let _ = std::fs::remove_dir(own);
+    true
 }
 
 /// The app's own data directory, in Application Support.
@@ -7262,5 +7308,56 @@ mod focus_tests {
         assert!(!focused_by_mouse(Some(T::LeftMouseDown), true));
         assert!(!focused_by_mouse(Some(T::KeyDown), false));
         assert!(!focused_by_mouse(None, false));
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::move_data;
+    use crate::temp_dir::TempDir;
+    use std::fs;
+
+    /// #331: the app's data moves into the App Group, whole when the group
+    /// has none yet.
+    #[test]
+    fn the_apps_data_moves_into_the_app_group() {
+        let root = TempDir::new("data-move");
+        let (own, shared) = (root.join("own"), root.join("group/prism-data"));
+        fs::create_dir_all(own.join("widget-links")).unwrap();
+        fs::write(own.join("notes"), "mine").unwrap();
+        fs::write(own.join("widget-links/widget-link-key"), "key").unwrap();
+        assert!(move_data(&own, &shared));
+        assert!(!own.exists());
+        assert_eq!(fs::read_to_string(shared.join("notes")).unwrap(), "mine");
+        assert_eq!(
+            fs::read_to_string(shared.join("widget-links/widget-link-key")).unwrap(),
+            "key"
+        );
+    }
+
+    /// #331: the widget extension ran first after an update and wrote to
+    /// the group: the app's data still moves, its entries win, and the
+    /// extension's others stay.
+    #[test]
+    fn the_apps_data_moves_after_the_extension_wrote_first() {
+        let root = TempDir::new("data-merge");
+        let (own, shared) = (root.join("own"), root.join("group/prism-data"));
+        fs::create_dir_all(own.join("widget-links")).unwrap();
+        fs::write(own.join("notes"), "mine").unwrap();
+        fs::write(own.join("widget-links/widget-link-key"), "old key").unwrap();
+        fs::create_dir_all(shared.join("widget-links")).unwrap();
+        fs::write(shared.join("widget-links/widget-link-key"), "new key").unwrap();
+        fs::write(shared.join("departures"), "fetched").unwrap();
+        assert!(move_data(&own, &shared));
+        assert!(!own.exists());
+        assert_eq!(fs::read_to_string(shared.join("notes")).unwrap(), "mine");
+        assert_eq!(
+            fs::read_to_string(shared.join("widget-links/widget-link-key")).unwrap(),
+            "old key"
+        );
+        assert_eq!(
+            fs::read_to_string(shared.join("departures")).unwrap(),
+            "fetched"
+        );
     }
 }

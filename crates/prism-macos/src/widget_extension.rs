@@ -28,7 +28,7 @@ pub(crate) fn run(config: AppConfig, init: AppInit) {
 /// draws open the app on links the app accepts); it draws only the widgets
 /// its refresh hooks updated.
 fn runtime(title: &str, init: &AppInit) -> Runtime {
-    let data_dir = crate::imp::data_dir(title);
+    let data_dir = crate::imp::extension_data_dir(title);
     let mut runtime = Runtime::with_options(
         init,
         RuntimeOptions {
