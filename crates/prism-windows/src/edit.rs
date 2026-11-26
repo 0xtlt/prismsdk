@@ -235,7 +235,7 @@ pub fn insert_text(r: &RichEditBox, text: &str) {
 
 /// Where RichEdit's client coordinates start in the box: its text host
 /// (`ContentElement`, inside the border and padding).
-fn client_origin(r: &RichEditBox) -> (f32, f32) {
+pub(crate) fn client_origin(r: &RichEditBox) -> (f32, f32) {
     let Ok(me) = r.cast::<UIElement>() else {
         return (0., 0.);
     };

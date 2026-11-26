@@ -119,6 +119,33 @@ fn runs_round_trip_through_their_encoding() {
             chip_label: Some("Road map".into()),
             chip_icon: Some("doc.text".into()),
             icon: None,
+            // A chip's options (#329).
+            chip_drawing: Some(prism_core::Drawing {
+                inset: (0., 0.),
+                paths: vec![Path::circle(0.5, 0.5, 0.25).fill(rgb(0x334455))],
+            }),
+            chip_icon_ratio: Some(1.5),
+            tooltip: Some("Road map, the whole name".into()),
+            chip_ring: Some((1.5, adaptive(rgb(0x0a84ff), rgb(0x64d2ff)))),
+            chip_radius: Some(8.),
+            chip_height: Some(22.5),
+            chip_max_width: Some(140.),
+            chip_label_runs: vec![
+                TextRun {
+                    text: "Road".into(),
+                    weight: Some(FontWeight::Bold),
+                    ..TextRun::default()
+                },
+                TextRun {
+                    text: " map".into(),
+                    italic: true,
+                    color: Some(rgb(0x8e8e93)),
+                    ..TextRun::default()
+                },
+            ],
+            chip_state: Some("open".into()),
+            chip_test_id: Some("roadmap".into()),
+            chip_attrs: vec![("data-order".into(), "3".into())],
         },
         TextRun {
             text: "★".into(),

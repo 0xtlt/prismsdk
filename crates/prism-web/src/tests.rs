@@ -4173,6 +4173,8 @@ fn the_backends_own_data_attributes_are_reserved() {
     let open: Vec<_> = seen
         .iter()
         .filter(|n| prism_core::attributes::is_app_attribute(&format!("data-{n}")))
+        // A chip's state and test id are the app's values (#329).
+        .filter(|n| !prism_core::attributes::CHIP_DATA_ATTRIBUTES.contains(&n.as_str()))
         .collect();
     assert!(
         open.is_empty(),
@@ -4493,6 +4495,75 @@ fn rich_inputs_have_a_wire_format_and_a_first_paint() {
         )),
         "{page}"
     );
+}
+
+/// #329: a chip's first paint is the markup the client draws: its state
+/// class and attributes, tooltip, test id, vector icon, label runs and box.
+#[test]
+fn a_styled_chip_has_a_first_paint() {
+    use prism_core::{Color, Drawing, FontWeight, Path, TextRun, encode_runs, rgb};
+    let chip = TextRun {
+        text: "\u{fffc}".into(),
+        background: Some(rgb(0xffd60a)),
+        chip: Some("user:7".into()),
+        chip_label: Some("Ada · 3".into()),
+        chip_label_runs: vec![
+            TextRun {
+                text: "Ada".into(),
+                weight: Some(FontWeight::Bold),
+                ..TextRun::default()
+            },
+            TextRun {
+                text: " · 3".into(),
+                color: Some(rgb(0x8e8e93)),
+                ..TextRun::default()
+            },
+        ],
+        chip_drawing: Some(Drawing {
+            inset: (0., 0.),
+            paths: vec![Path::circle(0.5, 0.5, 0.4).stroke(Color::current(), 1.5)],
+        }),
+        tooltip: Some("Ada \"L\"".into()),
+        chip_ring: Some((1.5, rgb(0x0a84ff))),
+        chip_radius: Some(9.),
+        chip_height: Some(22.),
+        chip_max_width: Some(120.),
+        chip_state: Some("open".into()),
+        chip_test_id: Some("mention-ada".into()),
+        chip_attrs: vec![("data-person".into(), "ada".into())],
+        ..TextRun::default()
+    };
+    let runs = encode_runs(&[
+        TextRun {
+            text: "To ".into(),
+            ..TextRun::default()
+        },
+        chip,
+    ]);
+    let page = html(&[
+        create(1, NodeKind::RichInput),
+        Patch::SetRichValue { id: 1, runs },
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        page.contains(
+            r#"<span class="prism-chip prism-chip-open" contenteditable="false" data-state="open" data-testid="mention-ada" title="Ada &quot;L&quot;" data-person="ada" style=""#
+        ),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"<svg class="prism-chip-icon" style="width:1em""#),
+        "a vector icon: {page}"
+    );
+    assert!(page.contains(r#"viewBox="0 0 100 100""#), "{page}");
+    assert!(page.contains("Ada</span>"), "{page}");
+    assert!(page.contains(" · 3</span></span></span>"), "{page}");
+    assert!(page.contains("border-radius:9px"), "{page}");
+    assert!(!page.contains("border-radius:3px"), "{page}");
+    assert!(page.contains("box-shadow:inset 0 0 0 1.5px"), "{page}");
+    assert!(page.contains("max-width:120px"), "{page}");
+    assert!(page.contains("text-overflow:ellipsis"), "{page}");
+    assert!(page.contains("vector-effect:non-scaling-stroke"), "{page}");
 }
 
 /// #210: the server keeps a file the app hands over, answers at once, and

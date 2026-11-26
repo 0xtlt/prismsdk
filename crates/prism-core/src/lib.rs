@@ -141,8 +141,8 @@ pub use selection_across::{
 };
 pub use shape::{Drawing, Path, Segment};
 pub use spans::{
-    OBJECT_CHAR, Span, TextRun, UnderlineStyle, chip, decode_runs, encode_runs, icon, link,
-    normalize_spans, restyle_spans, span, spans_text, splice_spans, split_spans,
+    ChipIcon, OBJECT_CHAR, Span, TextRun, UnderlineStyle, chip, decode_runs, encode_runs, icon,
+    link, normalize_spans, restyle_spans, span, spans_text, splice_spans, split_spans,
 };
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use store::{Buyer, Checkout, Product, Purchase, PurchaseOutcome, Store, TestStore};

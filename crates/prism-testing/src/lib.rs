@@ -160,6 +160,20 @@ impl Host {
         self.mounted().into_iter().find(|id| f(&self.nodes[id]))
     }
 
+    /// The chip of rich input `id` whose test id is `test_id`
+    /// (`Span::chip_test_id`, #329): its character offset in the value
+    /// and its run. Finds a chip without counting its place.
+    pub fn chip(&self, id: NodeId, test_id: &str) -> Option<(usize, prism_core::TextRun)> {
+        let mut at = 0;
+        for r in prism_core::decode_runs(&self.get(id).runs) {
+            if r.chip_test_id.as_deref() == Some(test_id) {
+                return Some((at, r));
+            }
+            at += r.text.chars().count();
+        }
+        None
+    }
+
     /// The mounted node with this text (panics if none).
     pub fn by_text(&self, text: &str) -> NodeId {
         self.find(|n| n.text == text)

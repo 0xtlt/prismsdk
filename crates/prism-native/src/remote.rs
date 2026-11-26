@@ -129,6 +129,9 @@ pub struct RemoteWidgets {
     pub ops: Vec<Value>,
     kinds: HashMap<NodeId, NodeKind>,
     texts: HashMap<NodeId, String>,
+    /// A rich input's runs (encoded): its chips measure as wide as they
+    /// are drawn (#329).
+    rich_runs: HashMap<NodeId, String>,
     /// Icon names of images (what they measure).
     icons: HashMap<NodeId, String>,
     /// Control configs (a picker measures its options).
@@ -156,6 +159,7 @@ impl RemoteWidgets {
             ops: Vec::new(),
             kinds: HashMap::new(),
             texts: HashMap::new(),
+            rich_runs: HashMap::new(),
             icons: HashMap::new(),
             configs: HashMap::new(),
             timer_after: HashMap::new(),
@@ -544,7 +548,8 @@ pub fn typography(s: &Style) -> serde_json::Map<String, Value> {
 /// `dotted`, `dashed`, #221), `c`/`bg` colors, `ff`
 /// family, `z` size as a multiple of the text's, `link` the id to report as
 /// `{"t":"menu","id":link}`, `href` its path, `icon` an SF Symbol name and
-/// `glyph` its fallback glyph).
+/// `glyph` its fallback glyph, `tt` its tool tip; a chip's `chip` key, `cl`
+/// label, `ci` icon glyph and options, see `chip_options`).
 pub fn runs_json(config: &str) -> Value {
     let runs: Vec<Value> = prism_core::decode_runs(config)
         .into_iter()
@@ -580,25 +585,103 @@ pub fn runs_json(config: &str) -> Value {
             if let Some(l) = r.link {
                 m.insert("link".into(), json!(l));
             }
-            if let Some(h) = r.href {
+            if let Some(h) = &r.href {
                 m.insert("href".into(), json!(h));
             }
-            if let Some(g) = r.icon {
-                m.insert("glyph".into(), json!(prism_core::glyphs::glyph(&g)));
+            if let Some(g) = &r.icon {
+                m.insert("glyph".into(), json!(prism_core::glyphs::glyph(g)));
                 m.insert("icon".into(), json!(g));
             }
             // A rich input's chip (#115): its key, label and icon's glyph.
-            if let Some(k) = r.chip {
+            if let Some(k) = &r.chip {
                 m.insert("chip".into(), json!(k));
-                m.insert("cl".into(), json!(r.chip_label.unwrap_or_default()));
-                if let Some(g) = r.chip_icon {
-                    m.insert("ci".into(), json!(prism_core::glyphs::glyph(&g)));
+                m.insert("cl".into(), json!(r.chip_label.clone().unwrap_or_default()));
+                if let Some(g) = r.chip_icon.as_deref().filter(|_| r.chip_drawing.is_none()) {
+                    m.insert("ci".into(), json!(prism_core::glyphs::glyph(g)));
                 }
+                chip_options(&mut m, &r);
+            }
+            if let Some(t) = &r.tooltip {
+                m.insert("tt".into(), json!(t));
             }
             Value::Object(m)
         })
         .collect();
     Value::Array(runs)
+}
+
+/// A chip's options for a host (#329): `cv` its vector icon (paths of
+/// [`drawing`] in a box 100 units tall, `cvr` times as wide; a path's
+/// `fc` / `sc` is the alpha of a fill / stroke in the chip's text color),
+/// `ring` `[width, color]`, `rad` its radius, `ht` its height, `mw` its
+/// largest width (points), `nr` its label runs `[{t, w, i, c}]`, `st` its
+/// state and `tid` its test id.
+fn chip_options(m: &mut serde_json::Map<String, Value>, r: &prism_core::TextRun) {
+    if let Some(d) = &r.chip_drawing {
+        let ratio = r.chip_icon_ratio.filter(|v| *v > 0.).unwrap_or(1.);
+        let current: Vec<(Option<f32>, Option<f32>)> = d
+            .paths
+            .iter()
+            .map(|p| {
+                let alpha = |c: Option<Color>| c.filter(|c| c.is_current()).map(|c| c.a);
+                (alpha(p.fill), alpha(p.stroke))
+            })
+            .collect();
+        let paths = d
+            .with_current_color(Color::BLACK)
+            .resolve(100. * ratio, 100., 1.);
+        let mut paths = drawing(&paths);
+        if let Value::Array(list) = &mut paths {
+            for (p, (fc, sc)) in list.iter_mut().zip(current) {
+                if let Some(a) = fc {
+                    p["fc"] = json!(a);
+                }
+                if let Some(a) = sc {
+                    p["sc"] = json!(a);
+                }
+            }
+        }
+        m.insert("cv".into(), paths);
+        m.insert("cvr".into(), json!(ratio));
+    }
+    if let Some((w, c)) = r.chip_ring {
+        m.insert("ring".into(), json!([w, color(Some(c))]));
+    }
+    for (key, v) in [
+        ("rad", r.chip_radius),
+        ("ht", r.chip_height),
+        ("mw", r.chip_max_width),
+    ] {
+        if let Some(v) = v {
+            m.insert(key.into(), json!(v));
+        }
+    }
+    if !r.chip_label_runs.is_empty() {
+        let runs: Vec<Value> = r
+            .chip_label_runs
+            .iter()
+            .map(|l| {
+                let mut o = json!({ "t": l.text });
+                if let Some(w) = l.weight {
+                    o["w"] = json!(w.css());
+                }
+                if l.italic {
+                    o["i"] = json!(true);
+                }
+                if l.color.is_some() {
+                    o["c"] = color(l.color);
+                }
+                o
+            })
+            .collect();
+        m.insert("nr".into(), Value::Array(runs));
+    }
+    if let Some(st) = &r.chip_state {
+        m.insert("st".into(), json!(st));
+    }
+    if let Some(t) = &r.chip_test_id {
+        m.insert("tid".into(), json!(t));
+    }
 }
 
 impl RemoteWidgets {
@@ -752,6 +835,13 @@ impl RemoteWidgets {
     ) -> (f32, f32) {
         let spec = Value::Object(typography(style)).to_string();
         let spec = if spec == "{}" { "" } else { &spec };
+        // A rich input's value with its runs (#329).
+        let value = self.texts.get(id).cloned().unwrap_or_default();
+        let rich = if kind == NodeKind::TextArea {
+            self.rich_spec(id, &value, typography(style))
+        } else {
+            String::new()
+        };
         let em = style.font_size;
         let width = match kind {
             NodeKind::TextInput => Some(max_width.unwrap_or(10. * em)),
@@ -766,7 +856,11 @@ impl RemoteWidgets {
                 font_size: style.font_size,
                 weight: weight(style.font_weight),
                 max_width,
-                spec,
+                spec: if !rich.is_empty() && text == value {
+                    &rich
+                } else {
+                    spec
+                },
             })
         };
         let (w, h) = match kind {
@@ -780,6 +874,29 @@ impl RemoteWidgets {
         (width.unwrap_or(w), h)
     }
 
+    /// The spec a rich input's value `value` is measured with: `base`
+    /// (its typography) with its runs (`"runs"`, as the `rich` op sends
+    /// them, and `"rich": true`) when they hold that text, so the host
+    /// lays its chips out as it draws them (#329); else `base` alone.
+    fn rich_spec(&self, id: &NodeId, value: &str, base: serde_json::Map<String, Value>) -> String {
+        let mut spec = base;
+        if let Some(runs) = self.rich_runs.get(id).filter(|_| self.rich)
+            && prism_core::decode_runs(runs)
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<String>()
+                == value
+        {
+            spec.insert("rich".into(), json!(true));
+            spec.insert("runs".into(), runs_json(runs));
+        }
+        if spec.is_empty() {
+            String::new()
+        } else {
+            Value::Object(spec).to_string()
+        }
+    }
+
     /// A text area: its text, at least its minimum lines tall (#235; one
     /// for a rich input). Both are measured: a long line wraps to more.
     fn measure_rows(
@@ -788,6 +905,9 @@ impl RemoteWidgets {
         max_width: Option<f32>,
         at: impl Fn(&str, Option<f32>) -> (f32, f32),
     ) -> (f32, f32) {
+        // A rich input's value is measured with its runs (the spec), its
+        // chips as wide and tall as drawn (#329); its minimum lines are
+        // plain.
         let value = self.texts.get(id).map(String::as_str).unwrap_or("");
         let rows = prism_core::controls::InputConfig::decode(
             self.configs.get(id).map(String::as_str).unwrap_or(""),
@@ -827,6 +947,7 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_rich_value(&mut self, id: &NodeId, runs: &str) {
+        self.rich_runs.insert(*id, runs.to_string());
         self.ops
             .push(json!({ "op": "rich", "id": id, "runs": runs_json(runs) }));
     }
@@ -915,6 +1036,7 @@ impl Widgets for RemoteWidgets {
         self.content_sizes.remove(id);
         self.kinds.remove(id);
         self.texts.remove(id);
+        self.rich_runs.remove(id);
         self.icons.remove(id);
         self.configs.remove(id);
         self.timer_after.remove(id);
@@ -945,6 +1067,8 @@ impl Widgets for RemoteWidgets {
         }
         if kind == NodeKind::TextArea {
             let measure = self.measure;
+            let value = self.texts.get(id).map(String::as_str).unwrap_or("");
+            let runs = self.rich_spec(id, value, serde_json::Map::new());
             return self.measure_rows(id, max_width, |text, max_width| {
                 measure(&MeasureRequest {
                     kind: kind.name(),
@@ -952,7 +1076,7 @@ impl Widgets for RemoteWidgets {
                     font_size: style.font_size,
                     weight: weight(style.font_weight),
                     max_width,
-                    spec: "",
+                    spec: if text == value { &runs } else { "" },
                 })
             });
         }
@@ -1831,5 +1955,131 @@ mod scene_tests {
         assert_eq!(plain.widgets.ops[0]["kind"], "text_area");
         assert!(plain.widgets.ops[0].get("rich").is_none());
         assert!(!plain.widgets.ops.iter().any(|o| o["op"] == "rich"));
+    }
+
+    /// #329: a rich input's value is measured with its runs, so the host
+    /// lays its chips out as it draws them (a chip's U+FFFC alone is one
+    /// narrow character); its minimum lines are plain text.
+    #[test]
+    fn a_rich_input_is_measured_with_its_runs() {
+        use crate::Widgets;
+        use prism_core::{NodeKind, TextRun, encode_runs};
+        use std::sync::Mutex;
+        static SPECS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+        fn measure(m: &super::MeasureRequest) -> (f32, f32) {
+            let mut specs = SPECS.lock().unwrap_or_else(|e| e.into_inner());
+            specs.push((m.text.to_string(), m.spec.to_string()));
+            (100., 20.)
+        }
+        let runs = encode_runs(&[
+            TextRun {
+                text: "Hi ".into(),
+                ..TextRun::default()
+            },
+            TextRun {
+                text: "\u{fffc}".into(),
+                chip: Some("u".into()),
+                chip_label: Some("Ada Lovelace".into()),
+                chip_max_width: Some(90.),
+                ..TextRun::default()
+            },
+        ]);
+        let mut w = super::RemoteWidgets::new(measure).with_rich_inputs();
+        w.create(1, NodeKind::RichInput);
+        w.set_text(&1, "Hi \u{fffc}");
+        w.set_rich_value(&1, &runs);
+        w.measure(&1, None);
+        let specs = SPECS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let (_, spec) = specs
+            .iter()
+            .find(|(t, _)| t == "Hi \u{fffc}")
+            .expect("the value measured");
+        let spec: serde_json::Value = serde_json::from_str(spec).expect("a JSON spec");
+        assert_eq!(spec["rich"], true);
+        assert_eq!(spec["runs"][1]["cl"], "Ada Lovelace");
+        assert_eq!(spec["runs"][1]["mw"], 90.);
+        // The minimum lines: plain.
+        assert!(
+            specs
+                .iter()
+                .any(|(t, s)| t.starts_with("Ag") && s.is_empty())
+        );
+        // Stale runs (the user typed since): the value alone.
+        SPECS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        w.set_text(&1, "Hi \u{fffc}!");
+        w.measure(&1, None);
+        let specs = SPECS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(specs.iter().all(|(_, s)| s.is_empty()));
+    }
+
+    /// #329: a chip's options reach the host: its vector icon in a box 100
+    /// units tall (its text color marked), ring, radius, height, largest
+    /// width, label runs, tool tip, state and test id.
+    #[test]
+    fn a_chips_options_reach_the_host() {
+        use prism_core::{Color, Drawing, FontWeight, Path, TextRun, encode_runs, rgb};
+        let chip = TextRun {
+            text: "\u{fffc}".into(),
+            chip: Some("u".into()),
+            chip_label: Some("Ada · 3".into()),
+            chip_label_runs: vec![
+                TextRun {
+                    text: "Ada".into(),
+                    weight: Some(FontWeight::Bold),
+                    ..TextRun::default()
+                },
+                TextRun {
+                    text: " · 3".into(),
+                    italic: true,
+                    color: Some(rgb(0x8e8e93)),
+                    ..TextRun::default()
+                },
+            ],
+            chip_icon: None,
+            chip_drawing: Some(Drawing {
+                inset: (0., 0.),
+                paths: vec![
+                    Path::rect(0., 0., 1., 1.).fill(Color::current().with_alpha(0.5)),
+                    Path::rect(0.25, 0.25, 0.5, 0.5).fill(rgb(0xff0000)),
+                ],
+            }),
+            chip_icon_ratio: Some(2.),
+            tooltip: Some("Ada Lovelace".into()),
+            chip_ring: Some((1.5, rgb(0x0a84ff))),
+            chip_radius: Some(9.),
+            chip_height: Some(22.),
+            chip_max_width: Some(120.),
+            chip_state: Some("open".into()),
+            chip_test_id: Some("ada".into()),
+            ..TextRun::default()
+        };
+        let runs = super::runs_json(&encode_runs(&[chip]));
+        let c = &runs[0];
+        assert_eq!(c["tt"], "Ada Lovelace");
+        assert_eq!((&c["st"], &c["tid"]), (&"open".into(), &"ada".into()));
+        assert_eq!(
+            (&c["rad"], &c["ht"], &c["mw"]),
+            (&9.0.into(), &22.0.into(), &120.0.into())
+        );
+        assert_eq!(c["ring"][0], 1.5);
+        assert_eq!(c["nr"][0]["t"], "Ada");
+        assert_eq!(c["nr"][0]["w"], 700);
+        assert_eq!(c["nr"][1]["i"], true);
+        assert!(c["nr"][1]["c"].is_array());
+        assert_eq!(c["cvr"], 2.0);
+        let icon = c["cv"].as_array().expect("paths");
+        assert_eq!(icon.len(), 2);
+        let half = icon[0]["fc"].as_f64().expect("the chip's text color");
+        assert!((half - 0.5).abs() < 0.01, "at half: {half}");
+        assert!(icon[1].get("fc").is_none());
+        // In a box 100 units tall, twice as wide: the rect's right edge.
+        let d: Vec<f64> = icon[0]["d"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        assert!(d.contains(&200.), "{d:?}");
+        assert!(c.get("ci").is_none(), "a drawing replaces the glyph");
     }
 }

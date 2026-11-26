@@ -31,12 +31,22 @@ final class PrismShape extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
+        draw(canvas, paths, paint, 1, 0, 0, 1, 0);
+    }
+
+    /**
+     * Draws `paths` scaled by `scale` and moved by (`dx`, `dy`), stroke widths times
+     * `strokeScale`. A path with `fc` / `sc` (a chip's vector icon, #329) fills / strokes in
+     * `ink` at that opacity: the text color it sits in.
+     */
+    static void draw(Canvas canvas, JSONArray paths, Paint paint, float scale, float dx, float dy,
+            float strokeScale, int ink) {
         for (int i = 0; i < paths.length(); i++) {
             JSONObject p = paths.optJSONObject(i);
             if (p == null) continue;
-            Path path = path(p.optJSONArray("d"));
+            Path path = path(p.optJSONArray("d"), scale, dx, dy);
             if (p.optBoolean("eo")) path.setFillType(Path.FillType.EVEN_ODD);
-            Integer fill = PrismHost.color(p.optJSONArray("fill"));
+            Integer fill = p.has("fc") ? Integer.valueOf(withAlpha(ink, p.optDouble("fc"))) : PrismHost.color(p.optJSONArray("fill"));
             if (fill != null) {
                 paint.reset();
                 paint.setAntiAlias(true);
@@ -44,28 +54,34 @@ final class PrismShape extends View {
                 paint.setColor(fill);
                 canvas.drawPath(path, paint);
             }
-            Integer stroke = PrismHost.color(p.optJSONArray("stroke"));
+            Integer stroke = p.has("sc") ? Integer.valueOf(withAlpha(ink, p.optDouble("sc"))) : PrismHost.color(p.optJSONArray("stroke"));
             if (stroke != null) {
                 paint.reset();
                 paint.setAntiAlias(true);
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setColor(stroke);
-                paint.setStrokeWidth((float) p.optDouble("w", 1));
+                paint.setStrokeWidth((float) p.optDouble("w", 1) * strokeScale);
                 if (p.optBoolean("round")) {
                     paint.setStrokeCap(Paint.Cap.ROUND);
                     paint.setStrokeJoin(Paint.Join.ROUND);
                 }
                 JSONArray dash = p.optJSONArray("dash");
                 if (dash != null && dash.length() == 2) {
-                    paint.setPathEffect(new DashPathEffect(
-                            new float[]{(float) dash.optDouble(0), (float) dash.optDouble(1)}, 0));
+                    paint.setPathEffect(new DashPathEffect(new float[]{
+                            (float) dash.optDouble(0) * strokeScale, (float) dash.optDouble(1) * strokeScale}, 0));
                 }
                 canvas.drawPath(path, paint);
             }
         }
     }
 
-    private static Path path(JSONArray d) {
+    /** `color` with its opacity times `alpha`. */
+    private static int withAlpha(int color, double alpha) {
+        int a = (int) Math.round(((color >>> 24) & 0xff) * Math.max(0, Math.min(1, alpha)));
+        return (color & 0x00ffffff) | (a << 24);
+    }
+
+    private static Path path(JSONArray d, float scale, float dx, float dy) {
         Path p = new Path();
         if (d == null) return p;
         int i = 0;
@@ -74,7 +90,7 @@ final class PrismShape extends View {
             float[] v = new float[6];
             int count = cmd == 2 ? 6 : cmd == 3 ? 0 : 2;
             if (i + count > d.length()) break;
-            for (int k = 0; k < count; k++) v[k] = (float) d.optDouble(i++);
+            for (int k = 0; k < count; k++) v[k] = (float) d.optDouble(i++) * scale + (k % 2 == 0 ? dx : dy);
             switch (cmd) {
                 case 0: p.moveTo(v[0], v[1]); break;
                 case 1: p.lineTo(v[0], v[1]); break;

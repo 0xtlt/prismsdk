@@ -494,7 +494,7 @@ fn new_scroll(mtm: MainThreadMarker) -> Retained<UIScrollView> {
 }
 
 /// Fills, then strokes, each path with UIKit Bézier paths.
-fn draw_paths(paths: &[prism_core::Path]) {
+pub(crate) fn draw_paths(paths: &[prism_core::Path]) {
     use objc2_ui_kit::UIBezierPath;
     use prism_core::Segment as S;
     for p in paths {

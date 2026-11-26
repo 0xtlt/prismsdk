@@ -262,6 +262,52 @@ self.sel = SelectionEvent::caret(at - 2);
 | watchOS | a plain multi-line field of `value` (a chip or an icon shows as U+FFFC): SwiftUI's `TextEditor`, its only view that edits an `AttributedString`, is `@available(watchOS, unavailable)`, and `TextField` binds a plain `String`. Edits still come back as spans that keep the styles around them, a deleted U+FFFC removes its chip, and Enter (a line break typed alone) calls `on_submit` when the input has one |
 | tvOS | the same plain field, on one line: `UITextView`'s `editable` is `API_UNAVAILABLE(tvos)`, so text is typed in the system's full-screen keyboard, which edits plain text |
 
+### Chip options
+
+A chip takes the span builders of its text (`text_color`, `bg`, `bold()`…) and its own (#329). It stays one character: the caret jumps over it whatever it shows.
+
+```rust
+use prism::{ChipIcon, Path};
+
+// A person: a drawn avatar, a bold name and a gray summary cut at 150
+// points, a tool tip with the whole label, a pill.
+chip("user:7", "")
+    .chip_icon(Path::circle(0.5, 0.5, 0.45).fill(Color::current()))
+    .chip_label_runs([span("Ada Lovelace").bold(), span(" · 3 open tasks").text_color(rgb(0x8e8e93))])
+    .chip_max_width(150.)
+    .tooltip("Ada Lovelace · 3 open tasks")
+    .chip_radius(11.)
+    .chip_height(22.)
+    .chip_state(if open { "open" } else { "closed" })
+    .chip_test_id("chip-ada")
+    .chip_attr("data-person", "7");
+
+// A tag: an SVG icon, a ring.
+chip("tag:2", "Design system")
+    .chip_icon(ChipIcon::svg(r#"<svg viewBox="0 0 16 16">…</svg>"#))
+    .text_color(accent)
+    .chip_ring(1., accent);
+```
+
+- **Icon**: `chip_icon` takes a symbol name (as before), or a vector: an SVG (`ChipIcon::svg`, the SVG subset Prism [reads](images-lists-gestures.md#pictures-from-memory-svg-and-qr-codes)), a `Drawing` or a `Path` (Prism's shapes, in a 1 × 1 box). It is one em tall and as wide as its proportions; `Color::current()` paints it in the chip's text color.
+- **Label**: `chip_label_runs(spans)` styles parts of the label (weight, italic, color); `chip_label` is their text, what a copy writes. The label is cut as a whole.
+- **Box**: `chip_ring(width, color)` (inside the box, its size unchanged), `chip_radius` (4 by default), `chip_height` (never less than the label's) and `chip_max_width` (padding and icon included; a longer label ends with an ellipsis). On the web a chip's `bg` keeps the stylesheet's radius (`.prism-chip`, 4 px), not the 3 px of a highlighted span.
+- **Tool tip**: `tooltip(text)` is `title` on the web (on any span) and the platform's tool tip on a native rich input's chips and inline icons: AppKit's, GTK's, WinUI's `ToolTipService`, UIKit's `UIToolTipInteraction` (iPadOS and visionOS with a pointer or gaze, Mac Catalyst), Android's for a mouse hover. Touch screens have no hover: a tap is the chip's `on_click`, a long press selects, and no tool tip shows there.
+- **State and identity**: `chip_state("open")` is one word (letters, digits, `-`, `_`). `chip_test_id(id)` names the chip for tests. `chip_attr(name, value)` sets other `data-*` attributes on the web (names an app may set, without `data-state` and `data-testid`).
+
+| | State | Test id |
+|---|---|---|
+| Web | `data-state="open"` and the class `prism-chip-open` (style it in your stylesheet) | `data-testid` |
+| macOS | the `PrismChipState` attribute of the chip's character | the `PrismChipTestID` attribute |
+| iOS, iPadOS, visionOS | the `PrismChipState` attribute | the `PrismChipTestID` attribute and the accessibility identifier of the chip's image |
+| Linux | the CSS class `prism-chip-open` of the chip's widget | the widget's name |
+| Android | the chip span's `state` | the chip span's `testId` |
+| Windows | in the runs only: a chip is a picture RichEdit embeds, named by its label, with no automation id of its own | in the runs only |
+
+On every backend the runs the host receives carry both (`TextRun::chip_state`, `TextRun::chip_test_id`), and `prism-testing`'s `Host::chip(id, test_id)` finds a chip by its test id. Native backends draw a state with the chip's own options: style the chip from it in `render`.
+
+watchOS and tvOS edit plain text (a chip shows as U+FFFC, see above): the options do not apply there. In a read-only `rich_text`, a chip reads as its label.
+
 ### Toolbars, the clipboard and modifier-clicks
 
 A document editor places UI at the selection, owns copy and paste, and opens links with ⌘-click (#217):

@@ -447,6 +447,11 @@ final class PrismForms {
                 PrismRich.touch(this, ev);
                 return PrismInput.acrossTouch(this, ev) || super.dispatchTouchEvent(ev);
             }
+            // A mouse over a rich input's chip shows its tool tip (#329).
+            @Override public boolean dispatchHoverEvent(MotionEvent ev) {
+                PrismRich.hover(this, ev);
+                return super.dispatchHoverEvent(ev);
+            }
             // A soft keyboard's Backspace with the caret at the start deletes
             // nothing and sends no key: reported as one, so an editor can join
             // a block to the one before (#294).
@@ -898,7 +903,7 @@ final class PrismForms {
 
     // --- Measure -----------------------------------------------------------------------------
 
-    static float[] measure(String kind, String text, float size, int weight, float maxWidth) {
+    static float[] measure(String kind, String text, float size, int weight, float maxWidth, String spec) {
         int unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
         switch (kind) {
             case "slider": {
@@ -976,8 +981,22 @@ final class PrismForms {
                 inset(e);
                 // Its minimum lines come as lines of text (#235): one for a rich input.
                 e.setMinLines(1);
-                e.setText(text);
-                e.setTextSize(TypedValue.COMPLEX_UNIT_PX, size > 0 ? size : 17 * PrismHost.density);
+                float px = size > 0 ? size : 17 * PrismHost.density;
+                // A rich input's value comes with its runs: its chips as they draw (#329).
+                JSONObject rich = null;
+                if (spec != null && spec.startsWith("{")) {
+                    try {
+                        rich = new JSONObject(spec);
+                    } catch (org.json.JSONException ignored) {
+                        rich = null;
+                    }
+                }
+                if (rich != null && rich.optBoolean("rich")) {
+                    e.setText(PrismText.build(text, rich, rich.optJSONArray("runs"), px, -1));
+                } else {
+                    e.setText(text);
+                }
+                e.setTextSize(TypedValue.COMPLEX_UNIT_PX, px);
                 e.setTypeface(Typeface.create(Typeface.DEFAULT, Math.max(100, Math.min(900, weight)), false));
                 float w = maxWidth >= 0 ? maxWidth : dp(280);
                 e.measure(View.MeasureSpec.makeMeasureSpec(Math.round(w), View.MeasureSpec.EXACTLY), unspecified);

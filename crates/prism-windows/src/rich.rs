@@ -22,6 +22,7 @@
 //! color is the system's window text, black even in a dark theme.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use prism_core::{NodeId, Style, TextRun, TextTransform, UiEvent, UnderlineStyle, decode_runs};
 use prism_native::text::StyledText;
@@ -53,6 +54,21 @@ pub struct Rich {
     chips: RefCell<Vec<crate::chips::Look>>,
     /// The runs last shown (encoded), formatted again in a new theme.
     runs: RefCell<String>,
+}
+
+thread_local! {
+    /// Each rich input's chips' tool tips (#329), shown as the pointer
+    /// rests on them.
+    static TIPS: RefCell<HashMap<NodeId, ChipTips>> = RefCell::default();
+}
+
+/// The tool tips of a rich input's chips: each chip's UTF-16 position and
+/// text, the one shown, and the field's own tool tip it stands in for.
+#[derive(Default)]
+struct ChipTips {
+    at: Vec<(i32, String)>,
+    shown: Option<i32>,
+    own: Option<Option<windows_core::IInspectable>>,
 }
 
 impl Rich {
@@ -116,6 +132,9 @@ impl Rich {
         }
         if let Err(e) = crate::across::connect(id, &r.cast()?) {
             crate::win::log!("rich input {id}: drags across fields: {e}");
+        }
+        if let Err(e) = hover_tips(id, &r) {
+            crate::win::log!("rich input {id}: chip tool tips: {e}");
         }
         Ok(Rich {
             element: r,
@@ -231,12 +250,39 @@ impl Rich {
                     r.font.weight.css(),
                     r.font.italic,
                 );
+                let em = r.font.size.max(1.);
+                let vector = if t.chip_drawing.is_some() {
+                    let w = prism_native::chips::icon_width(t, em);
+                    let mut paths = prism_native::chips::icon_paths(t, w, em, color);
+                    for p in &mut paths {
+                        p.fill = p.fill.map(|c| pal.ink(c));
+                        p.stroke = p.stroke.map(|c| pal.ink(c));
+                    }
+                    paths
+                } else {
+                    Vec::new()
+                };
+                let runs = t
+                    .label_runs()
+                    .into_iter()
+                    .map(|l| crate::chips::LabelRun {
+                        text: l.text,
+                        weight: l.weight.map(|w| w.css()),
+                        italic: l.italic,
+                        color: l.color.map(|c| pal.ink(c)),
+                    })
+                    .collect();
                 let look = crate::chips::Look {
                     label: t.chip_label.clone().unwrap_or_default(),
+                    runs,
                     icon: t.chip_icon.as_deref().and_then(crate::keys::fluent_icon),
+                    vector,
+                    run: t.clone(),
+                    ring: t.chip_ring.map(|(w, c)| (w, pal.ink(c))),
                     family: family.split(',').next().unwrap_or("").trim().to_string(),
-                    size: r.font.size.max(1.),
+                    size: em,
                     weight: r.font.weight.css(),
+                    italic: r.font.italic,
                     color,
                     background: r
                         .background
@@ -246,6 +292,16 @@ impl Rich {
                 Some((r.utf16_start as i32, look))
             })
             .collect();
+        let tips: Vec<(i32, String)> = st
+            .runs
+            .iter()
+            .zip(runs)
+            .filter_map(|(s, t)| {
+                let tip = t.tooltip.clone().filter(|_| t.chip.is_some())?;
+                Some((s.utf16_start as i32, tip))
+            })
+            .collect();
+        TIPS.with(|t| t.borrow_mut().entry(self.id).or_default().at = tips);
         let had = self.chips.borrow().clone();
         let redo: Vec<usize> = if replaced {
             (0..want.len()).collect()
@@ -270,6 +326,102 @@ impl Rich {
         doc.ApplyDisplayUpdates()?;
         r
     }
+}
+
+/// Node `id` is gone: its chips' tool tips too.
+pub fn forget(id: NodeId) {
+    TIPS.with(|t| t.borrow_mut().remove(&id));
+}
+
+/// Shows the tool tip of the chip under the pointer (#329) as the box's
+/// (WinUI's `ToolTipService`, its delay and look), the box's own back when
+/// the pointer leaves it. RichEdit has no tool tip per character: the
+/// chip under the pointer is the one whose picture's rectangle
+/// (`ITextRange::GetRect`) holds it.
+fn hover_tips(id: NodeId, r: &RichEditBox) -> Result<()> {
+    use crate::winui::bindings::Microsoft::UI::Text::PointOptions;
+    use crate::winui::xaml::Controls::ToolTipService;
+    use crate::winui::xaml::Input::PointerEventHandler;
+    use crate::winui::xaml::UIElement;
+    fn show(id: NodeId, r: &RichEditBox, at: Option<(i32, String)>) -> Result<()> {
+        TIPS.with(|tips| {
+            let mut tips = tips.borrow_mut();
+            let t = tips.entry(id).or_default();
+            if t.shown == at.as_ref().map(|(i, _)| *i) {
+                return Ok(());
+            }
+            let e: UIElement = r.cast()?;
+            match at {
+                Some((i, tip)) => {
+                    if t.own.is_none() {
+                        t.own = Some(ToolTipService::GetToolTip(&e).ok());
+                    }
+                    ToolTipService::SetToolTip(&e, &crate::winui::boxed(&tip)?)?;
+                    t.shown = Some(i);
+                }
+                None => {
+                    let own = t.own.take().flatten();
+                    ToolTipService::SetToolTip(&e, own.as_ref())?;
+                    t.shown = None;
+                }
+            }
+            Ok(())
+        })
+    }
+    let e: UIElement = r.cast()?;
+    e.AddHandler(
+        &UIElement::PointerMovedEvent()?,
+        &crate::boxed::boxed(PointerEventHandler::new(move |s, a| {
+            let (Some(s), Some(a)) = (s.as_ref(), a.as_ref()) else {
+                return Ok(());
+            };
+            let r: RichEditBox = s.cast()?;
+            let candidates: Vec<(i32, String)> = TIPS.with(|t| {
+                t.borrow()
+                    .get(&id)
+                    .map(|t| t.at.clone())
+                    .unwrap_or_default()
+            });
+            let at = if candidates.is_empty() {
+                None
+            } else {
+                let p = a.GetCurrentPoint(&r.cast::<UIElement>()?)?.Position()?;
+                let (ox, oy) = crate::edit::client_origin(&r);
+                let (x, y) = (p.X - ox, p.Y - oy);
+                let doc = r.Document()?;
+                candidates.into_iter().find(|(i, _)| {
+                    let Ok(range) = doc.GetRange(*i, i + 1) else {
+                        return false;
+                    };
+                    let Ok(range) = range.cast::<ITextRange>() else {
+                        return false;
+                    };
+                    let mut rect = windows::Foundation::Rect::default();
+                    let mut hit = 0;
+                    range
+                        .GetRect(PointOptions::ClientCoordinates, &mut rect, &mut hit)
+                        .is_ok()
+                        && x >= rect.X
+                        && x < rect.X + rect.Width
+                        && y >= rect.Y
+                        && y < rect.Y + rect.Height
+                })
+            };
+            show(id, &r, at)
+        })),
+        true,
+    )?;
+    e.AddHandler(
+        &UIElement::PointerExitedEvent()?,
+        &crate::boxed::boxed(PointerEventHandler::new(move |s, _| {
+            if let Some(r) = s.as_ref().and_then(|s| s.cast::<RichEditBox>().ok()) {
+                show(id, &r, None)?;
+            }
+            Ok(())
+        })),
+        true,
+    )?;
+    Ok(())
 }
 
 /// The document's plain text, `\n` between paragraphs, without RichEdit's

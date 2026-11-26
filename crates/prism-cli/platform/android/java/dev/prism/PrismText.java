@@ -199,6 +199,14 @@ final class PrismText {
                 b.append(t);
                 int end = b.length();
                 if (start == end) continue;
+                // A rich input measured with its runs: each chip as it draws (#329).
+                if (s.optBoolean("rich") && end == start + 1 && t.charAt(0) == PrismRich.OBJECT) {
+                    PrismRich.Chip chip = PrismRich.chip(r, PrismHost.density);
+                    if (chip != null) {
+                        b.setSpan(chip, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        continue;
+                    }
+                }
                 runSpans(b, start, end, r, family, weight, italic, null);
             }
         }
