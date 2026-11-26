@@ -18,6 +18,19 @@ use std::path::Path;
 pub(crate) const DIR: &str = "widget-links";
 const FILE: &str = "widget-link-key";
 
+/// Widget buttons open the app on links that only its widgets can sign,
+/// each usable once; the key and the ledger of used links stay between runs
+/// in a folder of `data` (the app's data directory, which its widget
+/// extension shares), out of the app's storage.
+pub(crate) fn install(runtime: &mut prism_core::Runtime, data: &Path) {
+    // Where an earlier version kept the key, among the app's stored keys.
+    let _ = std::fs::remove_file(data.join("widget-link-key"));
+    let dir = data.join(DIR);
+    runtime
+        .app
+        .set_widget_key(load(&dir), Box::new(prism_core::FileStorage::new(&dir)));
+}
+
 /// The key kept in `dir`, created on first use. A key that cannot be kept
 /// still works for this run (widgets are redrawn with it).
 pub(crate) fn load(dir: &Path) -> [u8; 32] {

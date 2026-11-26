@@ -153,7 +153,7 @@ pub use surfaces::WidgetAction;
 pub use surfaces::{
     Activity, ActivityId, Capabilities, Notification, NotificationAction, NotificationResponse,
     PlatformRequest, PlatformServices, SNode, Widget, WidgetConfig, WidgetEntry, WidgetFamily,
-    WidgetOption, WidgetParameter,
+    WidgetOption, WidgetParameter, WidgetReload,
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 pub use task::{DEFAULT_BACKGROUND_THREADS, background_threads, set_background_threads};
@@ -1141,6 +1141,21 @@ impl Runtime {
         handle.id()
     }
 
+    /// The system asks for fresh drawings of widget `kind` on its own
+    /// (WidgetKit's timeline reload, Android's widget alarm): runs its
+    /// [`refresh`](Widget::refresh) hook within its timeout, then the
+    /// widget is drawn again (a [`PlatformRequest::ReloadWidgets`] from
+    /// [`take_requests`](Self::take_requests)) if the hook succeeded.
+    /// Returns the task to wait for with
+    /// [`is_task_running`](Self::is_task_running), or `None` when there is
+    /// nothing to wait for (no hook, or a refresh of the kind just ended).
+    pub fn refresh_widget(&mut self, kind: &str) -> Option<u64> {
+        let task = self.app.start_widget_refresh(kind);
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        task
+    }
+
     /// A Live Activity push token arrived or changed.
     pub fn activity_push_token(&mut self, token: push::ActivityPushToken) -> Vec<Patch> {
         self.app.activity_push_token(token);
@@ -1317,10 +1332,10 @@ pub mod prelude {
         RemoteCaret, Render, ReorderList, ReorderOptions, ReturnKey, Role, Router, SaveFile,
         SavedFile, ScrollEvent, SecureOptions, SelectionEvent, Share, Styled, SwipeDirection,
         SystemAction, Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget,
-        WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls,
-        adaptive, button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to,
-        picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner,
-        text, text_area, text_input, timer, toggle,
+        WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WidgetReload, WindowChrome,
+        WindowControls, adaptive, button, date_picker, date_picker_opt, div, go_back, image, lazy,
+        navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape,
+        slider, spinner, text, text_area, text_input, timer, toggle,
     };
     pub use crate::{FrameInfo, FrameTicker};
     // One selection across several text fields (#231).

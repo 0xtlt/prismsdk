@@ -5629,6 +5629,10 @@ impl Widgets for AppKit {
 
 /// Opens a window and runs the AppKit event loop. Must be called on the main thread.
 pub fn run(config: AppConfig, init: AppInit) {
+    // The app's binary in its widget extension (`Widget::refresh`, #331).
+    if prism_native::apple::widget_extension::is_app_extension() {
+        return crate::widget_extension::run(config, init);
+    }
     let mtm =
         MainThreadMarker::new().expect("prism-macos: run() must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
@@ -5687,18 +5691,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         .set_widget_configurations_source(prism_native::apple::widget_configurations);
     // Frame callbacks come from the display link (#311).
     runtime.set_native_frames(true);
-    // Widget buttons open the app on links that only its widgets can sign,
-    // each usable once; the key and the ledger of used links stay between
-    // runs in a folder of their own, out of the app's storage.
     if capabilities.widgets {
-        let data = data_dir(&config.title);
-        // Where an earlier version kept the key, among the app's stored keys.
-        let _ = std::fs::remove_file(data.join("widget-link-key"));
-        let dir = data.join(crate::widget_key::DIR);
-        runtime.app.set_widget_key(
-            crate::widget_key::load(&dir),
-            Box::new(prism_core::FileStorage::new(&dir)),
-        );
+        crate::widget_key::install(&mut runtime, &data_dir(&config.title));
     }
     let renderer = NativeRenderer::new(AppKit {
         mtm,
@@ -6789,10 +6783,35 @@ fn schedule_timer(at: Option<std::time::Instant>) {
 
 /// `~/Library/Application Support/<bundle id>` (or `prism.<title>` when run
 /// unbundled with `cargo run`). `PRISM_DATA_DIR` overrides it.
-fn data_dir(title: &str) -> std::path::PathBuf {
+/// Where the app keeps its data. An app with widgets keeps it in its App
+/// Group, as on iOS: its widget extension reads and writes the same storage
+/// when it refreshes the widgets without the app (`Widget::refresh`, #331).
+/// The data an earlier version kept in Application Support moves there once.
+pub(crate) fn data_dir(title: &str) -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("PRISM_DATA_DIR") {
         return dir.into();
     }
+    let own = own_data_dir(title);
+    let bundle = objc2_foundation::NSBundle::mainBundle();
+    let group = bundle
+        .objectForInfoDictionaryKey(&NSString::from_str("PrismAppGroup"))
+        .and_then(|g| g.downcast::<NSString>().ok())
+        .and_then(|g| {
+            objc2_foundation::NSFileManager::defaultManager()
+                .containerURLForSecurityApplicationGroupIdentifier(&g)
+        })
+        .and_then(|url| url.path());
+    let Some(group) = group else { return own };
+    let shared = std::path::PathBuf::from(group.to_string()).join("prism-data");
+    if !shared.exists() && own.exists() && std::fs::rename(&own, &shared).is_err() {
+        // Not moved (another volume…): the app keeps its data where it was.
+        return own;
+    }
+    shared
+}
+
+/// The app's own data directory, in Application Support.
+fn own_data_dir(title: &str) -> std::path::PathBuf {
     let id = objc2_foundation::NSBundle::mainBundle()
         .bundleIdentifier()
         .map(|s| s.to_string())
@@ -6857,7 +6876,7 @@ fn image_sources(
 
 /// Locale and Reduce Motion (`PRISM_TEXT_SCALE` scales text, macOS has no
 /// Dynamic Type).
-fn mac_environment() -> prism_core::Environment {
+pub(crate) fn mac_environment() -> prism_core::Environment {
     let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
     prism_core::Environment {
         locale: prism_native::apple::system_locale(),

@@ -45,7 +45,12 @@ macOS 13 (`MACOSX_DEPLOYMENT_TARGET`, set by `prism`; change it with
 `[macos] deployment_target` in `Prism.toml`, see
 [iOS](ios.md#deployment-target)); the WidgetKit parts need macOS 14. The
 bundled app embeds the widget extension and its App Group only when the app
-registers a widget.
+registers a widget. An app with widgets keeps its data in the App Group
+(`~/Library/Group Containers/<group>/prism-data`, moved there from
+`~/Library/Application Support/<bundle id>` on the first run), so that a
+widget's refresh hook, which runs in the sandboxed extension, shares it
+([Refreshing a widget without the app](../guide/system-surfaces.md#refreshing-a-widget-without-the-app)):
+the extension's executable is then a copy of the app's binary.
 
 Development hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SCROLL=600 PRISM_DELAY=2
 PRISM_SNAPSHOT=out.png cargo run -p counter` ([Development](../development.md)).

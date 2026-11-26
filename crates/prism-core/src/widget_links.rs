@@ -13,6 +13,9 @@
 //!    ([`App::reload_widgets`](crate::App::reload_widgets)) is a new
 //!    drawing with a new id; WidgetKit shows it a moment after the app
 //!    writes it, so the previous drawing's buttons stay valid for a while.
+//!    A widget extension that refreshes some widgets without the app
+//!    (`Widget::refresh`) draws only those: its drawing replaces an earlier
+//!    one only once later drawings cover every widget the earlier one drew.
 //! 3. **Unused**: the ledger records each link that ran, and a link runs
 //!    once. The action's job reloads the widgets, which gives every button
 //!    a fresh link.
@@ -101,6 +104,17 @@ impl WidgetLinks {
     /// belong to it, and the previous drawing's links work for [`GRACE`]
     /// more.
     pub(crate) fn begin_drawing(&mut self, now: SystemTime) {
+        self.begin(now, None);
+    }
+
+    /// Starts a drawing of the widgets of `kinds` only (a widget
+    /// extension's refresh): the earlier drawings keep their links for the
+    /// other widgets.
+    pub(crate) fn begin_partial_drawing(&mut self, now: SystemTime, kinds: Vec<String>) {
+        self.begin(now, Some(kinds));
+    }
+
+    fn begin(&mut self, now: SystemTime, kinds: Option<Vec<String>>) {
         self.sync(now);
         let at = nanos(now);
         let id = self
@@ -108,7 +122,11 @@ impl WidgetLinks {
             .drawings
             .last()
             .map_or(at, |d| at.max(d.id.saturating_add(1)));
-        self.ledger.drawings.push(Drawing { id, replaced: None });
+        self.ledger.drawings.push(Drawing {
+            id,
+            replaced: None,
+            kinds,
+        });
         self.ledger.prune(secs(now));
         self.save();
     }
@@ -138,6 +156,15 @@ impl WidgetLinks {
         }
         self.sync(now);
         if !self.ledger.drawings.iter().any(|d| d.id == drawing) {
+            return LinkCheck::Expired;
+        }
+        // Its drawing is live for other widgets, but a later one drew this
+        // widget again: the grace counts from then.
+        if self
+            .ledger
+            .kind_replaced(drawing, &action.kind)
+            .is_some_and(|at| secs(now) >= at.saturating_add(GRACE.as_secs()))
+        {
             return LinkCheck::Expired;
         }
         if self.ledger.used.contains(&(drawing, mac)) {
@@ -232,13 +259,15 @@ fn secs(t: SystemTime) -> u64 {
 }
 
 /// One drawing of the widgets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Drawing {
     /// Unique and increasing (the time it started, in nanoseconds, or one
     /// more than the previous drawing's).
     id: u64,
     /// When the app drew the widgets again (Unix seconds).
     replaced: Option<u64>,
+    /// The widget kinds drawn; `None`: every widget.
+    kinds: Option<Vec<String>>,
 }
 
 /// The drawings whose links a widget may still show, and the links used.
@@ -272,34 +301,68 @@ impl Ledger {
         }
     }
 
-    /// Orders the drawings, marks all but the newest replaced (at `now` if
-    /// no time was known), drops those replaced [`GRACE`] ago or more and
-    /// the oldest past [`MAX_DRAWINGS`], and the used links of dropped
-    /// drawings.
+    /// When a drawing after `drawing` drew widget `kind` (Unix seconds: a
+    /// drawing's id is the time it started).
+    fn kind_replaced(&self, drawing: u64, kind: &str) -> Option<u64> {
+        self.drawings
+            .iter()
+            .find(|d| {
+                d.id > drawing && d.kinds.as_ref().is_none_or(|k| k.iter().any(|k| k == kind))
+            })
+            .map(|d| d.id / 1_000_000_000)
+    }
+
+    /// Orders the drawings, marks replaced (at `now` if no time was known)
+    /// each one whose widgets later drawings all drew again, drops those
+    /// replaced [`GRACE`] ago or more and the oldest replaced ones past
+    /// [`MAX_DRAWINGS`], and the used links of dropped drawings.
     fn prune(&mut self, now: u64) {
         self.drawings.sort_by_key(|d| d.id);
         self.drawings.dedup_by_key(|d| d.id);
-        let older = self.drawings.len().saturating_sub(1);
-        for d in &mut self.drawings[..older] {
-            d.replaced.get_or_insert(now);
+        // Newest first: what the later drawings drew.
+        let mut all = false;
+        let mut later: Vec<String> = Vec::new();
+        for d in self.drawings.iter_mut().rev() {
+            let covered = all
+                || d.kinds
+                    .as_ref()
+                    .is_some_and(|k| k.iter().all(|k| later.contains(k)));
+            if covered {
+                d.replaced.get_or_insert(now);
+            }
+            match &d.kinds {
+                None => all = true,
+                Some(k) => later.extend(k.iter().cloned()),
+            }
         }
         self.drawings.retain(|d| {
             d.replaced
                 .is_none_or(|r| now < r.saturating_add(GRACE.as_secs()))
         });
-        let extra = self.drawings.len().saturating_sub(MAX_DRAWINGS);
-        self.drawings.drain(..extra);
+        // A drawing still on screen stays: there are at most as many as
+        // widget kinds.
+        let mut extra = self.drawings.len().saturating_sub(MAX_DRAWINGS);
+        self.drawings.retain(|d| {
+            let drop = extra > 0 && d.replaced.is_some();
+            extra -= usize::from(drop);
+            !drop
+        });
         let drawings = &self.drawings;
         self.used
             .retain(|(id, _)| drawings.iter().any(|d| d.id == *id));
     }
 
-    /// `{"v":1,"drawings":[[id,replaced|null],…],"used":[[id,"mac"],…]}`.
+    /// `{"v":1,"drawings":[[id,replaced|null(,["kind",…])],…],"used":[[id,"mac"],…]}`
+    /// (the kinds of a partial drawing only: an earlier version reads it as
+    /// a full one, which expires links sooner, the safe side).
     fn to_json(&self) -> String {
         let drawings: Vec<serde_json::Value> = self
             .drawings
             .iter()
-            .map(|d| serde_json::json!([d.id, d.replaced]))
+            .map(|d| match &d.kinds {
+                None => serde_json::json!([d.id, d.replaced]),
+                Some(kinds) => serde_json::json!([d.id, d.replaced, kinds]),
+            })
             .collect();
         let used: Vec<serde_json::Value> = self
             .used
@@ -326,9 +389,19 @@ impl Ledger {
                     serde_json::Value::Null => None,
                     r => Some(r.as_u64()?),
                 };
+                let kinds = match d.get(2) {
+                    None => None,
+                    Some(k) => Some(
+                        k.as_array()?
+                            .iter()
+                            .map(|k| k.as_str().map(String::from))
+                            .collect::<Option<Vec<_>>>()?,
+                    ),
+                };
                 ledger.drawings.push(Drawing {
                     id: d.get(0)?.as_u64()?,
                     replaced,
+                    kinds,
                 });
             }
             for u in v.get("used")?.as_array()? {
@@ -531,6 +604,45 @@ mod tests {
         let ids: Vec<u64> = fast.ledger.drawings.iter().map(|d| d.id).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids[0] < ids[1]);
+    }
+
+    #[test]
+    fn a_partial_drawing_keeps_the_other_widgets_links() {
+        let store = Shared::default();
+        let mut app = WidgetLinks::new(KEY, Box::new(store.clone()));
+        app.begin_drawing(at(0));
+        let todo = token(&app, &toggle());
+        let board = WidgetAction::new("board", "pin", "12");
+        let old_board = token(&app, &board);
+        // The widget extension, sharing the key and the ledger, refreshes
+        // the board every 15 minutes for hours.
+        let mut extension = WidgetLinks::new(KEY, Box::new(store.clone()));
+        let grace = GRACE.as_secs();
+        for i in 0..2 * MAX_DRAWINGS as u64 {
+            extension.begin_partial_drawing(at(1 + 900 * i), vec!["board".into()]);
+        }
+        let later = at(2 * MAX_DRAWINGS as u64 * 900);
+        let new_board = token(&extension, &board);
+        assert!(extension.ledger.drawings.len() <= MAX_DRAWINGS);
+        // The todo widget still shows the app's drawing: its button works.
+        assert_eq!(app.check(&toggle(), Some(&todo), later), LinkCheck::Run);
+        // The board's first drawing was replaced hours ago.
+        assert_eq!(
+            app.check(&board, Some(&old_board), later),
+            LinkCheck::Expired
+        );
+        assert_eq!(app.check(&board, Some(&new_board), later), LinkCheck::Run);
+        // The app drawing every widget again replaces them all.
+        app.begin_drawing(later);
+        let t = token(&app, &toggle());
+        let end = at(2 * MAX_DRAWINGS as u64 * 900 + grace);
+        assert_eq!(app.check(&toggle(), Some(&t), end), LinkCheck::Run);
+        let again = WidgetAction::new("board", "pin", "13");
+        let stale = token(&extension, &again);
+        assert_eq!(app.check(&again, Some(&stale), end), LinkCheck::Expired);
+        // The kinds of a partial drawing survive the ledger's round trip.
+        let json = store.get(LEDGER).unwrap();
+        assert_eq!(Ledger::parse(&json), app.ledger);
     }
 
     #[test]

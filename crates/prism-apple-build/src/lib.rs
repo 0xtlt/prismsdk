@@ -111,6 +111,8 @@ pub fn build_watch_host() {
 /// Compiles the Swift sources of `dirs` (under `apple/`) into a
 /// static library named `module` and links it, for the cargo target.
 fn build_swift(dirs: &[&str], module: &str) {
+    // Set when the widget extension is linked in (see `widget_extension`).
+    println!("cargo::rustc-check-cfg=cfg(prism_widget_extension)");
     // docs.rs builds documentation on Linux, without Xcode.
     println!("cargo:rerun-if-env-changed=DOCS_RS");
     if std::env::var_os("DOCS_RS").is_some() {
@@ -248,6 +250,10 @@ fn build_swift(dirs: &[&str], module: &str) {
         .expect("prism: swiftc");
     assert!(status.success(), "prism: compiling the Swift bridge failed");
 
+    if module == "PrismBridge" {
+        widget_extension(sdk, &triple, &apple, &out, features);
+    }
+
     let sdk_path = xcrun(&["--sdk", sdk, "--show-sdk-path"]);
     let swiftc = xcrun(&["-f", "swiftc"]);
     let toolchain_lib = Path::new(&swiftc)
@@ -346,6 +352,93 @@ fn build_swift(dirs: &[&str], module: &str) {
         println!("cargo:rustc-link-lib=framework=StoreKit");
     }
 }
+
+/// The widget extension's Swift (`apple/Shared`, `apple/Extension` and the
+/// app's generated widget declarations), linked into the app's own binary
+/// for an app whose widgets refresh without it (`Widget::refresh`, #331).
+///
+/// The bundler sets `PRISM_WIDGET_EXTENSION` to the generated file
+/// (`generate_widgets.py`) and copies the binary into the `.appex`: there
+/// the app's `main` hands over to WidgetKit (`prism_widget_extension_main`),
+/// and the extension's timeline providers call back into the app's Rust
+/// code to run the refresh hooks. `PRISM_WIDGET_EXTENSION_CONSTVALUES`
+/// names where the App Intents constant values go (configurable widgets
+/// and widget buttons: the bundler extracts their metadata from them).
+///
+/// The backend's crate gets the `prism_widget_extension` cfg when the
+/// extension is linked.
+fn widget_extension(sdk: &str, triple: &str, apple: &Path, out: &Path, features: BridgeFeatures) {
+    println!("cargo:rerun-if-env-changed=PRISM_WIDGET_EXTENSION");
+    println!("cargo:rerun-if-env-changed=PRISM_WIDGET_EXTENSION_CONSTVALUES");
+    let Some(generated) = std::env::var_os("PRISM_WIDGET_EXTENSION").filter(|g| !g.is_empty())
+    else {
+        return;
+    };
+    // WidgetKit: iOS, iPadOS, macOS and visionOS (not tvOS or watchOS).
+    if !matches!(
+        sdk,
+        "iphoneos" | "iphonesimulator" | "macosx" | "xros" | "xrsimulator"
+    ) {
+        return;
+    }
+    let generated = PathBuf::from(generated);
+    println!("cargo:rerun-if-changed={}", generated.display());
+    let mut sources = Vec::new();
+    for dir in ["Shared", "Extension"] {
+        for entry in std::fs::read_dir(apple.join(dir)).expect("prism-apple-build: apple/ sources")
+        {
+            let p = entry.unwrap().path();
+            if p.extension().is_some_and(|e| e == "swift") {
+                sources.push(p);
+            }
+        }
+    }
+    sources.sort();
+    sources.push(generated);
+    let lib = out.join("libPrismWidgets.a");
+    let mut cmd = Command::new("xcrun");
+    cmd.args(["--sdk", sdk, "swiftc", "-target", triple])
+        .args(["-swift-version", "5", "-O", "-wmo", "-parse-as-library"])
+        .args(["-emit-library", "-static", "-module-name", "PrismWidgets"])
+        .args(["-application-extension", "-D", "PRISM_RUST_EXTENSION"])
+        // The bundle's `@main` without a `main` symbol (the app has its own):
+        // NSExtensionMain still finds it through the entry Swift records in
+        // the binary's `__swift5_entry` section.
+        .args(["-Xfrontend", "-entry-point-function-name", "-Xfrontend"])
+        .arg("prism_widget_bundle_main")
+        .args(features.swift_flags(sdk));
+    if let Some(values) =
+        std::env::var_os("PRISM_WIDGET_EXTENSION_CONSTVALUES").filter(|v| !v.is_empty())
+    {
+        // What the App Intents metadata processor reads (Xcode's « Extract
+        // App Intents Metadata »), as ios-run.sh does for a Swift-only
+        // extension.
+        // Missing (a cleaned bundle directory): made again.
+        println!("cargo:rerun-if-changed={}", Path::new(&values).display());
+        let protocols = out.join("intents-protocols.json");
+        std::fs::write(&protocols, INTENTS_PROTOCOLS).expect("prism: intents protocols");
+        cmd.arg("-emit-const-values-path")
+            .arg(&values)
+            .args(["-Xfrontend", "-const-gather-protocols-file", "-Xfrontend"])
+            .arg(&protocols);
+    }
+    let status = cmd
+        .arg("-o")
+        .arg(&lib)
+        .args(&sources)
+        .status()
+        .expect("prism: swiftc");
+    assert!(
+        status.success(),
+        "prism: compiling the widget extension failed"
+    );
+    println!("cargo:rustc-link-lib=static=PrismWidgets");
+    println!("cargo:rustc-cfg=prism_widget_extension");
+}
+
+/// The protocols whose conformances the App Intents metadata processor
+/// reads constant values of (the list Xcode passes).
+const INTENTS_PROTOCOLS: &str = r#"["AppIntent","EntityQuery","AppEntity","TransientEntity","AppEnum","AppShortcutProviding","AppShortcutsProvider","AnyResolverProviding","AppIntentsPackage","DynamicOptionsProvider","_IntentValueRepresentable","_AssistantIntentsProvider","_GenerativeFunctionExtractable","IntentValueQuery","Resolver"]"#;
 
 /// The bridge's optional parts, from the cargo features of the backend whose
 /// build script calls [`build_bridge`].

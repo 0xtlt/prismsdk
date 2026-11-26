@@ -35,6 +35,8 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
   "CATransform3D", "objc2-core-foundation",
 ] }
 objc2-core-foundation.workspace = true
+# The widget extension's main queue (apple_widget_extension.rs).
+dispatch2.workspace = true
 
 [features]
 # The Swift bridge (prism-apple-build: apple/Bridge) is linked: device APIs available.

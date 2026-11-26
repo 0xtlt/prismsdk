@@ -146,9 +146,19 @@ if [[ $WIDGETS == 1 ]]; then
     # Nothing to draw outside the app: no extension, profile or App Group.
     WIDGETS=0
   else
-    python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" "$OS" > "$GEN/Generated.swift"
+    # Rewritten only when it changes: the bridge's build script recompiles
+    # when it does (a widget extension linked into the app, below).
+    python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" "$OS" > "$GEN/Generated.swift.new"
+    cmp -s "$GEN/Generated.swift.new" "$GEN/Generated.swift" || mv "$GEN/Generated.swift.new" "$GEN/Generated.swift"
+    rm -f "$GEN/Generated.swift.new"
   fi
 fi
+# Widgets that refresh without the app (Widget::refresh, #331): the widget
+# extension runs the app's own code. Its executable is the app's binary,
+# with the extension's Swift linked in (prism-apple-build), copied into the
+# .appex (step 6): there the app's main hands over to WidgetKit.
+RUST_EXTENSION=0
+[[ $WIDGETS == 1 ]] && RUST_EXTENSION="$(python3 -c 'import json, sys; print(int(any(w.get("refresh") for w in json.load(open(sys.argv[1])))))' "$GEN/widgets.json")"
 # Configurable widgets (Widget::parameter) are App Intents: see step 6.
 CONFIGURABLE=0
 [[ $WIDGETS == 1 ]] && CONFIGURABLE="$(python3 -c 'import json, sys; print(int(any(w.get("parameters") for w in json.load(open(sys.argv[1])))))' "$GEN/widgets.json")"
@@ -323,8 +333,14 @@ PLIST
   export PRISM_ENTITLEMENTS="$GEN/entitlements.plist"
 fi
 
-# 4. Build the app (links the Swift bridge, see crates/prism-apple-build).
-cargo build -p "$PKG" --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"} ${FEATURES[@]+"${FEATURES[@]}"}
+# 4. Build the app (links the Swift bridge, see crates/prism-apple-build),
+#    and the widget extension's Swift into it when it runs the app's code.
+EXT_ENV=()
+if [[ "$RUST_EXTENSION" == 1 ]]; then
+  EXT_ENV=(PRISM_WIDGET_EXTENSION="$GEN/Generated.swift")
+  [[ "$CONFIGURABLE" == 1 ]] && EXT_ENV+=(PRISM_WIDGET_EXTENSION_CONSTVALUES="$GEN/PrismWidgets.swiftconstvalues")
+fi
+env ${EXT_ENV[@]+"${EXT_ENV[@]}"} cargo build -p "$PKG" --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"} ${FEATURES[@]+"${FEATURES[@]}"}
 
 # 5. Bundle: binary, assets, icon.
 rm -rf "$APP" && mkdir -p "$APP"
@@ -524,12 +540,18 @@ if [[ "$CONFIGURABLE" == 1 ]]; then
   INTENTS=(-wmo -emit-const-values-path "$GEN/PrismWidgets.swiftconstvalues"
     -Xfrontend -const-gather-protocols-file -Xfrontend "$GEN/intents-protocols.json")
 fi
-xcrun --sdk "$SDK" swiftc -target "arm64-apple-$SWIFT_OS$MIN_IOS$SWIFT_TRIPLE_SUFFIX" -swift-version 5 -O \
-  -parse-as-library -application-extension -module-name PrismWidgets \
-  -o "$APPEX/PrismWidgets" \
-  -Xlinker -e -Xlinker _NSExtensionMain \
-  ${SIM_SECTIONS[@]+"${SIM_SECTIONS[@]}"} ${INTENTS[@]+"${INTENTS[@]}"} \
-  "${EXT_SOURCES[@]}"
+if [[ "$RUST_EXTENSION" == 1 ]]; then
+  # The app's binary, which has the extension linked in (step 4); its
+  # constant values come from that build.
+  cp "$APP/$PKG" "$APPEX/PrismWidgets"
+else
+  xcrun --sdk "$SDK" swiftc -target "arm64-apple-$SWIFT_OS$MIN_IOS$SWIFT_TRIPLE_SUFFIX" -swift-version 5 -O \
+    -parse-as-library -application-extension -module-name PrismWidgets \
+    -o "$APPEX/PrismWidgets" \
+    -Xlinker -e -Xlinker _NSExtensionMain \
+    ${SIM_SECTIONS[@]+"${SIM_SECTIONS[@]}"} ${INTENTS[@]+"${INTENTS[@]}"} \
+    "${EXT_SOURCES[@]}"
+fi
 if [[ "$CONFIGURABLE" == 1 ]]; then
   printf '%s\n' "${EXT_SOURCES[@]}" > "$GEN/intents-sources.txt"
   echo "$GEN/PrismWidgets.swiftconstvalues" > "$GEN/intents-constvalues.txt"

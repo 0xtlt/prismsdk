@@ -74,6 +74,8 @@ public final class PrismHost {
     static native void nativePush(String json, String info);
     /** A widget button (PrismWidget.Action); `task` is reported back through jobFinished. */
     static native void nativeWidgetAction(String task, String kind, String action, String payload, String info);
+    /** A widget's refresh alarm (PrismWidget.Refresh, #331): runs its hook; `task` is reported back through jobFinished. */
+    static native void nativeWidgetRefresh(String task, String kind, String info);
     /** A 3D scene's blob by id (prism-core `scene3d::blobs`), null once gone; any thread (PrismScene's loader). */
     static native byte[] sceneBlob(String id);
 

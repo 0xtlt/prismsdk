@@ -81,11 +81,59 @@ cx.register_widget(
 
 | | How the drawings ahead are shown |
 |---|---|
-| iOS, iPadOS, macOS, visionOS | one timeline entry per drawing (`Timeline(entries:policy: .atEnd)`, `.never` when nothing is ahead), so WidgetKit switches drawings by itself; after the last one, it asks again and the last drawing stays |
+| iOS, iPadOS, macOS, visionOS | one timeline entry per drawing (`Timeline(entries:policy: .atEnd)`, `.never` when nothing is ahead, or the widget's own `reload` policy), so WidgetKit switches drawings by itself; after the last one, it asks again and the last drawing stays |
 | Android | the latest drawing whose instant has come, each time the widget is drawn, and an inexact alarm draws it again at the next instant |
 | Web, Linux, Windows, watchOS, tvOS | no home-screen widgets |
 
 The snapshot keeps its format for widgets that don't draw ahead: the drawings come in an `"ahead": [{"at": …, "families": …}]` list next to `"families"` (per configuration for configurable widgets), only when there are some. `WidgetSnapshot::ahead_for(config)` lists them, as `WidgetEntry { at, families }`.
+
+## Refreshing a widget without the app
+
+A widget drawn ahead still shows what the app knew when it drew it. A widget whose data comes from a server (departures, scores, prices) can **fetch it itself**: the system asks for new drawings on a schedule, a refresh hook fetches, and the widget is drawn again, while the app stays closed all day.
+
+```rust
+let saved = cx.storage().get("board");
+let board = cx.new_entity(|_| Board::load(saved));
+cx.register_widget(
+    Widget::new("departures", "Departures")
+        .render(move |cx, _| board_view(board.read(cx), cx.now()))
+        .ahead(move |cx, _| board.read(cx).departure_times())
+        // Runs on each of the system's reloads, without the app.
+        .refresh(move |cx| async move {
+            let res = cx.fetch(Request::get(FEED).timeout(Duration::from_secs(5))).await
+                .map_err(|e| e.to_string())?;
+            if !res.ok() {
+                return Err(format!("HTTP {}", res.status));
+            }
+            // Kept for the app too: the storage is shared.
+            cx.update(|app| app.storage().set("board", &res.text()));
+            cx.update_entity(&board, |b, _| *b = Board::load(Some(res.text())));
+            Ok::<_, String>(())
+        })
+        // Ask again 30 minutes after each drawing (default: 15 minutes).
+        .reload_after(Duration::from_secs(30 * 60)),
+);
+```
+
+- **`refresh(|cx| async { … })`** runs the app's code without its window: it can fetch over HTTP (`prism::http`), read and write the app's storage, and update entities. When it returns `Ok`, the widget is drawn again with `render` and `ahead`, from what it changed.
+- **`reload(policy)`** says when the system asks: `WidgetReload::After(delay)` (`reload_after`), `AtEnd` (when the last drawing ahead comes) or `Never` (only when the app reloads its widgets). A widget with a hook and no policy asks every 15 minutes (`Widget::DEFAULT_RELOAD`); one without a hook keeps the behavior above (`.atEnd` with drawings ahead, `.never` otherwise).
+- **Errors and timeouts keep the drawings.** A hook that returns `Err`, or that still runs after `refresh_timeout` (10 s by default, `Widget::REFRESH_TIMEOUT`), is given up: the previous drawings stay on screen, the error is logged, and the system asks again at the next reload. Requests for the same widget less than 5 s apart (several instances on screen) share one run (`REFRESH_COALESCE`).
+- **Storage is shared.** On Apple platforms the hook runs in the widget extension, a separate process: it sees what the app stored and the app sees what it stored, through the App Group, but not the app's entities in memory. Load what the widget shows from storage in `init` (as above), so the app and the extension start from the same data.
+- **Only the refreshed widget is drawn** by the extension: its runtime starts from the app's `init`, so drawing every widget from it would replace the app's drawings of the others.
+
+| | How the hook runs |
+|---|---|
+| iOS, iPadOS, visionOS, macOS | WidgetKit's timeline reloads (`.after(date)` / `.atEnd` / `.never` from the policy). The app's own binary is the widget extension's executable: `prism run`, `prism build` and `prism publish` link the extension's Swift into it and copy it into `PrismWidgets.appex` when a widget has a hook. There `main` hands over to WidgetKit, and each timeline request runs the hook before the timeline is built. Apps without hooks keep the Swift-only extension. |
+| Android | an inexact alarm per widget at the policy's time (at least a minute apart), and when a widget is placed or the device restarts. Its broadcast runs the hook in the app's process, in the open app or without a screen, and keeps the process alive until it ends (`goAsync`). |
+| Web, Linux, Windows, watchOS, tvOS | no home-screen widgets |
+
+**Budgets.** The system decides when reloads happen; the policy is the earliest. WidgetKit gives a widget the user often looks at about 40 to 70 reloads a day (one every 15 to 60 minutes), and fewer to one rarely seen. Reloads the app asks for while it is in the foreground don't count, and a policy shorter than about 5 minutes is not honored. Android's alarms are inexact: Doze delays them while the device sleeps. Keep the hook short (one request, a timeout on it): WidgetKit ends an extension that takes too long to answer, and Android expects a broadcast to finish within about 10 seconds.
+
+**Memory and size.** A WidgetKit extension may use about 30 MB. The Counter example's extension (a debug build, its "Departures" widget fetching over HTTP) uses 17 to 20 MB on the iOS simulator. The extension ships a second copy of the app's binary, so the app's download grows by its size (11 MB for the Counter example's release build on macOS); keep heavy assets out of the binary (`assets/`) in apps that use refresh hooks.
+
+**macOS:** an app with widgets keeps its data in its App Group (`~/Library/Group Containers/<group>/prism-data`), as on iOS, so the extension shares it; data an earlier version kept in `~/Library/Application Support/<bundle id>` moves there on the first run.
+
+Try it with the Counter example, which has a "Departures" widget when it is built with a feed (`COUNTER_DEPARTURES_URL=http://127.0.0.1:8765/board prism run ios`; `COUNTER_DEPARTURES_RELOAD=60` asks every minute).
 
 ## A timer that has ended
 

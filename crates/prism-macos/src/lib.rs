@@ -48,6 +48,8 @@ mod temp_dir;
 #[cfg(target_os = "macos")]
 mod trace;
 #[cfg(target_os = "macos")]
+mod widget_extension;
+#[cfg(target_os = "macos")]
 mod widget_key;
 
 #[cfg(target_os = "macos")]

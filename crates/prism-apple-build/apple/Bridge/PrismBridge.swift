@@ -177,6 +177,19 @@ public func prismNotifyCancel(_ id: UnsafePointer<CChar>) {
 /// Writes a widget snapshot to the App Group container and reloads it.
 @_cdecl("prism_widgets_write")
 public func prismWidgetsWrite(_ kind: UnsafePointer<CChar>, _ json: UnsafePointer<CChar>) -> Bool {
+    guard prismWidgetsSave(kind, json) else { return false }
+    #if canImport(WidgetKit)
+    WidgetCenter.shared.reloadTimelines(ofKind: String(cString: kind))
+    return true
+    #else
+    return false
+    #endif
+}
+
+/// Writes a widget snapshot to the App Group container, without reloading
+/// it: the widget extension, whose timeline being built reads it (#331).
+@_cdecl("prism_widgets_save")
+public func prismWidgetsSave(_ kind: UnsafePointer<CChar>, _ json: UnsafePointer<CChar>) -> Bool {
     let kind = String(cString: kind)
     guard let group = info("PrismAppGroup"),
           let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
@@ -189,12 +202,7 @@ public func prismWidgetsWrite(_ kind: UnsafePointer<CChar>, _ json: UnsafePointe
         NSLog("prism: cannot write widget %@: %@", kind, "\(error)")
         return false
     }
-    #if canImport(WidgetKit)
-    WidgetCenter.shared.reloadTimelines(ofKind: kind)
     return true
-    #else
-    return false
-    #endif
 }
 
 /// The configurations of a configurable widget kind the extension recorded
