@@ -92,21 +92,43 @@ final class PrismRich {
         }
     }
 
-    /** A chip run (its label, icon and colors), an inline icon (its glyph), or null. */
+    /** A chip run (its label, icon, colors and options, #329), an inline icon (its glyph), or null. */
     static Chip chip(JSONObject r, float density) {
         Integer color = PrismHost.color(r.optJSONArray("c"));
         Integer bg = PrismHost.color(r.optJSONArray("bg"));
         long link = r.has("link") ? r.optLong("link") : -1;
         if (r.has("chip")) {
-            return new Chip(r.optString("cl", ""), r.optString("ci", ""), bg, color, link, true, density);
+            Chip c = new Chip(r.optString("cl", ""), r.optString("ci", ""), bg, color, link, true, density);
+            c.runs = r.optJSONArray("nr");
+            c.vector = r.optJSONArray("cv");
+            c.ratio = (float) r.optDouble("cvr", 1);
+            JSONArray ring = r.optJSONArray("ring");
+            if (ring != null && ring.length() == 2) {
+                c.ringWidth = (float) ring.optDouble(0) * density;
+                c.ringColor = PrismHost.color(ring.optJSONArray(1));
+            }
+            c.radius = (float) r.optDouble("rad", 4) * density;
+            c.height = (float) r.optDouble("ht", 0) * density;
+            c.maxWidth = r.has("mw") ? (float) r.optDouble("mw") * density : -1;
+            c.tooltip = r.optString("tt", null);
+            c.state = r.optString("st", null);
+            c.testId = r.optString("tid", null);
+            return c;
         }
-        if (r.has("icon")) return new Chip(r.optString("glyph", ""), "", null, color, link, false, density);
+        if (r.has("icon")) {
+            Chip c = new Chip(r.optString("glyph", ""), "", null, color, link, false, density);
+            c.tooltip = r.optString("tt", null);
+            return c;
+        }
         return null;
     }
 
     /**
-     * A chip: a rounded box with its icon and label, on the baseline like the text around it; or
-     * an inline icon, its glyph alone. One character the caret steps over.
+     * A chip: a rounded box with its icon (a glyph or a vector drawing) and label (styled runs,
+     * cut with an ellipsis at its largest width), a ring, on the baseline like the text around it
+     * and centered on it when taller (#115, #329); or an inline icon, its glyph alone. One
+     * character the caret steps over. Its `state` and `testId` are there for tests (Espresso:
+     * the field's `getText().getSpans(…, PrismRich.Chip.class)`).
      */
     static final class Chip extends ReplacementSpan {
         final String label, icon;
@@ -114,7 +136,21 @@ final class PrismRich {
         final long link;
         final boolean box;
         final float density;
+        /** Label runs `[{t, w, i, c}]`, or null: `label` in the run's style. */
+        JSONArray runs;
+        /** A vector icon: paths in a box 100 units tall, `ratio` times as wide. */
+        JSONArray vector;
+        float ratio = 1;
+        float ringWidth;
+        Integer ringColor;
+        float radius;
+        /** Height and largest width, pixels (0 and -1: none). */
+        float height;
+        float maxWidth = -1;
+        String tooltip, state, testId;
         private final RectF rect = new RectF();
+        private final Paint runPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint vectorPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         Chip(String label, String icon, Integer bg, Integer color, long link, boolean box, float density) {
             this.label = label;
@@ -124,29 +160,72 @@ final class PrismRich {
             this.link = link;
             this.box = box;
             this.density = density;
+            this.radius = 4 * density;
         }
 
         float pad(Paint p) {
             return box ? Math.round(p.getTextSize() * 0.35f) : 0;
         }
 
+        float iconWidth(Paint p) {
+            if (vector != null) return p.getTextSize() * ratio;
+            return icon.isEmpty() ? 0 : p.measureText(icon);
+        }
+
         float gap(Paint p) {
-            return icon.isEmpty() || label.isEmpty() ? 0 : Math.round(p.getTextSize() * 0.25f);
+            return iconWidth(p) == 0 || label.isEmpty() ? 0 : Math.round(p.getTextSize() * 0.25f);
+        }
+
+        /** `p` set up for label run `i` (its weight, italic), or the run's own paint. */
+        private Paint runPaint(Paint p, int i) {
+            if (runs == null) return p;
+            JSONObject r = runs.optJSONObject(i);
+            runPaint.set(p);
+            if (r == null) return runPaint;
+            int weight = r.optInt("w", p.getTypeface() != null ? p.getTypeface().getWeight() : 400);
+            boolean italic = r.optBoolean("i") || (p.getTypeface() != null && p.getTypeface().isItalic());
+            android.graphics.Typeface base = p.getTypeface() != null ? p.getTypeface() : android.graphics.Typeface.DEFAULT;
+            runPaint.setTypeface(android.graphics.Typeface.create(base, weight, italic));
+            return runPaint;
+        }
+
+        private int runCount() {
+            return runs == null ? 1 : runs.length();
+        }
+
+        private String runText(int i) {
+            if (runs == null) return label;
+            JSONObject r = runs.optJSONObject(i);
+            return r == null ? "" : r.optString("t", "");
+        }
+
+        float labelWidth(Paint p) {
+            float w = 0;
+            for (int i = 0; i < runCount(); i++) w += runPaint(p, i).measureText(runText(i));
+            return w;
         }
 
         float width(Paint p) {
-            float iconWidth = icon.isEmpty() ? 0 : p.measureText(icon);
-            return pad(p) * 2 + iconWidth + gap(p) + p.measureText(label);
+            float natural = pad(p) * 2 + iconWidth(p) + gap(p) + labelWidth(p);
+            if (maxWidth < 0 || natural <= maxWidth) return natural;
+            return Math.max(maxWidth, pad(p) * 2 + iconWidth(p) + gap(p));
+        }
+
+        /** How much taller than its text the box is. */
+        float extra(Paint p) {
+            Paint.FontMetrics m = p.getFontMetrics();
+            return Math.max(0, height - (m.descent - m.ascent));
         }
 
         @Override
         public int getSize(Paint p, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
             if (fm != null) {
                 Paint.FontMetricsInt m = p.getFontMetricsInt();
-                fm.ascent = m.ascent;
-                fm.descent = m.descent;
-                fm.top = m.top;
-                fm.bottom = m.bottom;
+                int half = (int) Math.ceil(extra(p) / 2);
+                fm.ascent = m.ascent - half;
+                fm.descent = m.descent + half;
+                fm.top = Math.min(m.top, fm.ascent);
+                fm.bottom = Math.max(m.bottom, fm.descent);
                 fm.leading = m.leading;
             }
             return (int) Math.ceil(width(p));
@@ -156,23 +235,88 @@ final class PrismRich {
         public void draw(Canvas c, CharSequence text, int start, int end, float x, int top, int y, int bottom, Paint p) {
             int ink = p.getColor();
             Paint.Style style = p.getStyle();
+            float strokeWidth = p.getStrokeWidth();
+            int chipInk = color != null ? color : ink;
+            Paint.FontMetrics m = p.getFontMetrics();
+            float half = extra(p) / 2;
+            float w = width(p);
             if (box) {
-                Paint.FontMetrics m = p.getFontMetrics();
-                rect.set(x, y + m.ascent, x + width(p), y + m.descent);
+                rect.set(x, y + m.ascent - half, x + w, y + m.descent + half);
                 p.setStyle(Paint.Style.FILL);
                 // The system's gray at 18% by default, like the other platforms.
                 p.setColor(bg != null ? bg : 0x2E8E8E93);
-                c.drawRoundRect(rect, 4 * density, 4 * density, p);
+                c.drawRoundRect(rect, radius, radius, p);
+                if (ringWidth > 0 && ringColor != null) {
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(ringWidth);
+                    p.setColor(ringColor);
+                    float r = Math.max(0, radius - ringWidth / 2);
+                    RectF inner = new RectF(rect.left + ringWidth / 2, rect.top + ringWidth / 2,
+                            rect.right - ringWidth / 2, rect.bottom - ringWidth / 2);
+                    c.drawRoundRect(inner, r, r, p);
+                    p.setStrokeWidth(strokeWidth);
+                }
             }
-            p.setColor(color != null ? color : ink);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(chipInk);
             float at = x + pad(p);
-            if (!icon.isEmpty()) {
+            if (vector != null) {
+                float em = p.getTextSize();
+                float iconTop = y + (m.ascent + m.descent) / 2 - em / 2;
+                drawVector(c, at, iconTop, em / 100f, chipInk);
+                at += iconWidth(p) + gap(p);
+            } else if (!icon.isEmpty()) {
                 c.drawText(icon, at, y, p);
                 at += p.measureText(icon) + gap(p);
             }
-            c.drawText(label, at, y, p);
+            // The label's runs, cut with an ellipsis where the box ends.
+            float room = x + w - pad(p) - at;
+            boolean cut = labelWidth(p) > room + 0.5f;
+            float ellipsis = p.measureText("…");
+            for (int i = 0; i < runCount(); i++) {
+                Paint rp = runPaint(p, i);
+                JSONObject r = runs == null ? null : runs.optJSONObject(i);
+                Integer runColor = r == null ? null : PrismHost.color(r.optJSONArray("c"));
+                rp.setColor(runColor != null ? runColor : chipInk);
+                String t = runText(i);
+                float tw = rp.measureText(t);
+                float left = x + w - pad(p) - at;
+                if (cut && tw > left - ellipsis) {
+                    int n = rp.breakText(t, true, Math.max(0, left - ellipsis), null);
+                    String shown = t.substring(0, n).replaceAll("\\s+$", "") + "…";
+                    c.drawText(shown, at, y, rp);
+                    break;
+                }
+                c.drawText(t, at, y, rp);
+                at += tw;
+            }
             p.setColor(ink);
             p.setStyle(style);
+        }
+
+        /** The vector icon at (`left`, `top`), `scale` pixels a unit; its text color is `ink`. */
+        private void drawVector(Canvas c, float left, float top, float scale, int ink) {
+            // Stroke widths are points.
+            PrismShape.draw(c, vector, vectorPaint, scale, left, top, density, ink);
+        }
+    }
+
+    // --- Tool tips (#329) --------------------------------------------------------------------
+
+    /**
+     * A mouse over a chip with a tool tip shows it; elsewhere, the field's own. Touch screens
+     * have no hover: a long press selects text there, and no chip tool tip shows.
+     */
+    static void hover(EditText e, MotionEvent ev) {
+        PrismHost.Node n = PrismInput.byView.get(e);
+        if (n == null || !n.rich) return;
+        int a = ev.getActionMasked();
+        Chip chip = a == MotionEvent.ACTION_HOVER_EXIT ? null : chipAt(e, ev.getX(), ev.getY());
+        CharSequence own = n.view == e ? n.ownTip : null;
+        CharSequence tip = chip != null && chip.tooltip != null ? chip.tooltip : own;
+        CharSequence now = e.getTooltipText();
+        if (tip == null ? now != null : !tip.toString().equals(now == null ? null : now.toString())) {
+            e.setTooltipText(tip);
         }
     }
 

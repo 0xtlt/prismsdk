@@ -29,8 +29,20 @@
 //! of its value. [`split_spans`], [`restyle_spans`] and [`splice_spans`]
 //! edit runs by character offsets (a chip counts as one), as a formatting
 //! command, a mention picker or splitting a block at the caret need.
+//!
+//! A chip's box and label can be styled on every backend (#329): a
+//! [`tooltip`](Span::tooltip), a ring, a radius, a height and a maximum
+//! width that cuts its label with an ellipsis
+//! ([`chip_ring`](Span::chip_ring), [`chip_radius`](Span::chip_radius),
+//! [`chip_height`](Span::chip_height),
+//! [`chip_max_width`](Span::chip_max_width)), a label made of styled runs
+//! ([`chip_label_runs`](Span::chip_label_runs)), a vector icon
+//! ([`ChipIcon`]), and a state and a test id that stylesheets and tests
+//! find it by ([`chip_state`](Span::chip_state),
+//! [`chip_test_id`](Span::chip_test_id), [`chip_attr`](Span::chip_attr)).
 
 use crate::element::{ClickEvent, Handler};
+use crate::shape::{Drawing, Path};
 use crate::style::{Color, FontFamily, FontWeight};
 
 /// One run of a [`rich_text`](crate::rich_text) paragraph. Built with
@@ -145,7 +157,15 @@ pub const OBJECT_CHAR: char = '\u{FFFC}';
 /// in [`RichInputEvent::spans`](crate::RichInputEvent::spans). In a
 /// read-only [`rich_text`](crate::rich_text) it shows (and reads as) its
 /// label. Style it like any span (`.bg(..)`, `.text_color(..)`); clickable
-/// with [`on_click`](Span::on_click).
+/// with [`on_click`](Span::on_click). Its box, label, icon and identity
+/// have their own builders (#329): [`tooltip`](Span::tooltip),
+/// [`chip_ring`](Span::chip_ring), [`chip_radius`](Span::chip_radius),
+/// [`chip_height`](Span::chip_height),
+/// [`chip_max_width`](Span::chip_max_width),
+/// [`chip_label_runs`](Span::chip_label_runs),
+/// [`chip_icon`](Span::chip_icon) (a symbol or a [`ChipIcon`] drawing),
+/// [`chip_state`](Span::chip_state), [`chip_test_id`](Span::chip_test_id)
+/// and [`chip_attr`](Span::chip_attr).
 ///
 /// ```
 /// # use prism_core::prelude::*;
@@ -166,10 +186,191 @@ impl Span {
         icon(name).text_size(points)
     }
 
-    /// A [`chip`]'s symbol (an SF Symbol name), drawn before its label.
-    pub fn chip_icon(mut self, symbol: impl Into<String>) -> Self {
-        self.run.chip_icon = Some(symbol.into());
+    /// A [`chip`]'s icon, drawn before its label: an SF Symbol name
+    /// (`"doc.text"`, a glyph where SF Symbols don't exist, see
+    /// [`glyphs`](crate::glyphs)), or a vector drawing (#329): an SVG
+    /// ([`ChipIcon::svg`]) or paths ([`ChipIcon::shape`], a
+    /// [`Drawing`] or a [`Path`]), one em tall and painted in the chip's
+    /// text color where it uses [`Color::current`].
+    ///
+    /// ```
+    /// # use prism_core::prelude::*;
+    /// # use prism_core::ChipIcon;
+    /// let dot = Path::circle(0.5, 0.5, 0.35).fill(Color::current());
+    /// let a = chip("page:1", "Roadmap").chip_icon("doc.text");
+    /// let b = chip("user:7", "Ada").chip_icon(dot);
+    /// let c = chip("tag:2", "Ops").chip_icon(ChipIcon::svg(
+    ///     r#"<svg viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" fill="currentColor"/></svg>"#,
+    /// ));
+    /// assert_eq!(a.chip_icon_value(), Some(ChipIcon::Symbol("doc.text".into())));
+    /// assert!(matches!(b.chip_icon_value(), Some(ChipIcon::Vector { .. })));
+    /// assert!(matches!(c.chip_icon_value(), Some(ChipIcon::Vector { .. })));
+    /// ```
+    pub fn chip_icon(mut self, icon: impl Into<ChipIcon>) -> Self {
+        match icon.into() {
+            ChipIcon::Symbol(name) => {
+                self.run.chip_icon = Some(name);
+                self.run.chip_drawing = None;
+                self.run.chip_icon_ratio = None;
+            }
+            ChipIcon::Vector { drawing, ratio } => {
+                self.run.chip_icon = None;
+                self.run.chip_drawing = Some(drawing);
+                self.run.chip_icon_ratio = (ratio > 0. && ratio != 1.).then_some(ratio);
+            }
+        }
         self
+    }
+
+    /// A [`chip`]'s icon, if it has one.
+    pub fn chip_icon_value(&self) -> Option<ChipIcon> {
+        self.run.chip_icon_value()
+    }
+
+    /// What the chip (or any run) shows on hover (#329): `title` on the
+    /// web, the platform's tool tip natively (macOS, Linux, Windows; on
+    /// iOS, iPadOS and visionOS where UIKit shows tool tips: a pointer or
+    /// gaze hover; on Android a mouse hover). Touch screens have no hover:
+    /// there it is not shown. Natively, only a rich input's chips and
+    /// inline icons show it. The way to read a label cut by
+    /// [`chip_max_width`](Self::chip_max_width).
+    pub fn tooltip(mut self, text: impl Into<String>) -> Self {
+        self.run.tooltip = Some(text.into());
+        self
+    }
+
+    /// A ring `width` points wide in `color` drawn inside the chip's box
+    /// (#329), its size unchanged (an inset `box-shadow` on the web).
+    /// Adaptive colors follow dark mode.
+    pub fn chip_ring(mut self, width: f32, color: Color) -> Self {
+        self.run.chip_ring = (width > 0.).then_some((width, color));
+        self
+    }
+
+    /// The radius of the chip's corners, points (#329). By default 4.
+    pub fn chip_radius(mut self, points: f32) -> Self {
+        self.run.chip_radius = Some(points.max(0.));
+        self
+    }
+
+    /// The chip's height, points (#329), its icon and label centered in
+    /// it; never less than its label's own height (so a larger text size
+    /// never cuts it). By default, its label's height.
+    pub fn chip_height(mut self, points: f32) -> Self {
+        self.run.chip_height = Some(points.max(0.));
+        self
+    }
+
+    /// The chip's largest width, points, padding and icon included
+    /// (#329): a longer label is cut with an ellipsis (all its
+    /// [runs](Self::chip_label_runs) together). Give it a
+    /// [`tooltip`](Self::tooltip) to read the whole label.
+    pub fn chip_max_width(mut self, points: f32) -> Self {
+        self.run.chip_max_width = Some(points.max(0.));
+        self
+    }
+
+    /// A [`chip`]'s label made of several runs, each with its own weight,
+    /// italic and text color (#329): a bold name, then a grey summary.
+    /// Other span styles are ignored. The chip's plain label (what a copy
+    /// writes and screen readers say) becomes their text.
+    ///
+    /// ```
+    /// # use prism_core::prelude::*;
+    /// let c = chip("user:7", "").chip_label_runs([
+    ///     span("Ada").bold(),
+    ///     span(" · 3 tasks").text_color(rgb(0x8e8e93)),
+    /// ]);
+    /// assert_eq!(c.chip_label(), Some("Ada · 3 tasks"));
+    /// ```
+    pub fn chip_label_runs(mut self, runs: impl IntoIterator<Item = Span>) -> Self {
+        let runs: Vec<TextRun> = runs
+            .into_iter()
+            .map(|s| TextRun {
+                text: s.run.text,
+                weight: s.run.weight,
+                italic: s.run.italic,
+                color: s.run.color,
+                ..TextRun::default()
+            })
+            .filter(|r| !r.text.is_empty())
+            .collect();
+        self.run.chip_label = Some(runs.iter().map(|r| r.text.as_str()).collect());
+        self.run.chip_label_runs = runs;
+        self
+    }
+
+    /// Marks the chip with a state (#329), one word such as `"open"` or
+    /// `"selected"` (letters, digits, `-` and `_`; others are dropped), so
+    /// a stylesheet or a test finds it: on the web `data-state="open"`
+    /// and the class `prism-chip-open`; on Linux the CSS class
+    /// `prism-chip-open` of the chip's widget; on Apple platforms the
+    /// `PrismChipState` attribute of its character; on Android the chip
+    /// span's `state`. Windows has no place for it in the field (a chip is
+    /// a picture RichEdit embeds); it is in the runs there too. The app
+    /// styles it on native backends with the other chip builders.
+    pub fn chip_state(mut self, state: impl AsRef<str>) -> Self {
+        let state: String = state
+            .as_ref()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            .collect();
+        self.run.chip_state = (!state.is_empty()).then_some(state);
+        self
+    }
+
+    /// A name tests find the chip by (#329): `data-testid` on the web; the
+    /// accessibility identifier of its image on iOS, iPadOS and visionOS;
+    /// the `PrismChipTestID` attribute of its character on Apple
+    /// platforms; the chip widget's name on Linux; the chip span's
+    /// `testId` on Android. Windows has no per-chip automation id (a chip
+    /// is a picture RichEdit embeds, named by its label). On every backend
+    /// it is in the runs the host receives ([`TextRun::chip_test_id`]),
+    /// which `prism-testing` reads (`Host::chip`).
+    pub fn chip_test_id(mut self, id: impl Into<String>) -> Self {
+        self.run.chip_test_id = Some(id.into());
+        self
+    }
+
+    /// Sets an attribute of the chip's element on the web (#329), with the
+    /// rules of an element's `attr`: a `data-*` name an app may set (see
+    /// [`is_app_attribute`](crate::attributes::is_app_attribute)), other
+    /// than `data-state` and `data-testid` (see
+    /// [`chip_state`](Self::chip_state), [`chip_test_id`](Self::chip_test_id));
+    /// other names are ignored and fail a debug assertion. Setting a name
+    /// again replaces its value. Native backends ignore it.
+    pub fn chip_attr(mut self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        let name = name.as_ref().to_ascii_lowercase();
+        let allowed = name.starts_with("data-")
+            && crate::attributes::is_app_attribute(&name)
+            && !crate::attributes::CHIP_DATA_ATTRIBUTES.contains(&&name[5..]);
+        debug_assert!(
+            allowed,
+            "`{name}` is not an attribute a chip may set (a `data-*` name, see prism_core::attributes)"
+        );
+        if allowed {
+            let value = value.into();
+            match self.run.chip_attrs.iter_mut().find(|(n, _)| *n == name) {
+                Some(slot) => slot.1 = value,
+                None => self.run.chip_attrs.push((name, value)),
+            }
+        }
+        self
+    }
+
+    /// Its [`tooltip`](Self::tooltip), if it has one.
+    pub fn tooltip_value(&self) -> Option<&str> {
+        self.run.tooltip.as_deref()
+    }
+
+    /// A [`chip`]'s [state](Self::chip_state), if it has one.
+    pub fn chip_state_value(&self) -> Option<&str> {
+        self.run.chip_state.as_deref()
+    }
+
+    /// A [`chip`]'s [test id](Self::chip_test_id), if it has one.
+    pub fn chip_test_id_value(&self) -> Option<&str> {
+        self.run.chip_test_id.as_deref()
     }
 
     /// The run's text: [`OBJECT_CHAR`] for a [`chip`].
@@ -471,6 +672,37 @@ pub struct TextRun {
     pub chip_label: Option<String>,
     /// A chip's symbol, drawn before its label (SF Symbol name).
     pub chip_icon: Option<String>,
+    /// A chip's vector icon (#329), drawn before its label in place of a
+    /// symbol: one em tall, [`chip_icon_ratio`](Self::chip_icon_ratio)
+    /// times as wide, [`Color::current`] being the chip's text color.
+    pub chip_drawing: Option<Drawing>,
+    /// The width of [`chip_drawing`](Self::chip_drawing) over its height
+    /// (`None`: 1, a square).
+    pub chip_icon_ratio: Option<f32>,
+    /// What the run shows on hover (#329).
+    pub tooltip: Option<String>,
+    /// A ring inside the chip's box (#329): its width (points) and color.
+    pub chip_ring: Option<(f32, Color)>,
+    /// The radius of the chip's corners, points (`None`: 4, #329).
+    pub chip_radius: Option<f32>,
+    /// The chip's height, points (`None`: its label's, #329); never less
+    /// than its label's.
+    pub chip_height: Option<f32>,
+    /// The chip's largest width, points, its label cut with an ellipsis
+    /// (#329).
+    pub chip_max_width: Option<f32>,
+    /// A chip's label as styled runs (#329): their `text`, `weight`,
+    /// `italic` and `color`. Empty: `chip_label` alone, in the run's style.
+    /// Their texts make `chip_label`.
+    pub chip_label_runs: Vec<TextRun>,
+    /// A chip's state (#329): `data-state` and a `prism-chip-<state>`
+    /// class on the web.
+    pub chip_state: Option<String>,
+    /// A chip's test id (#329): `data-testid` on the web, an accessibility
+    /// identifier or test hook natively.
+    pub chip_test_id: Option<String>,
+    /// A chip's `data-*` attributes on the web (#329).
+    pub chip_attrs: Vec<(String, String)>,
 }
 
 impl TextRun {
@@ -490,6 +722,29 @@ impl TextRun {
         self.chip.is_some() || self.icon.is_some()
     }
 
+    /// A chip's icon (#329): its symbol or its vector drawing.
+    pub fn chip_icon_value(&self) -> Option<ChipIcon> {
+        if let Some(d) = &self.chip_drawing {
+            return Some(ChipIcon::Vector {
+                drawing: d.clone(),
+                ratio: self.chip_icon_ratio.unwrap_or(1.),
+            });
+        }
+        self.chip_icon.clone().map(ChipIcon::Symbol)
+    }
+
+    /// A chip's label runs (#329): [`chip_label_runs`](Self::chip_label_runs),
+    /// or its plain label as one run in the chip's own style.
+    pub fn label_runs(&self) -> Vec<TextRun> {
+        if !self.chip_label_runs.is_empty() {
+            return self.chip_label_runs.clone();
+        }
+        vec![TextRun {
+            text: self.chip_label.clone().unwrap_or_default(),
+            ..TextRun::default()
+        }]
+    }
+
     /// What a read-only text shows for the run: a chip's label, an icon's
     /// fallback glyph ([`glyphs::glyph`](crate::glyphs::glyph)), else its text.
     pub fn display_text(&self) -> &str {
@@ -505,6 +760,10 @@ impl TextRun {
 
 const RUN_SEP: char = '\u{1e}';
 const FIELD_SEP: char = '\u{1f}';
+/// Separators of a list inside one field (a chip's label runs and
+/// attributes, #329): items, then the parts of an item.
+const ITEM_SEP: char = '\u{1d}';
+const PART_SEP: char = '\u{1c}';
 
 fn color_code(c: Color) -> String {
     match c.dark {
@@ -536,10 +795,17 @@ pub fn parse_color(s: &str) -> Option<Color> {
 /// `rounded` or a name), `uc=…` underline color, `us=thick` underline style
 /// (`double`, `dotted`, `dashed`; none: single), `z=1.25` size (× the
 /// paragraph's), `l=123` link id,
-/// `h=/path` href, `g=star.fill` icon, and for a [`chip`] `k=key`, `n=label`,
-/// `m=icon`. Control characters U+001E and U+001F are dropped from texts.
+/// `h=/path` href, `g=star.fill` icon, `tt=text` tooltip, and for a
+/// [`chip`] `k=key`, `n=label`, `m=icon`, and (#329) `v=` a vector icon
+/// ([`Drawing::encode`]) with `vr=1.5` its width over its height,
+/// `ring=1.5,#RRGGBBAA` its ring, `rad=6` its radius, `ht=22` its height,
+/// `mw=160` its largest width, `nr=` its label runs (each its text then
+/// `w=`, `i`, `c=` fields, separated by U+001C; runs separated by
+/// U+001D), `st=open` its state, `tid=` its test id and `at=` its
+/// attributes (name U+001C value, separated by U+001D). Control
+/// characters U+001C to U+001F are dropped from texts.
 pub fn encode_runs(runs: &[TextRun]) -> String {
-    let clean = |s: &str| s.replace([RUN_SEP, FIELD_SEP], "");
+    let clean = |s: &str| s.replace([RUN_SEP, FIELD_SEP, ITEM_SEP, PART_SEP], "");
     let mut out = String::new();
     for (i, r) in runs.iter().enumerate() {
         if i > 0 {
@@ -598,6 +864,64 @@ pub fn encode_runs(runs: &[TextRun]) -> String {
         if let Some(m) = &r.chip_icon {
             field(format!("m={}", clean(m)));
         }
+        if let Some(d) = &r.chip_drawing {
+            field(format!("v={}", clean(&d.encode())));
+        }
+        if let Some(ratio) = r.chip_icon_ratio {
+            field(format!("vr={ratio}"));
+        }
+        if let Some(t) = &r.tooltip {
+            field(format!("tt={}", clean(t)));
+        }
+        if let Some((w, c)) = r.chip_ring {
+            field(format!("ring={w},{}", color_code(c)));
+        }
+        if let Some(v) = r.chip_radius {
+            field(format!("rad={v}"));
+        }
+        if let Some(v) = r.chip_height {
+            field(format!("ht={v}"));
+        }
+        if let Some(v) = r.chip_max_width {
+            field(format!("mw={v}"));
+        }
+        if !r.chip_label_runs.is_empty() {
+            let runs: Vec<String> = r
+                .chip_label_runs
+                .iter()
+                .map(|l| {
+                    let mut o = clean(&l.text);
+                    if let Some(w) = l.weight {
+                        o.push(PART_SEP);
+                        o.push_str(&format!("w={}", w.css()));
+                    }
+                    if l.italic {
+                        o.push(PART_SEP);
+                        o.push('i');
+                    }
+                    if let Some(c) = l.color {
+                        o.push(PART_SEP);
+                        o.push_str(&format!("c={}", color_code(c)));
+                    }
+                    o
+                })
+                .collect();
+            field(format!("nr={}", runs.join(&ITEM_SEP.to_string())));
+        }
+        if let Some(st) = &r.chip_state {
+            field(format!("st={}", clean(st)));
+        }
+        if let Some(t) = &r.chip_test_id {
+            field(format!("tid={}", clean(t)));
+        }
+        if !r.chip_attrs.is_empty() {
+            let attrs: Vec<String> = r
+                .chip_attrs
+                .iter()
+                .map(|(n, v)| format!("{}{PART_SEP}{}", clean(n), clean(v)))
+                .collect();
+            field(format!("at={}", attrs.join(&ITEM_SEP.to_string())));
+        }
     }
     out
 }
@@ -633,12 +957,141 @@ pub fn decode_runs(s: &str) -> Vec<TextRun> {
                     "k" => run.chip = Some(v.to_string()),
                     "n" => run.chip_label = Some(v.to_string()),
                     "m" => run.chip_icon = Some(v.to_string()),
+                    "v" => run.chip_drawing = Some(Drawing::decode(v)),
+                    "vr" => run.chip_icon_ratio = v.parse().ok().filter(|r: &f32| *r > 0.),
+                    "tt" => run.tooltip = Some(v.to_string()),
+                    "ring" => {
+                        run.chip_ring = v.split_once(',').and_then(|(w, c)| {
+                            Some((w.parse().ok().filter(|w: &f32| *w > 0.)?, parse_color(c)?))
+                        })
+                    }
+                    "rad" => run.chip_radius = v.parse().ok(),
+                    "ht" => run.chip_height = v.parse().ok(),
+                    "mw" => run.chip_max_width = v.parse().ok(),
+                    "nr" => run.chip_label_runs = decode_label_runs(v),
+                    "st" => run.chip_state = Some(v.to_string()),
+                    "tid" => run.chip_test_id = Some(v.to_string()),
+                    "at" => {
+                        run.chip_attrs = v
+                            .split(ITEM_SEP)
+                            .filter_map(|a| a.split_once(PART_SEP))
+                            .map(|(n, v)| (n.to_string(), v.to_string()))
+                            .collect()
+                    }
                     _ => {}
                 }
             }
             run
         })
         .collect()
+}
+
+/// A chip's label runs as `nr=` encodes them (#329).
+fn decode_label_runs(v: &str) -> Vec<TextRun> {
+    v.split(ITEM_SEP)
+        .map(|r| {
+            let mut parts = r.split(PART_SEP);
+            let mut run = TextRun {
+                text: parts.next().unwrap_or("").to_string(),
+                ..TextRun::default()
+            };
+            for f in parts {
+                let (k, v) = f.split_once('=').unwrap_or((f, ""));
+                match k {
+                    "w" => run.weight = v.parse().ok().map(FontWeight::from_css),
+                    "i" => run.italic = true,
+                    "c" => run.color = parse_color(v),
+                    _ => {}
+                }
+            }
+            run
+        })
+        .filter(|r| !r.text.is_empty())
+        .collect()
+}
+
+// --- Chip icons (#329) ----------------------------------------------------------
+
+/// What a [`chip`] draws before its label ([`Span::chip_icon`], #329): a
+/// symbol, or a vector drawing one em tall.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChipIcon {
+    /// An SF Symbol name (a glyph where SF Symbols don't exist, see
+    /// [`glyphs`](crate::glyphs)).
+    Symbol(String),
+    /// Vector paths in fractions of the icon's box (see
+    /// [`shape`](mod@crate::shape)), one em tall and `ratio` times as wide.
+    Vector {
+        /// What it draws; [`Color::current`] is the chip's text color.
+        drawing: Drawing,
+        /// Its width over its height.
+        ratio: f32,
+    },
+}
+
+impl ChipIcon {
+    /// An SVG document as the icon (what [`svg`](crate::svg()) draws,
+    /// see [`crate::svg`](mod@crate::svg)), keeping its proportions; its
+    /// `currentColor` is the chip's text color. Unreadable markup draws
+    /// nothing.
+    pub fn svg(markup: impl AsRef<str>) -> ChipIcon {
+        match crate::svg::parse(markup.as_ref()) {
+            Some(s) => ChipIcon::Vector {
+                drawing: s.drawing,
+                ratio: if s.width > 0. && s.height > 0. {
+                    s.width / s.height
+                } else {
+                    1.
+                },
+            },
+            None => ChipIcon::Vector {
+                drawing: Drawing::default(),
+                ratio: 1.,
+            },
+        }
+    }
+
+    /// Paths as a square icon (like a [`shape`](crate::shape())'s, in
+    /// fractions of its box).
+    pub fn shape(paths: impl IntoIterator<Item = Path>) -> ChipIcon {
+        ChipIcon::Vector {
+            drawing: Drawing {
+                inset: (0., 0.),
+                paths: paths.into_iter().collect(),
+            },
+            ratio: 1.,
+        }
+    }
+}
+
+impl From<&str> for ChipIcon {
+    fn from(name: &str) -> Self {
+        ChipIcon::Symbol(name.to_string())
+    }
+}
+
+impl From<String> for ChipIcon {
+    fn from(name: String) -> Self {
+        ChipIcon::Symbol(name)
+    }
+}
+
+impl From<&String> for ChipIcon {
+    fn from(name: &String) -> Self {
+        ChipIcon::Symbol(name.clone())
+    }
+}
+
+impl From<Drawing> for ChipIcon {
+    fn from(drawing: Drawing) -> Self {
+        ChipIcon::Vector { drawing, ratio: 1. }
+    }
+}
+
+impl From<Path> for ChipIcon {
+    fn from(path: Path) -> Self {
+        ChipIcon::shape([path])
+    }
 }
 
 // --- Editing runs by character offsets (#115) ----------------------------------
@@ -810,13 +1263,17 @@ pub(crate) fn edit_text(old: &[Span], new: &str) -> Vec<Span> {
 }
 
 /// The style of a mounted run, to match the runs an editor reports: no
-/// text, no link id.
+/// text, no link id, as its encoding reads back (colors, sizes and a
+/// chip's drawing as precise as the editor reports them).
 pub(crate) fn run_key(run: &TextRun) -> TextRun {
-    TextRun {
+    let plain = TextRun {
         text: String::new(),
         link: None,
         ..run.clone()
-    }
+    };
+    decode_runs(&encode_runs(std::slice::from_ref(&plain)))
+        .pop()
+        .unwrap_or(plain)
 }
 
 /// The spans an editor reported as `runs` (the web client, AppKit: the

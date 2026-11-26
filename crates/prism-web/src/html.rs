@@ -1181,14 +1181,10 @@ pub(crate) fn shape_svg(
     style: &mut dyn FnMut(&str) -> String,
 ) -> String {
     use prism_core::shape::{Drawing, Segment};
-    let d = Drawing::decode(text);
-    if d.paths.is_empty() {
-        return String::new();
-    }
-    let scaled = size.is_none();
-    let (w, h) = match size {
-        Some(s) => s,
+    match size {
+        Some(size) => shape_svg_with(text, size, false, style),
         None => {
+            let d = Drawing::decode(text);
             let arcs = d
                 .paths
                 .iter()
@@ -1197,9 +1193,30 @@ pub(crate) fn shape_svg(
             if arcs || d.inset != (0., 0.) {
                 return String::new();
             }
-            (100., 100.)
+            let svg = shape_svg_with(text, (100., 100.), true, style);
+            svg.replacen(
+                r#"viewBox="0 0 100 100""#,
+                r#"viewBox="0 0 100 100" preserveAspectRatio="none""#,
+                1,
+            )
         }
-    };
+    }
+}
+
+/// [`shape_svg`] in a `w` × `h` box; with `non_scaling`, strokes keep
+/// their width whatever size the `<svg>` is shown at.
+fn shape_svg_with(
+    text: &str,
+    (w, h): (f32, f32),
+    non_scaling: bool,
+    style: &mut dyn FnMut(&str) -> String,
+) -> String {
+    use prism_core::shape::{Drawing, Segment};
+    let d = Drawing::decode(text);
+    if d.paths.is_empty() {
+        return String::new();
+    }
+    let scaled = non_scaling;
     let (ix, iy) = d.inset;
     let (iw, ih) = ((w - 2. * ix).max(0.), (h - 2. * iy).max(0.));
     let side = iw.min(ih);
@@ -1219,9 +1236,6 @@ pub(crate) fn shape_svg(
         num(w),
         num(h)
     );
-    if scaled {
-        o.push_str(r#" preserveAspectRatio="none""#);
-    }
     o.push('>');
     for p in &d.paths {
         let mut path = String::new();
@@ -1327,6 +1341,99 @@ pub fn escape(s: &str) -> String {
     o
 }
 
+/// A chip (#115) as the markup `client.js` (`fillChip`) builds: one
+/// non-editable unit, its icon (a symbol, or an `<svg>` one em tall, #329)
+/// then its label (styled runs), its box, tooltip, state, test id and
+/// attributes. `style` turns CSS into attributes.
+fn chip_html(out: &mut String, r: &prism_core::TextRun, style: &mut dyn FnMut(&str) -> String) {
+    let state = r.chip_state.as_deref().map(|st| {
+        st.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            .collect::<String>()
+    });
+    let state = state.filter(|s| !s.is_empty());
+    let mut attrs = String::new();
+    if let Some(st) = &state {
+        let _ = write!(attrs, r#" data-state="{st}""#);
+    }
+    if let Some(l) = r.link {
+        let _ = write!(attrs, r#" data-link="{l}""#);
+    }
+    if let Some(t) = &r.chip_test_id {
+        let _ = write!(attrs, r#" data-testid="{}""#, escape(t));
+    }
+    if let Some(t) = &r.tooltip {
+        let _ = write!(attrs, r#" title="{}""#, escape(t));
+    }
+    for (name, value) in &r.chip_attrs {
+        let own = matches!(
+            name.as_str(),
+            "data-link" | "data-selected" | "data-state" | "data-testid"
+        );
+        if name.starts_with("data-") && prism_core::attributes::is_app_attribute(name) && !own {
+            let _ = write!(attrs, r#" {name}="{}""#, escape(value));
+        }
+    }
+    let icon = match (&r.chip_drawing, &r.chip_icon) {
+        (Some(d), _) => {
+            // One em tall, `ratio` wide; strokes in points whatever its size.
+            let ratio = r.chip_icon_ratio.filter(|v| *v > 0.).unwrap_or(1.);
+            let d = prism_core::Drawing {
+                // Insets in points at 16 to the em.
+                inset: (d.inset.0 * 100. / 16., d.inset.1 * 100. / 16.),
+                paths: d.paths.clone(),
+            };
+            let svg = shape_svg_with(&d.encode(), (100. * ratio, 100.), true, style);
+            let size = style(&format!("width:{ratio}em"));
+            svg.replacen(
+                "<svg ",
+                &format!(r#"<svg class="prism-chip-icon"{size} "#),
+                1,
+            )
+        }
+        (None, Some(g)) => format!(
+            r#"<span class="prism-symbol" aria-hidden="true">{}</span>"#,
+            escape(prism_core::glyphs::glyph(g))
+        ),
+        (None, None) => String::new(),
+    };
+    let mut label = String::new();
+    if r.chip_label_runs.is_empty() {
+        label = escape(r.chip_label.as_deref().unwrap_or(""));
+    } else {
+        for l in &r.chip_label_runs {
+            let css = crate::css::run_css(&prism_core::TextRun {
+                text: String::new(),
+                weight: l.weight,
+                italic: l.italic,
+                color: l.color,
+                ..Default::default()
+            });
+            if css.is_empty() {
+                label.push_str(&escape(&l.text));
+            } else {
+                let _ = write!(label, "<span{}>{}</span>", style(&css), escape(&l.text));
+            }
+        }
+    }
+    let cut = if r.chip_max_width.is_some() {
+        style("min-width:0;overflow:clip;text-overflow:ellipsis")
+    } else {
+        String::new()
+    };
+    let css = crate::css::chip_css(r);
+    let box_style = if css.is_empty() {
+        String::new()
+    } else {
+        style(&css)
+    };
+    let class = state.map_or(String::new(), |st| format!(" prism-chip-{st}"));
+    let _ = write!(
+        out,
+        r#"<span class="prism-chip{class}" contenteditable="false"{attrs}{box_style}>{icon}<span class="prism-chip-label"{cut}>{label}</span></span>"#
+    );
+}
+
 /// A rich text's runs (`prism_core::spans`) as inline HTML, the same
 /// markup `client.js` builds: `<span>` per styled run, `<a class="prism-link"
 /// href data-link>` per link (`<span role="link" tabindex="0">` for a
@@ -1348,30 +1455,21 @@ fn runs_html_with(
     style: &mut dyn FnMut(&str) -> String,
 ) -> String {
     let mut out = String::new();
+    let style_fn = style;
     for r in prism_core::decode_runs(config) {
         let css = crate::css::run_css(&r);
-        let style = if css.is_empty() {
+        let style = if css.is_empty() || r.chip.is_some() {
             String::new()
         } else {
-            style(&css)
+            style_fn(&css)
         };
         let text = escape(&r.text);
+        let title = r
+            .tooltip
+            .as_deref()
+            .map_or(String::new(), |t| format!(r#" title="{}""#, escape(t)));
         if r.chip.is_some() {
-            // An inline object (#115): one unit, its icon then its label.
-            let icon = r.chip_icon.as_deref().map_or(String::new(), |g| {
-                format!(
-                    r#"<span class="prism-symbol" aria-hidden="true">{}</span>"#,
-                    escape(prism_core::glyphs::glyph(g))
-                )
-            });
-            let link = r
-                .link
-                .map_or(String::new(), |l| format!(r#" data-link="{l}""#));
-            let label = escape(r.chip_label.as_deref().unwrap_or(""));
-            let _ = write!(
-                out,
-                r#"<span class="prism-chip" contenteditable="false"{link}{style}>{icon}{label}</span>"#
-            );
+            chip_html(&mut out, &r, style_fn);
         } else if let Some(name) = r.icon.as_deref() {
             // In a rich input an icon is one unit (#221): U+FFFC, drawn as
             // its glyph and not editable. Read-only, its text is the glyph.
@@ -1386,7 +1484,7 @@ fn runs_html_with(
             };
             let _ = write!(
                 out,
-                r#"<span class="prism-symbol" aria-hidden="true"{editable}{style}>{glyph}</span>"#
+                r#"<span class="prism-symbol" aria-hidden="true"{editable}{title}{style}>{glyph}</span>"#
             );
         } else if let Some(link) = r.link {
             let href = base
@@ -1396,27 +1494,27 @@ fn runs_html_with(
                 (Some(href), _) => {
                     let _ = write!(
                         out,
-                        r#"<a class="prism-link" href="{}" data-link="{link}"{style}>{text}</a>"#,
+                        r#"<a class="prism-link" href="{}" data-link="{link}"{title}{style}>{text}</a>"#,
                         escape(&href)
                     );
                 }
                 (None, None) => {
                     let _ = write!(
                         out,
-                        r#"<span class="prism-link" data-link="{link}"{style}>{text}</span>"#
+                        r#"<span class="prism-link" data-link="{link}"{title}{style}>{text}</span>"#
                     );
                 }
                 (None, Some(_)) => {
                     let _ = write!(
                         out,
-                        r#"<span class="prism-link" role="link" tabindex="0" data-link="{link}"{style}>{text}</span>"#
+                        r#"<span class="prism-link" role="link" tabindex="0" data-link="{link}"{title}{style}>{text}</span>"#
                     );
                 }
             }
-        } else if style.is_empty() {
+        } else if style.is_empty() && title.is_empty() {
             out.push_str(&text);
         } else {
-            let _ = write!(out, "<span{style}>{text}</span>");
+            let _ = write!(out, "<span{title}{style}>{text}</span>");
         }
     }
     out

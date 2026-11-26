@@ -1298,9 +1298,25 @@
     // yet) has nothing to draw at: a 0×0 viewBox would stay blank (#319).
     // What it shows stays; the observer draws it at the next size it gets.
     if (!w || !h) return;
+    // The server's first paint may have drawn it already (#285).
+    let svg = el._svg || (el._svg = el.querySelector(":scope > svg"));
+    if (svg) svg.removeAttribute("preserveAspectRatio");
+    if (!svg) {
+      svg = el._svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("aria-hidden", "true");
+      el.append(svg);
+    }
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    svg.replaceChildren(...shapePaths(el._drawing, w, h, 1, (e, css) => Object.assign(e.style, css)));
+  }
+  /**
+   * The `<path>`s of drawing `text` (`Drawing::encode`) in a `w` × `h`
+   * box, insets `k` units a point; `paint(path, css)` gives each its paint.
+   */
+  function shapePaths(text, w, h, k, paint) {
     let ix = 0, iy = 0;
     const paths = [];
-    for (const line of (el._drawing || "").split("\n")) {
+    for (const line of (text || "").split("\n")) {
       if (line[0] === "i") { [ix, iy] = line.slice(1).split(",").map(Number); continue; }
       const bar = line.indexOf("|");
       if (bar < 0) continue;
@@ -1316,18 +1332,10 @@
       }
       paths.push(p);
     }
+    ix *= k; iy *= k;
     const iw = Math.max(0, w - 2 * ix), ih = Math.max(0, h - 2 * iy), side = Math.min(iw, ih);
     const X = (x) => ix + x * iw, Y = (y) => iy + y * ih;
-    // The server's first paint may have drawn it already (#285).
-    let svg = el._svg || (el._svg = el.querySelector(":scope > svg"));
-    if (svg) svg.removeAttribute("preserveAspectRatio");
-    if (!svg) {
-      svg = el._svg = document.createElementNS(svgNS, "svg");
-      svg.setAttribute("aria-hidden", "true");
-      el.append(svg);
-    }
-    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-    svg.replaceChildren(...paths.map((p) => {
+    return paths.map((p) => {
       const d = [], t = p.t;
       let open = false;
       for (let i = 0; i < t.length;) {
@@ -1362,14 +1370,13 @@
       }
       const e = document.createElementNS(svgNS, "path");
       e.setAttribute("d", d.join(""));
-      e.style.fill = shapeColor(p.fill);
-      e.style.stroke = shapeColor(p.stroke);
-      e.style.strokeWidth = p.w;
-      if (p.round) { e.style.strokeLinecap = "round"; e.style.strokeLinejoin = "round"; }
-      if (p.dash) e.style.strokeDasharray = p.dash;
-      if (p.evenOdd) e.style.fillRule = "evenodd";
+      const css = { fill: shapeColor(p.fill), stroke: shapeColor(p.stroke), strokeWidth: p.w };
+      if (p.round) { css.strokeLinecap = "round"; css.strokeLinejoin = "round"; }
+      if (p.dash) css.strokeDasharray = p.dash;
+      if (p.evenOdd) css.fillRule = "evenodd";
+      paint(e, css);
       return e;
-    }));
+    });
   }
 
   // Rich text (prism-core spans.rs): runs separated by U+001E, fields by
@@ -1401,11 +1408,90 @@
     return [
       r.w && `font-weight:${r.w}`, r.i && "font-style:italic", d && `text-decoration-line:${d}`,
       r.u && r.uc && `text-decoration-color:${shapeColor(r.uc)}`, r.u && UNDERLINE[r.us],
-      r.c && `color:${shapeColor(r.c)}`, r.b && `background-color:${shapeColor(r.b)};border-radius:3px`,
+      r.c && `color:${shapeColor(r.c)}`, r.b && `background-color:${shapeColor(r.b)}`,
+      // A highlight's corners; a chip's are its own (#329).
+      r.b && !r.k && "border-radius:3px",
       r.f && `font-family:${fam[r.f] || `"${r.f.replace(/["\\<>]/g, "")}",${SYSTEM_FONT}`}`,
       r.z && `font-size:${r.z}em`,
     ].filter(Boolean).join(";");
   };
+  /** The `data-*` attributes Prism sets on a chip itself. */
+  const CHIP_OWN = new Set(["data-link", "data-selected", "data-state", "data-testid"]);
+  /**
+   * Draws chip `a` (a run's decoded fields) in `node` (#115, #329): its
+   * icon (a symbol, or a drawing one em tall), its label (styled runs, cut
+   * with an ellipsis at its largest width), its box (the run's colors,
+   * ring, radius, height), tooltip, state, test id and attributes. The
+   * style classes it uses are `node._subPs`.
+   */
+  function fillChip(node, a) {
+    node.replaceChildren();
+    node.className = "prism-chip";
+    const st = (a.st || "").replace(/[^A-Za-z0-9_-]/g, "");
+    if (st) { node.classList.add(`prism-chip-${st}`); node.dataset.state = st; }
+    if (a.tid) node.dataset.testid = a.tid;
+    if (a.tt) node.title = a.tt;
+    for (const pair of (a.at || "").split("\u001d")) {
+      const i = pair.indexOf("\u001c");
+      const name = i < 0 ? "" : pair.slice(0, i);
+      if (/^data-[a-z0-9._-]+$/.test(name) && !name.startsWith("data-prism") && !CHIP_OWN.has(name)) {
+        node.setAttribute(name, pair.slice(i + 1));
+      }
+    }
+    const sub = [];
+    const css = (el, c) => { if (c) { setCss(el, c); sub.push(el._ps); } };
+    if (a.v != null) {
+      // A vector icon (#329): one em tall, `vr` times as wide; strokes in
+      // points whatever its size.
+      const ratio = +a.vr > 0 ? +a.vr : 1;
+      const svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("class", "prism-chip-icon");
+      svg.setAttribute("aria-hidden", "true");
+      svg.setAttribute("viewBox", `0 0 ${100 * ratio} 100`);
+      css(svg, `width:${ratio}em`);
+      svg.append(...shapePaths(a.v, 100 * ratio, 100, 100 / 16, (e, p) => {
+        p.vectorEffect = "non-scaling-stroke";
+        const style = Object.entries(p).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}:${v}`).join(";");
+        css(e, style);
+      }));
+      node.appendChild(svg);
+    } else if (a.m) {
+      const g = document.createElement("span");
+      g.className = "prism-symbol";
+      g.setAttribute("aria-hidden", "true");
+      g.textContent = glyphs[a.m] || "";
+      node.appendChild(g);
+    }
+    const label = document.createElement("span");
+    label.className = "prism-chip-label";
+    if (a.nr) {
+      for (const part of a.nr.split("\u001d")) {
+        const [text, ...fields] = part.split("\u001c");
+        const f = {};
+        for (const x of fields) { const i = x.indexOf("="); f[i < 0 ? x : x.slice(0, i)] = i < 0 ? true : x.slice(i + 1); }
+        const c = runCss({ w: f.w, i: f.i, c: f.c });
+        if (!c) { label.appendChild(document.createTextNode(text)); continue; }
+        const s = document.createElement("span");
+        s.textContent = text;
+        css(s, c);
+        label.appendChild(s);
+      }
+    } else label.textContent = a.n || "";
+    // Cut with an ellipsis at its largest width (`overflow: clip` keeps the
+    // label on the text's baseline).
+    if (a.mw) css(label, "min-width:0;overflow:clip;text-overflow:ellipsis");
+    node.appendChild(label);
+    const box = [runCss(a)];
+    if (a.rad != null) box.push(`border-radius:${+a.rad}px`);
+    if (a.ring) {
+      const i = a.ring.indexOf(",");
+      box.push(`box-shadow:inset 0 0 0 ${+a.ring.slice(0, i)}px ${shapeColor(a.ring.slice(i + 1))}`);
+    }
+    if (a.ht) box.push(`height:max(${+a.ht}px,1.2em);align-items:center;box-sizing:border-box`);
+    if (a.mw) box.push(`max-width:${+a.mw}px;box-sizing:border-box`);
+    css(node, box.filter(Boolean).join(";"));
+    node._subPs = sub;
+  }
   function renderRuns(el) {
     // Inside a text that is a link itself, links are spans (they don't nest).
     const nested = el.localName === "a";
@@ -1418,17 +1504,9 @@
       if (r.k) {
         // An inline object (#115): its icon, then its label.
         node = document.createElement("span");
-        node.className = "prism-chip";
         if (r.l) node.dataset.link = r.l;
-        if (r.m) {
-          const g = document.createElement("span");
-          g.className = "prism-symbol";
-          g.setAttribute("aria-hidden", "true");
-          g.textContent = glyphs[r.m] || "";
-          node.appendChild(g);
-        }
-        node.appendChild(document.createTextNode(r.n || ""));
-        if (css) { setCss(node, css); (el._runPs ||= []).push(node._ps); }
+        fillChip(node, r);
+        (el._runPs ||= []).push(...node._subPs);
         return node;
       } else if (r.g) {
         node = document.createElement("span");
@@ -1442,12 +1520,13 @@
         node.dataset.link = r.l;
         if (href) node.setAttribute("href", url);
         else if (!nested) { node.setAttribute("role", "link"); node.tabIndex = 0; }
-      } else if (css) {
+      } else if (css || r.tt) {
         node = document.createElement("span");
       } else {
         return document.createTextNode(r.text);
       }
       node.textContent = r.text;
+      if (r.tt) node.title = r.tt;
       if (css) {
         setCss(node, css);
         (el._runPs ||= []).push(node._ps);
@@ -2835,7 +2914,7 @@
     const same = want.length === el.childNodes.length && want.every((n, i) => el.childNodes[i] === n);
     if (!same) el.replaceChildren(...want);
     el._runEls = els;
-    el._runPs = els.map((n) => n._ps).filter(Boolean);
+    el._runPs = els.flatMap((n) => [n._ps, ...(n._subPs || [])]).filter(Boolean);
     if (text) delete el.dataset.empty; else el.dataset.empty = "";
   }
 
@@ -2852,21 +2931,15 @@
       node.appendChild(document.createTextNode(glyphs[r.a.g] || ""));
     } else if (isChip(r)) {
       node._chip = true;
-      node.className = "prism-chip";
       node.setAttribute("contenteditable", "false");
-      if (r.a.m) {
-        const g = document.createElement("span");
-        g.className = "prism-symbol";
-        g.setAttribute("aria-hidden", "true");
-        g.textContent = glyphs[r.a.m] || "";
-        node.appendChild(g);
-      }
-      node.appendChild(document.createTextNode(r.a.n || ""));
+      fillChip(node, r.a);
+      return node;
     } else {
       if (r.l !== undefined || r.a.h) node.className = "prism-link";
       node.appendChild(document.createTextNode(r.text));
     }
     setCss(node, runCss(r.a));
+    if (r.a.tt) node.title = r.a.tt;
     return node;
   }
 

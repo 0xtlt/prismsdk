@@ -37,12 +37,20 @@ struct Rich {
     chips: Vec<Chip>,
 }
 
-/// A chip (or inline icon) at its anchor: a box with its symbol and label.
+/// A chip (or inline icon) at its anchor: a box with its icon (a symbol,
+/// or a drawing, #329) and label.
 struct Chip {
     anchor: gtk::TextChildAnchor,
     widget: gtk::Box,
     icon: gtk::Label,
+    vector: gtk::DrawingArea,
+    /// The vector icon's paths, in its box.
+    paths: Rc<RefCell<Vec<prism_core::Path>>>,
     label: gtk::Label,
+    /// The `prism-chip-<state>` class it has.
+    state: RefCell<Option<String>>,
+    /// How far it hangs below the baseline, pixels.
+    below: Cell<i32>,
     css: gtk::CssProvider,
     link: Rc<Cell<Option<u64>>>,
     /// What a copy writes for it: a chip's label, nothing for an icon.
@@ -307,8 +315,15 @@ fn new_chip(anchor: gtk::TextChildAnchor) -> Chip {
     widget.set_focusable(false);
     widget.set_can_focus(false);
     let icon = gtk::Label::new(None);
+    let vector = gtk::DrawingArea::new();
+    vector.set_valign(gtk::Align::Center);
+    let paths: Rc<RefCell<Vec<prism_core::Path>>> = Rc::default();
+    let p = paths.clone();
+    vector.set_draw_func(move |_, cr, _, _| crate::imp::draw_paths(cr, &p.borrow()));
     let label = gtk::Label::new(None);
+    label.set_xalign(0.);
     widget.append(&icon);
+    widget.append(&vector);
     widget.append(&label);
     let css = gtk::CssProvider::new();
     #[allow(deprecated)]
@@ -332,7 +347,11 @@ fn new_chip(anchor: gtk::TextChildAnchor) -> Chip {
         anchor,
         widget,
         icon,
+        vector,
+        paths,
         label,
+        state: RefCell::new(None),
+        below: Cell::new(0),
         css,
         link,
         copied: String::new(),
@@ -371,11 +390,140 @@ pub(crate) fn click_chip(label: &str) -> Option<gtk::graphene::Rect> {
     bounds
 }
 
-/// Shows `run` in `chip`: a rounded box with its symbol and label in the
-/// run's font, on the system's gray at 18% unless it sets a background;
-/// an inline icon is its glyph alone.
+/// Shows `run` in `chip`: a rounded box with its icon and label (its
+/// styled runs, cut with an ellipsis at the chip's largest width) in the
+/// run's font, on the system's gray at 18% unless it sets a background,
+/// with its ring, radius and height (#329); an inline icon is its glyph
+/// alone. Its tool tip is the widget's, its state a `prism-chip-<state>`
+/// class, its test id the widget's name (`gtk_widget_get_name`).
 fn configure(chip: &Chip, run: &TextRun, s: &StyledRun, style: &Style, dark: bool) {
     let (icon, label, boxed) = parts(run);
+    let attrs = font_attributes(s);
+    chip.icon.set_attributes(Some(&attrs));
+    chip.icon.set_text(icon.unwrap_or(""));
+    chip.icon.set_visible(icon.is_some());
+    let em = s.font.size.max(1.);
+    let text = s.color.or(style.text_color).unwrap_or(Color::BLACK);
+    // The label: its runs, each its weight, slant and color.
+    let label_attrs = font_attributes(s);
+    let mut shown = String::new();
+    for l in run.label_runs() {
+        let start = shown.len() as u32;
+        shown += &l.text;
+        let end = shown.len() as u32;
+        let add = |mut a: pango::Attribute| {
+            a.set_start_index(start);
+            a.set_end_index(end);
+            label_attrs.insert(a);
+        };
+        if let Some(w) = l.weight {
+            let w: pango::Weight = unsafe { glib::translate::from_glib(w.css() as i32) };
+            add(pango::AttrInt::new_weight(w).upcast());
+        }
+        if l.italic {
+            add(pango::AttrInt::new_style(pango::Style::Italic).upcast());
+        }
+        if let Some(c) = l.color {
+            let c = rgba(c, dark);
+            let u = |v: f32| (v.clamp(0., 1.) * 65535.).round() as u16;
+            add(pango::AttrColor::new_foreground(u(c.red()), u(c.green()), u(c.blue())).upcast());
+            add(pango::AttrInt::new_foreground_alpha(u(c.alpha())).upcast());
+        }
+    }
+    let shown = if boxed { shown } else { label.to_string() };
+    chip.label.set_attributes(Some(&label_attrs));
+    chip.label.set_text(&shown);
+    chip.label.set_visible(!shown.is_empty());
+    // Its box: the shared numbers (prism-native `chips`).
+    chip.label.set_ellipsize(pango::EllipsizeMode::None);
+    chip.label.set_max_width_chars(-1);
+    chip.label.set_size_request(-1, -1);
+    let (_, label_w, _, _) = chip.label.measure(gtk::Orientation::Horizontal, -1);
+    let probe = if shown.is_empty() {
+        &chip.icon
+    } else {
+        &chip.label
+    };
+    let (_, text_h, _, baseline) = probe.measure(gtk::Orientation::Vertical, -1);
+    let geometry = prism_native::chips::chip_box(
+        run,
+        em,
+        text_h as f32,
+        if shown.is_empty() { 0. } else { label_w as f32 },
+    );
+    if boxed && geometry.cut {
+        // Exactly its room, both its least and natural width.
+        chip.label.set_ellipsize(pango::EllipsizeMode::End);
+        chip.label.set_max_width_chars(0);
+        chip.label
+            .set_size_request(geometry.label_w.floor() as i32, -1);
+    }
+    let vector = boxed && run.chip_drawing.is_some();
+    if vector {
+        let (w, h) = (geometry.icon_w, geometry.icon_h);
+        *chip.paths.borrow_mut() = prism_native::chips::icon_paths(run, w, h, text);
+        chip.vector.set_content_width(w.round() as i32);
+        chip.vector.set_content_height(h.round() as i32);
+        chip.vector.queue_draw();
+    }
+    chip.vector.set_visible(vector);
+    chip.widget
+        .set_spacing(if boxed { geometry.gap as i32 } else { 0 });
+    // GTK sets an anchored widget on the baseline: the box hangs below it
+    // by its text's descent (and half of what it is taller than its
+    // text), so its text sits on the line's baseline.
+    let descent = if baseline >= 0 { text_h - baseline } else { 0 };
+    let extra = if boxed {
+        ((geometry.height - text_h as f32).max(0.) / 2.).round() as i32
+    } else {
+        0
+    };
+    chip.below.set(descent + extra);
+    let mut css = format!("box{{margin-bottom:-{}px;", descent + extra);
+    if boxed {
+        let bg = s.background.map_or_else(
+            || "alpha(#8e8e93,0.18)".to_string(),
+            |c| crate::decor::color(c, dark),
+        );
+        css += &format!(
+            "padding:0 {}px;border-radius:{}px;background-color:{bg};min-height:{}px;",
+            geometry.pad, geometry.radius, geometry.height,
+        );
+        if let Some((w, c)) = run.chip_ring {
+            css += &format!(
+                "box-shadow:inset 0 0 0 {w}px {};",
+                crate::decor::color(c, dark)
+            );
+        }
+    }
+    if let Some(c) = s.color.filter(|_| s.color != style.text_color) {
+        css += &format!("color:{};", crate::decor::color(c, dark));
+    }
+    css.push('}');
+    #[allow(deprecated)]
+    chip.css.load_from_data(&css);
+    chip.link.set(run.link);
+    chip.widget
+        .set_cursor_from_name(run.link.map(|_| "pointer"));
+    chip.widget.set_tooltip_text(run.tooltip.as_deref());
+    let state = run.chip_state.as_ref().map(|s| format!("prism-chip-{s}"));
+    let mut had = chip.state.borrow_mut();
+    if *had != state {
+        if let Some(old) = had.as_deref() {
+            chip.widget.remove_css_class(old);
+        }
+        if let Some(new) = state.as_deref() {
+            chip.widget.add_css_class(new);
+        }
+        *had = state;
+    }
+    chip.widget
+        .set_widget_name(run.chip_test_id.as_deref().unwrap_or(""));
+    crate::imp::update_string(&chip.widget, crate::imp::a11y_property::LABEL, &shown);
+}
+
+/// Pango attributes for text in `s`'s font.
+fn font_attributes(s: &StyledRun) -> pango::AttrList {
     let attrs = pango::AttrList::new();
     if let Some(name) = crate::text::family_name(&s.font.family) {
         attrs.insert(pango::AttrString::new_family(&name));
@@ -388,49 +536,7 @@ fn configure(chip: &Chip, run: &TextRun, s: &StyledRun, style: &Style, dark: boo
     attrs.insert(pango::AttrSize::new_size_absolute(
         crate::text::pango_units(s.font.size),
     ));
-    for l in [&chip.icon, &chip.label] {
-        l.set_attributes(Some(&attrs));
-    }
-    chip.icon.set_text(icon.unwrap_or(""));
-    chip.icon.set_visible(icon.is_some());
-    chip.label.set_text(label);
-    chip.label.set_visible(!label.is_empty());
-    let em = s.font.size.max(1.);
-    let gap = if icon.is_some() && !label.is_empty() {
-        (em * 0.25).round()
-    } else {
-        0.
-    };
-    chip.widget.set_spacing(gap as i32);
-    // GTK sets an anchored widget on the baseline: the box hangs below it
-    // by its text's descent, so its text sits on the line's baseline.
-    let probe = if label.is_empty() {
-        &chip.icon
-    } else {
-        &chip.label
-    };
-    let (_, height, _, baseline) = probe.measure(gtk::Orientation::Vertical, -1);
-    let descent = if baseline >= 0 { height - baseline } else { 0 };
-    let mut css = format!("box{{margin-bottom:-{descent}px;");
-    if boxed {
-        let bg = s.background.map_or_else(
-            || "alpha(#8e8e93,0.18)".to_string(),
-            |c| crate::decor::color(c, dark),
-        );
-        css += &format!(
-            "padding:0 {}px;border-radius:4px;background-color:{bg};",
-            (em * 0.35).round()
-        );
-    }
-    if let Some(c) = s.color.filter(|_| s.color != style.text_color) {
-        css += &format!("color:{};", crate::decor::color(c, dark));
-    }
-    css.push('}');
-    #[allow(deprecated)]
-    chip.css.load_from_data(&css);
-    chip.link.set(run.link);
-    chip.widget
-        .set_cursor_from_name(run.link.map(|_| "pointer"));
+    attrs
 }
 
 /// Characters `start..end` of rich input `id` as copied text: each chip as
@@ -486,11 +592,17 @@ pub(crate) fn attributes(id: NodeId) -> Option<pango::AttrList> {
             let char_at = text[..s.byte_start].chars().count() as i32;
             let anchor = b.iter_at_offset(char_at).child_anchor();
             if let Some(chip) = anchor.and_then(|a| rich.chips.iter().find(|c| c.anchor == a)) {
-                // As GTK lays it out: its minimum size, on the baseline.
+                // As GTK lays it out: its minimum size, on the baseline,
+                // and what hangs below it.
                 let (w, _, _, _) = chip.widget.measure(gtk::Orientation::Horizontal, -1);
                 let (h, _, _, _) = chip.widget.measure(gtk::Orientation::Vertical, w);
-                let rect =
-                    pango::Rectangle::new(0, -h * pango::SCALE, w * pango::SCALE, h * pango::SCALE);
+                let below = chip.below.get();
+                let rect = pango::Rectangle::new(
+                    0,
+                    -h * pango::SCALE,
+                    w * pango::SCALE,
+                    (h + below) * pango::SCALE,
+                );
                 add(pango::AttrShape::new(&rect, &rect).upcast());
                 continue;
             }

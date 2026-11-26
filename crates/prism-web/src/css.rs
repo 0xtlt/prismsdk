@@ -502,13 +502,39 @@ pub fn run_css(r: &prism_core::TextRun) -> String {
         let _ = write!(w, "color:{};", c.to_css());
     }
     if let Some(c) = r.background {
-        let _ = write!(w, "background-color:{};border-radius:3px;", c.to_css());
+        let _ = write!(w, "background-color:{};", c.to_css());
+        // A highlight's corners; a chip's are its own (#329).
+        if r.chip.is_none() {
+            w.push_str("border-radius:3px;");
+        }
     }
     if let Some(f) = &r.family {
         let _ = write!(w, "font-family:{};", f.css());
     }
     if let Some(z) = r.size {
         let _ = write!(w, "font-size:{z}em;");
+    }
+    w
+}
+
+/// A chip's box (#115, #329): the run's own CSS, then its radius, ring,
+/// height and largest width, as `fillChip` (client.js) draws it.
+pub fn chip_css(r: &prism_core::TextRun) -> String {
+    let mut w = run_css(r);
+    if let Some(v) = r.chip_radius {
+        let _ = write!(w, "border-radius:{v}px;");
+    }
+    if let Some((width, c)) = r.chip_ring {
+        let _ = write!(w, "box-shadow:inset 0 0 0 {width}px {};", c.to_css());
+    }
+    if let Some(v) = r.chip_height {
+        let _ = write!(
+            w,
+            "height:max({v}px,1.2em);align-items:center;box-sizing:border-box;"
+        );
+    }
+    if let Some(v) = r.chip_max_width {
+        let _ = write!(w, "max-width:{v}px;box-sizing:border-box;");
     }
     w
 }

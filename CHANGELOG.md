@@ -44,6 +44,26 @@ bumps the minor version). Every crate of the workspace shares one version.
   (`anchor=caret` in the config string) and `controls::caret_in_field`
   for backends. The counter example's Forms section has a template field with a
   `{{` completion list.
+- Chip options for `rich_input` (#329), on the web, macOS, iOS, iPadOS,
+  visionOS, Android, Linux and Windows. A chip stays one character:
+  - a vector icon: `chip_icon` takes an SVG (`ChipIcon::svg`), a
+    `Drawing` or a `Path` as well as a symbol name, one em tall,
+    `Color::current()` painted in the chip's text color;
+  - styled label runs (`chip_label_runs([span("Ada").bold(), …])`),
+    cut as a whole;
+  - its box: `chip_ring(width, color)`, `chip_radius`, `chip_height`,
+    and `chip_max_width`, which cuts the label with an ellipsis;
+  - `tooltip(text)`: `title` on the web, the platform's tool tip on
+    native chips and inline icons (none on touch screens: there is no
+    hover);
+  - state and identity: `chip_state("open")` (`data-state` and the class
+    `prism-chip-open` on the web), `chip_test_id(id)` (`data-testid`, an
+    accessibility identifier or attribute natively), and `chip_attr` for
+    other `data-*` attributes on the web.
+
+  `prism::ChipIcon`, `attributes::CHIP_DATA_ATTRIBUTES`, prism-testing's
+  `Host::chip(id, test_id)`, and prism-native's `chips` module (the box
+  every native backend draws) are new.
 - A popover or dialog anchored to a chip of a `rich_input` (#327):
   `.anchor_chip(field_id, chip_key)` opens it on its `.side(…)` of the
   chip, lined up as `.align(…)` says, flipped without room and kept inside
@@ -78,6 +98,17 @@ bumps the minor version). Every crate of the workspace shares one version.
   a notification), selects another tab. On the web each history entry
   is reopened in the tab it was made in, and a reload gives the screen
   back to that tab; the URL is still the pushed path.
+- On the web, a chip with a `bg` keeps the stylesheet's 4 px radius (or
+  its `chip_radius`) instead of the 3 px inline radius a highlighted span
+  gets; plain chips look as before (#329).
+- **Breaking:** `TextRun` has new public fields for the chip options
+  (#329): code that builds a `TextRun` literal without
+  `..TextRun::default()` adds it.
+- `Span::chip_icon` takes `impl Into<ChipIcon>`: a symbol name still
+  works as before (#329).
+- Android measures a rich input with its runs, its chips as wide and tall
+  as they are drawn: a field whose chips wrap to more lines is tall
+  enough for them (#329).
 - **Breaking:** `ClickEvent` has `span_rect` and `span_frame` (code
   building one with a struct literal adds them, or starts from
   `ClickEvent::default()`), `UiEvent` the `RunClick` variant (backends
@@ -97,6 +128,9 @@ bumps the minor version). Every crate of the workspace shares one version.
 - macOS: the `PRISM_TAP` test hook scrolls its target into view and does
   not click a text field that is already editing (the click went to the
   container's key handler instead of the field).
+- macOS: a popover anchored at a caret or a chip (#327, #328) no longer
+  crashes when it follows an anchor AppKit has not shown it at yet (the
+  anchor scrolled out of view): it is shown there instead of moved.
 
 ## 0.5.0 (2026-11-25)
 

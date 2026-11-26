@@ -744,6 +744,7 @@ impl Widgets for Win {
         crate::keyview::forget(id);
         crate::drops::forget(id);
         crate::edit::forget(id);
+        crate::rich::forget(id);
         crate::carets::forget(id);
         crate::underlay::forget(id);
         crate::refresh::forget(id);

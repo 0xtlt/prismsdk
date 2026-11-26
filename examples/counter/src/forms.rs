@@ -1,8 +1,9 @@
 //! The Forms card of the Components tab: sliders, a select, date and time
 //! pickers, text input variants, a text area, a rich note with a toolbar
 //! over its selection (#217), blocks selected as one text (#231), a rich
-//! text editor with its toolbar and Markdown (#294), a template field
-//! whose `{{` opens a completion list at the caret (#328), a spinner
+//! text editor with its toolbar and Markdown (#294), styled chips (#329),
+//! a template field whose `{{` opens a completion list at the caret
+//! (#328), a spinner
 //! and toasts. It is
 //! its own entity, so dragging a slider only re-renders this card.
 
@@ -34,6 +35,10 @@ pub struct Forms {
     /// The chip whose menu is open, by key (#327): the menu sits under it.
     chip_menu: Option<String>,
     note_log: String,
+    /// Styled chips (#329): the field's runs and the chip opened by a
+    /// click or a tap.
+    chips: Vec<Span>,
+    chip_open: Option<String>,
     /// Paragraphs selected as one text (#231), and how many the selection
     /// spans.
     blocks: Vec<String>,
@@ -72,6 +77,8 @@ impl Default for Forms {
             toolbar: None,
             chip_menu: None,
             note_log: String::new(),
+            chips: Vec::new(),
+            chip_open: None,
             blocks: Vec::new(),
             blocks_selected: 0,
             template: String::new(),
@@ -90,6 +97,7 @@ impl Render for Forms {
         if !self.samples {
             self.samples = true;
             self.note = note_sample(cx);
+            self.chips = chips_sample(cx);
             self.blocks = vec![
                 strings::forms_block_first(cx),
                 strings::forms_block_second(cx),
@@ -235,6 +243,7 @@ impl Render for Forms {
             )
             .child(self.shared_draft(cx))
             .child(self.note(cx))
+            .child(self.chips(cx))
             .child(self.blocks(cx))
             .child(self.template(cx))
             .child(self.editor(cx))
@@ -344,7 +353,129 @@ fn note_sample(cx: &App) -> Vec<Span> {
     spans
 }
 
+/// Where the chips sample's template puts each chip.
+const PERSON: char = '\u{E010}';
+const TAG: char = '\u{E011}';
+const PAGE_CHIP: char = '\u{E012}';
+
+/// The styled chips' sample (#329): a person (a round avatar drawn as a
+/// vector, a bold name and a grey summary cut at 150 points, its whole
+/// text as a tooltip, a pill), a tag (an SVG icon, a ring, a taller box)
+/// and a plain chip as it was.
+fn chips_sample(cx: &App) -> Vec<Span> {
+    let template = strings::forms_chips_text(
+        cx,
+        PERSON.to_string(),
+        TAG.to_string(),
+        PAGE_CHIP.to_string(),
+    );
+    let t = Theme::of(cx);
+    let mut spans = Vec::new();
+    let mut plain = String::new();
+    for c in template.chars() {
+        let part = match c {
+            PERSON => {
+                let avatar = [
+                    Path::circle(0.5, 0.5, 0.5).fill(t.accent),
+                    Path::circle(0.5, 0.38, 0.17).fill(t.on_accent),
+                    Path::new()
+                        .move_to(0.2, 0.86)
+                        .curve_to((0.28, 0.6), (0.72, 0.6), (0.8, 0.86))
+                        .fill(t.on_accent),
+                ];
+                chip("user:ada", "")
+                    .chip_label_runs([
+                        span(strings::forms_chips_person(cx)).bold(),
+                        span(strings::forms_chips_person_summary(cx)).text_color(t.muted),
+                    ])
+                    .chip_icon(prism::ChipIcon::shape(avatar))
+                    .tooltip(strings::forms_chips_person_tooltip(cx))
+                    .chip_max_width(150.)
+                    .chip_radius(11.)
+                    .chip_height(22.)
+                    .chip_test_id("chip-ada")
+                    .chip_attr("data-person", "ada")
+            }
+            TAG => chip("tag:design", strings::forms_chips_tag(cx))
+                .chip_icon(prism::ChipIcon::svg(
+                    r#"<svg viewBox="0 0 16 16"><path d="M2 2h6l6 6-6 6-6-6z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="5.5" cy="5.5" r="1.2" fill="currentColor"/></svg>"#,
+                ))
+                .text_color(t.accent)
+                .bg(t.accent.with_alpha(0.12))
+                .chip_ring(1., t.accent.with_alpha(0.45))
+                .chip_radius(6.)
+                .chip_height(24.)
+                .chip_test_id("chip-tag"),
+            PAGE_CHIP => chip("page:roadmap", strings::forms_chips_page(cx)).chip_icon("doc.text"),
+            c => {
+                plain.push(c);
+                continue;
+            }
+        };
+        if !plain.is_empty() {
+            spans.push(span(std::mem::take(&mut plain)));
+        }
+        spans.push(part);
+    }
+    if !plain.is_empty() {
+        spans.push(span(plain));
+    }
+    spans
+}
+
 impl Forms {
+    /// Styled chips (#329): a click or a tap opens a chip, marked with the
+    /// `open` state (a class and `data-state` on the web) and a thicker
+    /// accent ring on every platform.
+    fn chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx);
+        let spans: Vec<Span> = self
+            .chips
+            .iter()
+            .map(|s| {
+                let Some(key) = s.chip_key().map(str::to_string) else {
+                    return s.clone();
+                };
+                let open = self.chip_open.as_deref() == Some(key.as_str());
+                let s = if open {
+                    s.clone().chip_state("open").chip_ring(2., t.accent)
+                } else if s.chip_state_value().is_some() {
+                    // Closed again: its own ring back (the tag's), or none.
+                    let ring = if key == "tag:design" { 1. } else { 0. };
+                    s.clone()
+                        .chip_state("")
+                        .chip_ring(ring, t.accent.with_alpha(0.45))
+                } else {
+                    s.clone()
+                };
+                s.on_click(cx.listener(move |this, _: &ClickEvent, _| {
+                    this.chip_open =
+                        (this.chip_open.as_deref() != Some(key.as_str())).then(|| key.clone());
+                }))
+            })
+            .collect();
+        let hint = match self
+            .chip_open
+            .as_ref()
+            .and_then(|k| self.chips.iter().find(|s| s.chip_key() == Some(k.as_str())))
+            .and_then(|s| s.chip_label())
+        {
+            Some(label) => strings::forms_chips_open(cx, label),
+            None => strings::forms_chips_hint(cx),
+        };
+        div()
+            .flex_col()
+            .gap(4.)
+            .child(
+                rich_input(spans)
+                    .accessibility_label(strings::forms_chips(cx))
+                    .on_input(
+                        cx.listener(|this, e: &RichInputEvent, _| this.chips = e.spans.clone()),
+                    ),
+            )
+            .child(text(hint).text_size(12.))
+    }
+
     /// A rich note (#217): a Bold button above the selected words, copies
     /// with Markdown, pastes and ⌘-clicks reported.
     fn note(&self, cx: &mut Context<Self>) -> impl IntoElement {

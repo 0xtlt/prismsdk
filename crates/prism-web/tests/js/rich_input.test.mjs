@@ -469,3 +469,86 @@ test("every click in the field says which character, with on_click (#266)", () =
   e.el.dispatchEvent({ type: "click", target: e.el.childNodes[1], detail: 1 });
   assert.equal(e.page.ws.sent.filter((m) => m.t === "fieldclick").length, 1);
 });
+
+// A chip's options (#329): its box, tooltip, styled label runs, vector
+// icon, state, test id and attributes.
+const GS = "\u001d", US = "\u001c";
+const STYLED = [
+  OBJ, "k=user:7", "n=Ada · 3 tasks", "b=#FFD60A33",
+  `nr=Ada${US}w=700${GS} · 3 tasks${US}i${US}c=#8E8E93FF`,
+  "v=i0,0\nf~FF |M 0 0 L 1 0 L 1 1 Z \n", "vr=1.5",
+  "tt=Ada Lovelace", "ring=1.5,#0A84FFFF", "rad=9", "ht=22", "mw=120",
+  "st=open", "tid=mention-ada", `at=data-person${US}ada${GS}onclick${US}x`,
+];
+const rules = (el) => el.ownerDocument.getElementById("prism-styles").sheet.cssRules;
+/** The CSS of `el`'s style class. */
+const cssOf = (el) => {
+  const r = [...rules(el)].find((r) => el._ps && r.selectorText.endsWith(`.${el._ps}`));
+  return r ? r.style.cssText : "";
+};
+
+test("a chip draws its box, tooltip, label runs, vector icon and identity (#329)", () => {
+  const { el } = editor(enc("To ", STYLED));
+  const chip = el.childNodes[1];
+  assert.ok(chip.classList.contains("prism-chip"));
+  assert.ok(chip.classList.contains("prism-chip-open"), "its state class");
+  assert.equal(chip.dataset.state, "open");
+  assert.equal(chip.dataset.testid, "mention-ada");
+  assert.equal(chip.getAttribute("data-person"), "ada");
+  assert.equal(chip.getAttribute("onclick"), null, "only data-* names");
+  assert.equal(chip.title, "Ada Lovelace");
+  assert.equal(chip.getAttribute("contenteditable"), "false");
+  const box = cssOf(chip);
+  assert.match(box, /border-radius:9px/);
+  assert.doesNotMatch(box, /border-radius:3px/, "a chip's background brings no radius of its own");
+  assert.match(box, /box-shadow:inset 0 0 0 1.5px #0A84FFFF/);
+  assert.match(box, /height:max\(22px,1.2em\)/);
+  assert.match(box, /max-width:120px/);
+  const [icon, label] = chip.childNodes;
+  assert.equal(icon.localName, "svg");
+  assert.equal(icon.getAttribute("class").split(" ")[0], "prism-chip-icon");
+  assert.equal(icon.getAttribute("viewBox"), "0 0 150 100", "one em tall, 1.5 wide");
+  assert.match(cssOf(icon), /width:1.5em/);
+  assert.equal(icon.childNodes.length, 1);
+  assert.match(cssOf(icon.childNodes[0]), /fill:currentColor/);
+  assert.equal(label.className.split(" ")[0], "prism-chip-label");
+  assert.match(cssOf(label), /text-overflow:ellipsis/, "cut at its largest width");
+  const [name, summary] = label.childNodes;
+  assert.equal(name.textContent, "Ada");
+  assert.match(cssOf(name), /font-weight:700/);
+  assert.equal(summary.textContent, " · 3 tasks");
+  assert.match(cssOf(summary), /font-style:italic/);
+  assert.match(cssOf(summary), /color:#8E8E93FF/);
+  assert.equal(chip.textContent, "Ada · 3 tasks");
+});
+
+test("a styled chip stays one character: deleted whole, copied as its label (#329)", () => {
+  const e = editor(enc("To ", STYLED, " now"));
+  e.select(4);
+  e.input("deleteContentBackward");
+  assert.deepEqual(e.last(), { t: "input", id: 1, v: "To  now", runs: enc("To  now") });
+  const f = editor(enc("To ", STYLED));
+  f.select(0, 4);
+  const data = new Map();
+  f.el.dispatchEvent({ type: "copy", clipboardData: { setData: (k, v) => data.set(k, v) } });
+  assert.equal(data.get("text/plain"), "To Ada · 3 tasks");
+});
+
+test("a chip's style classes are kept while it is shown (#329)", () => {
+  const { page, el } = editor(enc("To ", STYLED));
+  const chip = el.childNodes[1];
+  const classes = [chip, ...chip.childNodes, ...chip.childNodes[1].childNodes].map((n) => n._ps).filter(Boolean);
+  for (const c of classes) assert.ok(el._runPs.includes(c), `${c} is the field's`);
+  void page;
+});
+
+test("a read-only rich text draws a chip's options too, and a run's tooltip (#329)", () => {
+  const page = boot();
+  page.ws.open();
+  page.ws.deliver({ t: "reset", p: [{ op: "create", id: 1, kind: "text" }, { op: "config", id: 1, config: enc(["See", "tt=Look here"], ["Ada · 3 tasks", ...STYLED.slice(1)]) }, { op: "root", id: 1 }] });
+  const [see, chip] = page.node(1).childNodes;
+  assert.equal(see.title, "Look here");
+  assert.ok(chip.classList.contains("prism-chip-open"));
+  assert.equal(chip.dataset.testid, "mention-ada");
+  assert.equal(chip.textContent, "Ada · 3 tasks");
+});

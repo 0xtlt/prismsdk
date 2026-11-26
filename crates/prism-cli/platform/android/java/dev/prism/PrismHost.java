@@ -211,6 +211,8 @@ public final class PrismHost {
         Boolean a11yExpanded;
         /** The tooltip is the text's full content while ellipsized (#216). */
         boolean tipTruncated, tipBound;
+        /** Its own tool tip, shown again when the mouse leaves a chip's (#329). */
+        String ownTip;
         /** A filled picture's focal point (#218), in fractions. */
         float focusX = 0.5f, focusY = 0.5f;
         // `.sticky()`: the scroll view it follows (-1: none) and its range.
@@ -379,7 +381,7 @@ public final class PrismHost {
     /** Natural size of a leaf, in pixels: {width, height}. */
     public static float[] measure(String kind, String text, float size, int weight, float maxWidth, String spec) {
         if (kind.equals("baseline")) return baseline(text, size, weight, maxWidth);
-        float[] form = PrismForms.measure(kind, text, size, weight, maxWidth);
+        float[] form = PrismForms.measure(kind, text, size, weight, maxWidth, spec);
         if (form != null) return form;
         // Texts: styled exactly like PrismText draws them (typography, runs).
         if (kind.equals("text")) return PrismText.measure(text, size > 0 ? size : 17 * density, weight, maxWidth, spec);
@@ -927,7 +929,8 @@ public final class PrismHost {
      */
     static void tooltip(Node n, Object tip) {
         n.tipTruncated = Boolean.TRUE.equals(tip);
-        n.view.setTooltipText(tip instanceof String ? (String) tip : null);
+        n.ownTip = tip instanceof String ? (String) tip : null;
+        n.view.setTooltipText(n.ownTip);
         if (!n.tipTruncated || !(n.view instanceof android.widget.TextView)) return;
         android.widget.TextView tv = (android.widget.TextView) n.view;
         Runnable check = () -> {

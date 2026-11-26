@@ -57,6 +57,13 @@ pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
     "value",
 ];
 
+/// `data-*` names (`data-<name>`) the web backend writes on a chip with the
+/// app's own values (#329): [`Span::chip_state`](crate::Span::chip_state)
+/// and [`Span::chip_test_id`](crate::Span::chip_test_id). Not reserved:
+/// an element may still set them with `attr`; a chip sets them with those
+/// builders only ([`Span::chip_attr`](crate::Span::chip_attr) refuses them).
+pub const CHIP_DATA_ATTRIBUTES: &[&str] = &["state", "testid"];
+
 /// Whether an app may set the attribute `name` (lower case):
 /// a `data-*` name made of `a-z`, `0-9`, `-`, `_` and `.`, not one of
 /// [`RESERVED_DATA_ATTRIBUTES`] nor `data-prism…`, or one of

@@ -203,13 +203,8 @@ fn piece(s: &StyledRun, run: &TextRun, t: &StyledText) -> (String, Attributes) {
         let bg = background
             .clone()
             .unwrap_or_else(|| NSColor::systemGrayColor().colorWithAlphaComponent(0.18));
-        let (image, bounds) = chip_image(
-            run.chip_label.as_deref().unwrap_or(""),
-            run.chip_icon.as_deref(),
-            &font,
-            &color,
-            &bg,
-        );
+        let text = s.color.unwrap_or_else(prism_native::label_color);
+        let (image, bounds) = styled_chip_image(run, &s.font, &font, &color, text, &bg);
         let a = NSTextAttachment::new();
         a.setImage(Some(&image));
         a.setBounds(bounds);
@@ -240,9 +235,30 @@ fn piece(s: &StyledRun, run: &TextRun, t: &StyledText) -> (String, Attributes) {
         ]
     };
     let mut values: Vec<&AnyObject> = vec![&font, &color, &paragraph];
+    // A chip's tool tip (#329), and its state and test id where an
+    // in-process test (or an inspector) reads the text's attributes.
+    let tooltip = run.tooltip.as_deref().map(NSString::from_str);
+    let state = run.chip_state.as_deref().map(NSString::from_str);
+    let test_id = run.chip_test_id.as_deref().map(NSString::from_str);
+    let (state_key, test_key) = (
+        NSString::from_str(CHIP_STATE_KEY),
+        NSString::from_str(CHIP_TEST_ID_KEY),
+    );
     if let Some(a) = &attachment {
         keys.push(unsafe { NSAttachmentAttributeName });
         values.push(a);
+        if let Some(t) = &tooltip {
+            keys.push(unsafe { objc2_app_kit::NSToolTipAttributeName });
+            values.push(t);
+        }
+        if let Some(v) = &state {
+            keys.push(&state_key);
+            values.push(v);
+        }
+        if let Some(v) = &test_id {
+            keys.push(&test_key);
+            values.push(v);
+        }
         return (
             prism_core::OBJECT_CHAR.to_string(),
             NSDictionary::from_slices(&keys, &values),
@@ -271,6 +287,179 @@ fn piece(s: &StyledRun, run: &TextRun, t: &StyledText) -> (String, Attributes) {
         values.push(&one);
     }
     (s.text.clone(), NSDictionary::from_slices(&keys, &values))
+}
+
+/// The attribute naming a chip's state on its character (#329).
+pub(crate) const CHIP_STATE_KEY: &str = "PrismChipState";
+/// The attribute naming a chip's test id on its character (#329).
+pub(crate) const CHIP_TEST_ID_KEY: &str = "PrismChipTestID";
+
+/// A chip's label as an attributed string (#329): its runs, each in the
+/// chip's font with its own weight and italic, in its color or the
+/// chip's, cut at the end with an ellipsis when drawn narrower.
+fn label_string(
+    run: &TextRun,
+    spec: &prism_native::text::FontSpec,
+    color: &NSColor,
+) -> Retained<NSMutableAttributedString> {
+    use objc2_app_kit::{
+        NSFontAttributeName, NSForegroundColorAttributeName, NSParagraphStyleAttributeName,
+    };
+    let out = NSMutableAttributedString::new();
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingTail);
+    for l in run.label_runs() {
+        let font = crate::label::ns_font(&prism_native::text::FontSpec {
+            weight: l.weight.unwrap_or(spec.weight),
+            italic: l.italic || spec.italic,
+            ..spec.clone()
+        });
+        let ink = l.color.map(ns_color);
+        let ink: &NSColor = ink.as_deref().unwrap_or(color);
+        let (f, c, p): (&AnyObject, &AnyObject, &AnyObject) = (&font, ink, &paragraph);
+        let attrs = unsafe {
+            NSDictionary::from_slices(
+                &[
+                    NSFontAttributeName,
+                    NSForegroundColorAttributeName,
+                    NSParagraphStyleAttributeName,
+                ],
+                &[f, c, p],
+            )
+        };
+        let piece = unsafe {
+            NSAttributedString::initWithString_attributes(
+                NSAttributedString::alloc(),
+                &NSString::from_str(&l.text),
+                Some(&attrs),
+            )
+        };
+        out.appendAttributedString(&piece);
+    }
+    out
+}
+
+/// A chip as an image (#115, #329): its box (background, radius, ring,
+/// height, largest width), its icon (a symbol or a drawing) and its label
+/// runs, cut with an ellipsis; sitting on the baseline like the text
+/// around it, centered on it when taller. Redrawn on appearance changes
+/// (dark mode), since it is drawn by a handler.
+fn styled_chip_image(
+    run: &TextRun,
+    spec: &prism_native::text::FontSpec,
+    font: &NSFont,
+    color: &NSColor,
+    text_color: prism_core::Color,
+    bg: &NSColor,
+) -> (Retained<NSImage>, NSRect) {
+    use objc2_app_kit::NSAttributedStringNSStringDrawing;
+    let label = label_string(run, spec, color);
+    let text = label.size();
+    let em = font.pointSize() as f32;
+    let text_h = (font.ascender() - font.descender()).ceil();
+    let b = prism_native::chips::chip_box(run, em, text_h as f32, text.width as f32);
+    let symbol = run
+        .chip_icon
+        .as_deref()
+        .filter(|_| run.chip_drawing.is_none())
+        .and_then(|name| crate::label::symbol_image(name, font, color));
+    let paths = prism_native::chips::icon_paths(run, b.icon_w, b.icon_h, text_color);
+    let size = NSSize::new(b.width as f64, b.height as f64);
+    let ring = run.chip_ring.map(|(w, c)| (w as f64, ns_color(c)));
+    let image = {
+        let (label, bg, symbol) = (label.clone(), objc2::Message::retain(bg), symbol.clone());
+        let handler = block2::RcBlock::new(move |rect: NSRect| -> Bool {
+            let r = b.radius as f64;
+            bg.setFill();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, r, r).fill();
+            if let Some((w, c)) = &ring {
+                let inner = NSRect::new(
+                    NSPoint::new(rect.origin.x + w / 2., rect.origin.y + w / 2.),
+                    NSSize::new(rect.size.width - w, rect.size.height - w),
+                );
+                let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                    inner,
+                    (r - w / 2.).max(0.),
+                    (r - w / 2.).max(0.),
+                );
+                path.setLineWidth(*w);
+                c.setStroke();
+                path.stroke();
+            }
+            let mut x = b.pad as f64;
+            let h = rect.size.height;
+            if let Some(img) = &symbol {
+                let side = b.icon_h as f64;
+                img.drawInRect(NSRect::new(
+                    NSPoint::new(x, (h - side) / 2.),
+                    NSSize::new(side, side),
+                ));
+            } else if !paths.is_empty() {
+                // Drawn top-left based, like `shape()`.
+                let top = (h - b.icon_h as f64) / 2.;
+                fill_paths(&paths, x, top);
+            }
+            if b.icon_w > 0. {
+                x += (b.icon_w + b.gap) as f64;
+            }
+            let y = (h - text.height) / 2.;
+            label.drawInRect(NSRect::new(
+                NSPoint::new(x, y),
+                NSSize::new(b.label_w as f64 + 0.5, text.height),
+            ));
+            Bool::YES
+        });
+        NSImage::imageWithSize_flipped_drawingHandler(size, true, &handler)
+    };
+    image.setAccessibilityDescription(Some(&NSString::from_str(
+        run.chip_label.as_deref().unwrap_or(""),
+    )));
+    // On the baseline; a taller box grows around the text.
+    let below = font.descender() - (b.height as f64 - text_h) / 2.;
+    (image, NSRect::new(NSPoint::new(0., below), size))
+}
+
+/// Fills, then strokes, `paths` (in points, top-left based) at (`x`, `y`)
+/// of a flipped context.
+fn fill_paths(paths: &[prism_core::Path], x: f64, y: f64) {
+    use prism_core::Segment as S;
+    for p in paths {
+        let b = NSBezierPath::bezierPath();
+        let pt = |px: f32, py: f32| NSPoint::new(x + px as f64, y + py as f64);
+        for s in &p.segments {
+            match *s {
+                S::Move(a, c) => b.moveToPoint(pt(a, c)),
+                S::Line(a, c) => b.lineToPoint(pt(a, c)),
+                S::Cubic(x1, y1, x2, y2, ex, ey) => {
+                    b.curveToPoint_controlPoint1_controlPoint2(pt(ex, ey), pt(x1, y1), pt(x2, y2))
+                }
+                S::Close => b.closePath(),
+                S::Arc { .. } => {}
+            }
+        }
+        if let Some(c) = p.fill {
+            b.setWindingRule(if p.even_odd {
+                objc2_app_kit::NSWindingRule::EvenOdd
+            } else {
+                objc2_app_kit::NSWindingRule::NonZero
+            });
+            ns_color(c).setFill();
+            b.fill();
+        }
+        if let Some(c) = p.stroke {
+            b.setLineWidth(p.width as f64);
+            if p.round {
+                b.setLineCapStyle(objc2_app_kit::NSLineCapStyle::Round);
+                b.setLineJoinStyle(objc2_app_kit::NSLineJoinStyle::Round);
+            }
+            if let Some((dash, gap)) = p.dash {
+                let pattern = [dash as f64, gap as f64];
+                unsafe { b.setLineDash_count_phase(pattern.as_ptr(), 2, 0.) };
+            }
+            ns_color(c).setStroke();
+            b.stroke();
+        }
+    }
 }
 
 /// A chip as an image: a rounded box with its symbol and label, sitting on

@@ -175,6 +175,11 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .prism-chip { display: inline-flex; align-items: baseline; gap: .25em; padding: 0 .35em; border-radius: 4px; background: rgba(128,128,128,.18); white-space: nowrap; cursor: default; user-select: all; -webkit-user-select: all; }
 .prism-chip[data-link] { cursor: pointer; }
 .prism-chip .prism-symbol { display: inline; line-height: inherit; }
+/* A chip's vector icon and label (#329): the icon one em tall, centered on
+   the label; the label's runs on one line (cut with an ellipsis when the
+   chip has a largest width). */
+.prism-chip-icon { height: 1em; flex: none; align-self: center; overflow: visible; }
+.prism-chip-label { white-space: nowrap; }
 .prism-chip[data-selected] { background: Highlight; color: HighlightText; }
 /* A selection across several fields (#231): the parts of the fields that
    don't have the focus. */
