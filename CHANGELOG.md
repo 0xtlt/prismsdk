@@ -7,6 +7,32 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- Linear gradient fills (#330): `.bg_linear_gradient(angle, [(color, stop), …])`
+  on `div` and every styled box, shorthand for
+  `.bg_gradient(Gradient::linear_stops(angle, stops))`, in the CSS
+  convention everywhere (`0` to the top, `90` to the right, `180` to the
+  bottom; the first and last colors reach the corners). The end of a
+  scrolling list fades into its background in one box instead of stacked
+  strips. `.bg_fill(fill)` sets the whole background to a `Fill` (a solid
+  color or a gradient), replacing the other, where `.bg` and `.bg_gradient`
+  layer: `.hover(|s| s.bg_fill(accent))` turns a gradient button solid.
+  `Gradient::normalized` places stops like CSS (clamped, never going back,
+  one stop a solid fill), applied by the builders, so native APIs always get
+  increasing positions and two colors at least; `Gradient::unit_points` and
+  `Gradient::interpolates_with` serve backends.
+- Gradients animate (#330): with a transition, a gradient changing into one
+  of the same kind with as many stops animates its colors, positions and
+  angle on the web (registered custom properties, named in the transition:
+  `transition: all` leaves them out), iOS, tvOS and visionOS (Core Animation
+  on the gradient layer) and Android (the box drawable, which now animates
+  its background color too).
+- Widgets and Live Activities draw gradients (#330): snapshots carry them
+  (`gr`); SwiftUI draws them on iOS and macOS (a root gradient fills the
+  whole widget, under the system's margins too), CSS on the web, and
+  Android's `RemoteViews` a stretched bitmap under the node.
+
 ### Changed
 
 - **Breaking:** a push within the app stays in the selected tab (#332).
@@ -19,6 +45,17 @@ bumps the minor version). Every crate of the workspace shares one version.
   a notification), selects another tab. On the web each history entry
   is reopened in the tab it was made in, and a reload gives the screen
   back to that tab; the URL is still the pushed path.
+
+### Fixed
+
+- iOS, tvOS, visionOS: a diagonal linear gradient in a box that is not
+  square follows CSS's angle, as on macOS (#330): `CAGradientLayer` spaces
+  colors in unit coordinates, so the CSS line is converted rather than
+  divided by the size.
+- Web: a state that changes the background color of a box with a gradient
+  (`.bg_gradient(g).hover(|s| s.bg(c))`) keeps the gradient over the new
+  color, as natively; the `background` shorthand of the state's rule used
+  to remove it (#330).
 
 ## 0.5.0 (2026-11-25)
 

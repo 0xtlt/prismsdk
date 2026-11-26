@@ -267,20 +267,38 @@ struct PrismWidgetView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .containerBackground(tile.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.background), for: .widget)
+        .containerBackground(for: .widget) { PrismTile(color: tile.color, gradient: tile.gradient) }
         .widgetURL(prismURL(entry.doc?["link"]))
         // Timers compare their end with the entry's instant (#281).
         .environment(\.prismEntryDate, entry.date)
     }
 
-    /// The family's root node, and its `bg` taken out: it fills the whole
-    /// widget (the container background) instead of the area inside the
-    /// system's margins.
-    private func root() -> (PNode?, Color?) {
-        guard var node = (entry.doc?["families"] as? PNode)?[prismFamilyName(family)] as? PNode else { return (nil, nil) }
-        let tile = prismColor(node["bg"])
-        if tile != nil { node["bg"] = nil }
-        return (node, tile)
+    /// The family's root node, and its `bg` and gradient (`gr`, #330) taken
+    /// out: they fill the whole widget (the container background) instead
+    /// of the area inside the system's margins.
+    private func root() -> (PNode?, (color: Color?, gradient: [String: Any]?)) {
+        guard var node = (entry.doc?["families"] as? PNode)?[prismFamilyName(family)] as? PNode else {
+            return (nil, (nil, nil))
+        }
+        let color = prismColor(node["bg"])
+        let gradient = node["gr"] as? [String: Any]
+        if color != nil { node["bg"] = nil }
+        if gradient != nil { node["gr"] = nil }
+        return (node, (color, gradient))
+    }
+}
+
+/// A widget's container background: the root's color (the system's
+/// background without one), under its gradient.
+struct PrismTile: View {
+    let color: Color?
+    let gradient: [String: Any]?
+
+    var body: some View {
+        ZStack {
+            if let color { Rectangle().fill(color) } else { Rectangle().fill(.background) }
+            if let gradient { PrismGradientFill(spec: gradient, box: UnevenRoundedRectangle()) }
+        }
     }
 }
 

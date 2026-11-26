@@ -282,13 +282,17 @@ pub(crate) fn node_css(kind: NodeKind, island: bool, s: &Style) -> String {
         );
     }
     if let Some(t) = s.transition {
-        let _ = write!(
-            w,
-            "transition:all {}s {} {}s;",
-            t.duration,
-            t.css_easing(),
-            t.delay
-        );
+        let timing = format!("{}s {} {}s", t.duration, t.css_easing(), t.delay);
+        let _ = write!(w, "transition:all {timing}");
+        // `all` leaves custom properties out: an animatable gradient's
+        // values are named (#330).
+        if let Some(stops) = animated_gradient(s) {
+            let _ = write!(w, ",--prism-ga {timing}");
+            for i in 0..stops {
+                let _ = write!(w, ",--prism-gc{i} {timing},--prism-gp{i} {timing}");
+            }
+        }
+        w.push(';');
     }
 
     if text_styles {
@@ -551,9 +555,7 @@ fn decorations(w: &mut String, kind: NodeKind, s: &Style) {
     if s.clip && kind != NodeKind::Scroll {
         w.push_str("overflow:hidden;");
     }
-    if let Some(g) = &s.gradient {
-        let _ = write!(w, "background-image:{};", g.to_css());
-    }
+    gradient_css(w, s);
     if s.backdrop_blur > 0. {
         let _ = write!(
             w,
@@ -561,6 +563,61 @@ fn decorations(w: &mut String, kind: NodeKind, s: &Style) {
             s.backdrop_blur
         );
     }
+}
+
+/// Stops of a gradient whose values can animate (`--prism-gc0`…, `prism.css`).
+const ANIMATED_STOPS: usize = 8;
+
+/// A background gradient. With a transition, its angle and
+/// stops are registered custom properties (`@property` in `prism.css`) the
+/// image reads: CSS cannot interpolate `background-image`, but it can those
+/// values, so a change to the same kind of gradient with as many stops
+/// animates like the background color does (#330). Gradients of more than
+/// [`ANIMATED_STOPS`] stops, or with `Color::current()` stops (resolved
+/// where the image is drawn), switch at once. The transition names the
+/// properties: `transition: all` leaves custom properties out.
+/// The number of stops of `s`'s gradient when its values animate (see
+/// [`gradient_css`]).
+fn animated_gradient(s: &Style) -> Option<usize> {
+    let g = s.gradient.as_ref()?;
+    (s.transition.is_some()
+        && g.stops.len() <= ANIMATED_STOPS
+        && !g.stops.iter().any(|s| s.color.is_current()))
+    .then_some(g.stops.len())
+}
+
+fn gradient_css(w: &mut String, s: &Style) {
+    use prism_core::GradientKind;
+    let Some(g) = &s.gradient else { return };
+    if animated_gradient(s).is_none() {
+        let _ = write!(w, "background-image:{};", g.to_css());
+        return;
+    }
+    let mut stops = String::new();
+    for (i, st) in g.stops.iter().enumerate() {
+        let _ = write!(
+            w,
+            "--prism-gc{i}:{};--prism-gp{i}:{}%;",
+            st.color.to_css(),
+            st.at * 100.
+        );
+        if i > 0 {
+            stops.push_str(", ");
+        }
+        let _ = write!(stops, "var(--prism-gc{i}) var(--prism-gp{i})");
+    }
+    let image = match g.kind {
+        GradientKind::Linear { angle } => {
+            let _ = write!(w, "--prism-ga:{angle}deg;");
+            format!("linear-gradient(var(--prism-ga), {stops})")
+        }
+        GradientKind::Radial => format!("radial-gradient({stops})"),
+        GradientKind::Conic { from } => {
+            let _ = write!(w, "--prism-ga:{from}deg;");
+            format!("conic-gradient(from var(--prism-ga), {stops})")
+        }
+    };
+    let _ = write!(w, "background-image:{image};");
 }
 
 /// The selector of `node` while its nearest `group()` ancestor is in
@@ -632,8 +689,15 @@ pub fn states_css(kind: NodeKind, island: bool, id: prism_core::NodeId, s: &Styl
     for (selector, media, st) in groups.into_iter().chain(named).chain(own) {
         let now = decls(&node_css(kind, island, st));
         let mut body = String::new();
+        // A new `background` (the shorthand) resets the image too: a state
+        // that keeps the gradient over its new color says it again (#330).
+        let color_changed = now
+            .iter()
+            .any(|(p, v)| p == "background" && !base.iter().any(|(bp, bv)| bp == p && bv == v));
         for (p, v) in &now {
-            if !base.iter().any(|(bp, bv)| bp == p && bv == v) {
+            if !base.iter().any(|(bp, bv)| bp == p && bv == v)
+                || (color_changed && p == "background-image")
+            {
                 let _ = write!(body, "{p}:{v} !important;");
             }
         }

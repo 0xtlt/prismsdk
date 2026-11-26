@@ -94,9 +94,16 @@ final class PrismMotion {
     static void style(View v, JSONObject anim, Runnable apply) {
         float[] from = pose(v);
         Integer fromBg = color(v);
+        Drawable fromBox = v.getBackground();
         apply.run();
         float[] to = pose(v);
         Integer toBg = color(v);
+        // Decorated boxes: the background color and the gradient's stops
+        // and angle (#330).
+        Drawable toBox = v.getBackground();
+        if (fromBox instanceof PrismDecor.Box && toBox instanceof PrismDecor.Box && fromBox != toBox) {
+            ((PrismDecor.Box) toBox).animateFrom((PrismDecor.Box) fromBox, ms(anim, "d"), ms(anim, "delay"), curve(anim));
+        }
         set(v, from);
         v.animate().cancel();
         v.animate().alpha(to[0]).translationX(to[1]).translationY(to[2]).scaleX(to[3]).scaleY(to[5]).rotation(to[4])

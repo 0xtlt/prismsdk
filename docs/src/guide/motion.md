@@ -3,7 +3,7 @@
 Transitions, transforms, enter/exit animations and loops, native on every backend: UIKit and Core Animation (iOS, tvOS, visionOS), AppKit (macOS), property animators (Android), SwiftUI (watchOS), CSS and the Web Animations API (web), GTK's frame clock (Linux), Composition animations (Windows).
 
 ```rust
-div().spring(400)                                   // animate this element's changes (frame, colors, opacity, transform)
+div().spring(400)                                   // animate this element's changes (frame, colors, gradients, opacity, transform)
 div().transition(Transition::ease_out(250).delay(100))
 div().offset(0., -4.).scale(1.05).rotate(3.)        // visual only: the layout does not move
 
@@ -24,6 +24,7 @@ cx.with_animation(Transition::spring(400), |cx| store.update(cx, |s, cx| s.delet
 ```
 
 - **What animates**: changes made to an element after it appeared. Its first style and frame apply at once, on every backend, including the rules on its own width (`.when_width_at_least`) that its first layout picks. An element that starts animating (`.animate`, `.spring`, `.transition`) where the previous render had one that did not, at the same place among its siblings, is a new element: it does not animate from the other one's style (no background, no padding). A key (or being an entity's root) keeps it the same element, so its change animates.
+- **Gradients**: a gradient changing into one of the same kind with as many stops animates its colors, positions and angle on the web, iOS, tvOS, visionOS and Android; see [Decorations › Gradients](decorations.md#gradients).
 - **Moves**: an element with a transition (its own, or `with_animation`'s) that moves among its siblings, reordered or shifted by one coming or going, slides to its new place. Native backends animate its frame; the web, where the browser lays the page out, slides it from where it was with a transform (FLIP), once the update is applied.
 - **Curves**: `ease`, `ease_in`, `ease_out`, `linear`, `spring` (a slight overshoot), each with `.delay(ms)`.
 - **Poses**: `Pose::fade()`, `Pose::slide(x, y)`, `Pose::pop()`, or `Pose::new().opacity(…).offset(…).scale(…).rotate(…)`; unset fields keep the element's values.

@@ -1307,6 +1307,53 @@ fn snapshots_serialize_compact_json_with_adaptive_colors() {
 }
 
 #[test]
+fn snapshots_carry_gradients_over_the_background() {
+    // #330: widgets and Live Activities draw `bg_linear_gradient` natively.
+    let mut app = App::new();
+    let node = snapshot_one(
+        &mut app,
+        div().bg(rgb(0x000000)).rounded(12.).bg_linear_gradient(
+            90.,
+            [
+                (adaptive(rgb(0xFF0000), rgb(0x00FF00)), 0.),
+                (rgba(0x0000FF, 0.5), 0.75),
+            ],
+        ),
+    );
+    let json = node.to_json();
+    assert!(
+        json.contains(
+            r##""bg":"#000000FF","gr":{"k":"l","a":90,"s":[[["#FF0000FF","#00FF00FF"],0],["#0000FF80",0.75]]},"r":12"##
+        ),
+        "{json}"
+    );
+    // Radial and conic ones; `Color::current()` stops are the text color.
+    let conic = snapshot_one(
+        &mut app,
+        div()
+            .text_color(rgb(0x112233))
+            .bg_gradient(Gradient::conic(45., [Color::current(), rgb(0xFFFFFF)])),
+    )
+    .to_json();
+    assert!(
+        conic.contains(r##""gr":{"k":"c","a":45,"s":[["#112233FF",0],["#FFFFFFFF",1]]}"##),
+        "{conic}"
+    );
+    let radial = snapshot_one(
+        &mut app,
+        div().bg_gradient(Gradient::radial([rgb(0), rgb(0)])),
+    )
+    .to_json();
+    assert!(radial.contains(r#""gr":{"k":"r","a":0,"#), "{radial}");
+    // No gradient, no key.
+    assert!(
+        !snapshot_one(&mut app, div().bg(rgb(0)))
+            .to_json()
+            .contains("gr")
+    );
+}
+
+#[test]
 fn snapshots_carry_minimum_sizes() {
     // #321: a pill sized with `min_w` keeps it in widgets.
     let mut app = App::new();

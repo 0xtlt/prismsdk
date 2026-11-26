@@ -479,7 +479,10 @@
     "frosted": "Frosted bar",
     "search": "Search",
     "clear": "Clear",
-    "focus_hint": "Focus the field: the card rings, the Clear button appears."
+    "focus_hint": "Focus the field: the card rings, the Clear button appears.",
+    "fade_hint": "Scroll the list: its end fades into the card (a linear gradient over it). Tap the button to change the fill.",
+    "fade_item": "Item {n}",
+    "fade_swap": "Change the fill"
   },
   "interact": {
     "heading": "Interaction",
