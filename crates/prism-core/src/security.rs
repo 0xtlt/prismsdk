@@ -981,11 +981,21 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(lb.take(&uri).is_none());
-        // Dropped with the backend, the watchdog ends too.
+        // Dropped with the backend, the watchdog ends too. The watchdog may
+        // hold the shared state for a moment while it checks the time, so
+        // the port is free once it lets go, not always at the drop itself.
         let lb = LoopbackListener::new(std::time::Duration::from_secs(600));
         let uri = lb.redirect().unwrap();
+        let port = loopback_port(&uri);
         drop(lb);
-        assert!(std::net::TcpListener::bind(("127.0.0.1", loopback_port(&uri))).is_ok());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "still listening after the drop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     /// S39: a credential whose `state` is not the request's is refused (it
