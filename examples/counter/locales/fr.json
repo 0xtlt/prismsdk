@@ -380,6 +380,8 @@
     "note": "Note riche",
     "note_placeholder": "Sélectionnez des mots pour la barre",
     "note_bold": "Gras",
+    "template": "Modèle",
+    "template_placeholder": "Tapez {open} pour insérer un champ",
     "note_copied": "{count} caractères copiés avec du Markdown",
     "note_pasted": "Collé, le presse-papiers avait {count} types",
     "note_clicked": "Clic avec une touche sur le segment {count}",

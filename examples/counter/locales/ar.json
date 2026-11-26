@@ -404,6 +404,8 @@
     "note": "ملاحظة منسقة",
     "note_placeholder": "حدد كلمات لشريط الأدوات",
     "note_bold": "عريض",
+    "template": "قالب",
+    "template_placeholder": "اكتب {open} لإدراج حقل",
     "note_copied": "نُسخ {count} حرفًا مع Markdown",
     "note_pasted": "لُصق، كان في الحافظة {count} أنواع",
     "note_clicked": "نقر مع مفتاح على المقطع {count}",

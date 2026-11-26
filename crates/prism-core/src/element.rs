@@ -3305,6 +3305,72 @@ impl Overlay {
         })
     }
 
+    /// What a popover or a placed dialog is anchored to (#328): the
+    /// element that contains it (the default), or the caret of a text
+    /// field in that element ([`OverlayAnchor::Caret`](crate::OverlayAnchor::Caret),
+    /// also [`anchor_caret`](Overlay::anchor_caret)), for completion lists
+    /// that open where the user types. The usual rules apply against the
+    /// anchor: its [`side`](Overlay::side) (flipped without room), its
+    /// [`align`](Overlay::align), kept inside the window. On a dialog it
+    /// places the dialog (below the anchor until [`side`](Overlay::side)
+    /// says otherwise), as `side` does.
+    ///
+    /// The backend resolves the caret when it lays the overlay out, in the
+    /// window's coordinates, and places the overlay again as soon as the
+    /// caret moves (typing, arrows, a click, the field or the page
+    /// scrolling, the field moving): there is no round trip through the
+    /// app. The field is the one with the keyboard focus inside the
+    /// overlay's parent, else the first text field there; a field without
+    /// the focus has no caret, so the overlay goes against the whole
+    /// field. With [`take_focus(false)`](Overlay::take_focus) the field
+    /// keeps the focus and the keys while the list is open, and typing
+    /// does not close it; handle the arrows, Enter and Escape on the field
+    /// with [`consume_keys`](crate::Div::consume_keys) to move through the
+    /// list:
+    ///
+    /// ```ignore
+    /// div()
+    ///     .consume_keys(if self.open { &["ArrowDown", "ArrowUp", "Enter", "Escape"][..] } else { &[] })
+    ///     .on_key_down(cx.listener(|this, e: &KeyEvent, _| this.key(e)))
+    ///     .child(text_input().value(text).on_input(cx.listener(Self::typed)))
+    ///     .children(self.open.then(|| {
+    ///         popover(suggestions)
+    ///             .open(true)
+    ///             .anchor(OverlayAnchor::Caret)
+    ///             .take_focus(false)
+    ///             .on_dismiss(cx.listener(|this, _, _| this.open = false))
+    ///     }))
+    /// ```
+    ///
+    /// Web: the caret's box measured in the page (a range in a rich input,
+    /// a hidden copy of an input or a text area), placed again on input,
+    /// selection changes, scrolling and layout; macOS: the caret's
+    /// rectangle from the text view or the field editor
+    /// (`firstRectForCharacterRange`), the popover's positioning rect or
+    /// panel following it; iOS, iPadOS, visionOS: `caretRectForPosition:`
+    /// as the popover's `sourceRect` or the card's anchor; Linux: the text
+    /// view's or entry's cursor location as the `GtkPopover`'s pointing
+    /// rectangle; Android: the `EditText`'s layout line at the cursor,
+    /// placed again before each frame; Windows: the text box's
+    /// `GetRectFromCharacterIndex` (a rich box's selection rectangle) as
+    /// the `Flyout`'s position and exclusion rectangle. tvOS presents
+    /// overlays as centered cards and ignores it, as do watchOS, sheets and
+    /// centered dialogs.
+    pub fn anchor(self, anchor: crate::OverlayAnchor) -> Self {
+        self.overlay_config(|c| {
+            c.anchor = anchor;
+            if c.kind == crate::OverlayKind::Dialog {
+                c.placed = true;
+            }
+        })
+    }
+
+    /// Anchors the popover or dialog at the caret of the text field in its
+    /// parent (#328): [`anchor(OverlayAnchor::Caret)`](Overlay::anchor).
+    pub fn anchor_caret(self) -> Self {
+        self.anchor(crate::OverlayAnchor::Caret)
+    }
+
     /// How a popover lines up with its anchor along its
     /// [`side`](Overlay::side): leading edges (top edges beside the anchor)
     /// by default, centered, or trailing edges (bottom edges beside). A

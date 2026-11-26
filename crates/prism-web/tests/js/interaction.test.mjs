@@ -1265,3 +1265,84 @@ test("a draggable carries its payload to the target under the pointer, previewed
   assert.equal(lastSent(page).phase, "cancel");
   assert.equal(lastSent(page).over, undefined);
 });
+
+test("a popover at a field's caret follows it as the user types and moves it (#328)", () => {
+  const RS = "\u001e";
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 4, kind: "rich_input" }, { op: "rich", id: 4, runs: ["Hello {{na", ""].join(RS) },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "popover keepfocus anchor=caret" },
+    { op: "create", id: 5, kind: "text_input" },
+    { op: "children", id: 3, children: [5] },
+    { op: "children", id: 2, children: [4, 3] },
+    ...root([2]),
+  ]);
+  placed(page.node(2));
+  const field = page.node(4);
+  field.getBoundingClientRect = () => ({ left: 60, top: 30, width: 180, height: 40, right: 240, bottom: 70 });
+  const box = page.node(3).firstChild;
+  box.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 60, right: 100, bottom: 60 });
+  const at = () => [box.style.left, box.style.top, box.dataset.side];
+  // Not focused: no caret, so the whole field is the anchor (not the
+  // parent, nor the popover's own field).
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
+  assert.deepEqual(at(), ["60px", "76px", "bottom"]);
+  // Focused, the caret after "na": 6 px under its box, lined up with it.
+  field.focus();
+  const sel = page.document.getSelection();
+  const text = field.firstChild.firstChild;
+  sel.collapse(text, 10);
+  sel.rect = { left: 130, top: 40, width: 0, height: 18, right: 130, bottom: 58 };
+  page.document.dispatchEvent({ type: "selectionchange" });
+  assert.deepEqual(at(), ["130px", "64px", "bottom"]);
+  // Typing moves the caret: placed again in the same frame, no round trip.
+  sel.rect = { left: 138, top: 40, width: 0, height: 18, right: 138, bottom: 58 };
+  field.dispatchEvent({ type: "beforeinput", inputType: "insertText", data: "m" });
+  assert.deepEqual(at(), ["138px", "64px", "bottom"], "placed while typing");
+  assert.equal(page.document.activeElement, field, "the field keeps the focus");
+  assert.equal(box.matches(":popover-open"), true, "typing does not close it");
+  // A caret scrolled out of the field stays on its edge.
+  sel.rect = { left: 400, top: 40, width: 0, height: 18, right: 400, bottom: 58 };
+  page.document.dispatchEvent({ type: "selectionchange" });
+  assert.deepEqual(at(), ["239px", "64px", "bottom"], "on the field's edge");
+  // Near the window's bottom edge (800 high): it flips above the caret.
+  field.getBoundingClientRect = () => ({ left: 60, top: 740, width: 180, height: 40, right: 240, bottom: 780 });
+  sel.rect = { left: 130, top: 750, width: 0, height: 18, right: 130, bottom: 768 };
+  page.ws.deliver({ t: "patch", p: [] });
+  assert.deepEqual(at(), ["130px", "684px", "top"], "the field moved: placed again after the batch");
+  // Its side and alignment as usual.
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 3, config: "popover keepfocus side=trailing anchor=caret" }] });
+  assert.deepEqual(at(), ["137px", "732px", "right"], "beside the caret, kept inside the window");
+});
+
+test("a popover at the caret of a text input measures the input's caret (#328)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 4, kind: "text_input" }, { op: "text", id: 4, text: "abc" },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "popover keepfocus anchor=caret" }, { op: "value", id: 3, value: 1 },
+    { op: "children", id: 2, children: [4, 3] },
+    ...root([2]),
+  ]);
+  placed(page.node(2));
+  const field = page.node(4);
+  field.getBoundingClientRect = () => ({ left: 60, top: 30, width: 180, height: 40, right: 240, bottom: 70 });
+  const box = page.node(3).firstChild;
+  box.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 60, right: 100, bottom: 60 });
+  // The hidden copy measures the caret: where it lands in the field.
+  const make = page.document.createElement.bind(page.document);
+  page.document.createElement = (tag) => {
+    const el = make(tag);
+    if (tag === "span" && !page.document._marked) {
+      page.document._marked = true;
+      el.getBoundingClientRect = () => ({ left: 25, top: 10, width: 0, height: 20, right: 25, bottom: 30 });
+    }
+    return el;
+  };
+  field.focus();
+  field.setSelectionRange(2, 2);
+  page.document._marked = false;
+  field.dispatchEvent({ type: "keyup" });
+  page.document.createElement = make;
+  assert.equal(box.style.left, "85px", "the field's left + the caret's offset");
+  assert.equal(box.style.top, "66px", "6 px under the caret's line");
+});

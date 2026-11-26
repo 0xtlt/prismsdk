@@ -128,6 +128,12 @@ fn with_state(f: impl FnOnce(&mut State)) {
     });
 }
 
+/// Overlays anchored at a caret follow it (#328): called as soon as a
+/// field's text, selection or scrolling changes.
+pub(crate) fn follow_carets() {
+    with_state(|s| s.renderer.widgets.follow_carets());
+}
+
 /// For the development hooks.
 pub(crate) fn dispatch_event(event: UiEvent) {
     dispatch(event);
@@ -399,6 +405,8 @@ impl State {
         self.renderer
             .layout(size.width as f32, size.height as f32, insets);
         self.renderer.widgets.attach_layers();
+        // Overlays at a caret follow the field's new place (#328).
+        self.renderer.widgets.follow_carets();
         crate::interaction::claim_keys(&self.renderer.widgets.controller);
         // Elements that report their frame and moved (#192).
         let more = prism_native::report_layout(&mut self.runtime, &mut self.renderer);
@@ -551,6 +559,8 @@ define_class!(
             let text = sender.text().map(|t| t.to_string()).unwrap_or_default();
             dispatch(UiEvent::Input(sender.tag() as NodeId, text));
             crate::interaction::refresh_suggestions(sender, self);
+            // A list open at its caret follows it, before the frame (#328).
+            follow_carets();
             #[cfg(not(target_os = "tvos"))]
             crate::carets::refresh(sender.tag() as NodeId);
         }
@@ -942,6 +952,8 @@ define_class!(
         #[unsafe(method(scrollViewDidScroll:))]
         fn scroll_view_did_scroll(&self, s: &UIScrollView) {
             crate::layout::scrolled(s);
+            // The field or the page scrolled under a list at a caret (#328).
+            follow_carets();
             if !crate::layout::scroll_events(s.tag() as NodeId) {
                 return;
             }
@@ -1706,6 +1718,13 @@ impl UiKit {
 impl UiKit {
     /// Puts the layers in their pass-through window, once the app's window
     /// is on screen, framed like the app's root.
+    /// Overlays anchored at a caret follow it (#328).
+    fn follow_carets(&self) {
+        for o in self.overlays.values() {
+            o.follow_caret();
+        }
+    }
+
     fn attach_layers(&mut self) {
         if self.layers.is_empty() && self.layer_window.is_none() {
             return;

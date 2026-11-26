@@ -7,6 +7,27 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- A popover or dialog can open at the caret of a text field (#328):
+  `Overlay::anchor(OverlayAnchor::Caret)`, or `anchor_caret()`, anchors
+  it at the caret of the field inside its parent (`text_input`,
+  `text_area`, `rich_input`, `rich_text_input`), with the usual side,
+  flip and keep-inside-the-window rules. Every backend measures the caret
+  when it lays the overlay out and follows it as the user types, selects
+  or scrolls, without asking the app; with `take_focus(false)` the field
+  keeps the focus and the keys. `OverlayAnchor` (`Parent`, the default,
+  or `Caret`) can gain kinds of anchors; `OverlayConfig::anchor`
+  (`anchor=caret` in the config string) and `controls::caret_in_field`
+  for backends. The counter example's Forms section has a template field with a
+  `{{` completion list.
+
+### Fixed
+
+- macOS: the `PRISM_TAP` test hook scrolls its target into view and does
+  not click a text field that is already editing (the click went to the
+  container's key handler instead of the field).
+
 ## 0.5.0 (2026-11-25)
 
 The web's history follows the path: browser Back and Forward reopen the
