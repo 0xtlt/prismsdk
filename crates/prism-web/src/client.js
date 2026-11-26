@@ -6217,6 +6217,14 @@
   }
 
   const isMainStack = (st) => navState()?.stack === st;
+  /** The stack of tab `tab` of a tab bar root (a lazy tab's too, empty
+   *  until first shown), else null. */
+  function tabStack(tab) {
+    const root = mount.firstElementChild;
+    if (!root || root.dataset.kind !== "tabs") return null;
+    const panel = nodes.get((root._tabs || [])[tab]);
+    return (panel && panel.querySelector(".prism-stack")) || null;
+  }
   // --- Element frames (#192): measured by the page, sent when they change ---
   /** Elements that report their frame, with the frame last sent. */
   const layoutEls = new Map();
@@ -6292,9 +6300,17 @@
     if (!hist) {
       // The first tree: this entry is the page's own, a deep link's too
       // (no entries for the screens under it). A reload keeps its number.
-      const n = (history.state && history.state.prism) || 1;
+      const was = history.state;
+      const n = (was && was.prism) || 1;
       history.replaceState(entryOf(n, s), "", urlFor(s.path));
-      return record(n);
+      record(n);
+      // A reload or a reconnection opens the URL like a deep link, in the
+      // tab its path belongs to; a screen pushed in another tab (#332)
+      // goes back to the tab its entry was in.
+      const home = was && was.prism && was.path === s.path && typeof was.tab === "number" && was.tab !== s.tab
+        ? tabStack(was.tab) : null;
+      if (home) send({ t: "history", id: Number(home.dataset.pid), depth: Math.max(1, was.depth | 0), path: was.path });
+      return;
     }
     if (hist.path === s.path && hist.depth === s.depth && hist.tab === s.tab) {
       hist.replaces = replaces;
@@ -6346,9 +6362,10 @@
     }
     entries[st.prism] = { depth: st.depth, tab: st.tab, path: st.path };
     hist = { prism: st.prism, depth: st.depth, tab: st.tab, path: st.path, replaces: hist.replaces };
-    // The entry's path at its depth: popped to while still in the stack,
-    // opened again otherwise.
-    send({ t: "history", id: Number(s.stack.dataset.pid), depth: st.depth, path: st.path });
+    // The entry's path at its depth, in the tab it was made in (#332):
+    // popped to while still in the stack, opened again otherwise.
+    const target = (typeof st.tab === "number" && tabStack(st.tab)) || s.stack;
+    send({ t: "history", id: Number(target.dataset.pid), depth: st.depth, path: st.path });
   });
 
   // --- Scroll events (virtualized lists) -------------------------------------

@@ -1704,6 +1704,60 @@ test("a screen can refuse the browser's Back (#324)", () => {
   assert.deepEqual(lastSent(page), { t: "history", id: 1, depth: 1, path: "/" });
 });
 
+/** A tab bar: Home (`/`, stack 4) and Rooms (`/rooms`, stack 5, at `/rooms/4`). */
+const roomTabs = () => [
+  create(1, "tabs"), create(2, "tab"), create(3, "tab"), create(4, "stack"), create(5, "stack"),
+  create(6, "screen"), create(7, "screen"), create(8, "screen"),
+  textOp(4, "/"), textOp(5, "/rooms/4"), textOp(1, "/rooms/4"), { op: "value", id: 1, value: 1 },
+  children(4, [6]), children(5, [7, 8]), children(2, [4]), children(3, [5]), children(1, [2, 3]), root(1),
+];
+
+test("browser Back and Forward ask the tab each entry was made in (#332)", () => {
+  const page = live(roomTabs(), { path: "/rooms/4" });
+  // A push under another tab's root stays in Rooms: the URL is its path.
+  page.ws.deliver({ t: "patch", p: [create(9, "screen"), textOp(5, "/devices/7"), textOp(1, "/devices/7"), children(5, [7, 8, 9])] });
+  assert.equal(page.window.location.pathname, "/devices/7");
+  assert.equal(page.history.entries.length, 2);
+  assert.deepEqual({ ...page.history.entries[1].state }, { prism: 2, depth: 3, tab: 1, path: "/devices/7" });
+  // The app switches to Home: the current entry follows the tab.
+  page.ws.deliver({ t: "patch", p: [textOp(1, "/"), { op: "value", id: 1, value: 0 }] });
+  assert.equal(page.history.entries[1].state.tab, 0);
+  // Back to the first entry, made in Rooms: Rooms' stack is asked, not
+  // the visible one.
+  page.history.index = 0;
+  page.fire("popstate", { state: page.history.entries[0].state });
+  assert.deepEqual(lastSent(page), { t: "history", id: 5, depth: 2, path: "/rooms/4" });
+});
+
+test("a reload gives a screen back to the tab its entry was in (#332)", () => {
+  // `/devices/7` was pushed in Rooms (tab 1); the server opens the URL
+  // like a deep link, in Devices (tab 2).
+  const page = live(null, { path: "/devices/7" });
+  page.history.entries[0].state = { prism: 3, depth: 3, tab: 1, path: "/devices/7" };
+  const reset = (selected) => [
+    create(1, "tabs"), create(2, "tab"), create(3, "tab"), create(10, "tab"),
+    create(4, "stack"), create(5, "stack"), create(11, "stack"), create(12, "screen"), create(13, "screen"),
+    textOp(1, "/devices/7"), textOp(11, "/devices/7"), { op: "value", id: 1, value: selected },
+    children(11, [12, 13]), children(2, [4]), children(3, [5]), children(10, [11]), children(1, [2, 3, 10]), root(1),
+  ];
+  page.ws.deliver({ t: "reset", p: reset(2) });
+  assert.deepEqual(lastSent(page), { t: "history", id: 5, depth: 3, path: "/devices/7" });
+  assert.equal(page.history.entries[0].state.prism, 3, "the entry keeps its number");
+  // The app moves it to Rooms: the same entry, in Rooms.
+  page.ws.deliver({ t: "patch", p: [
+    create(14, "screen"), create(15, "screen"), textOp(5, "/devices/7"), children(5, [14, 15]),
+    textOp(11, "/devices"), children(11, [12]), { op: "value", id: 1, value: 1 },
+  ] });
+  assert.equal(page.history.entries.length, 1);
+  assert.deepEqual({ ...page.history.entries[0].state }, { prism: 3, depth: 2, tab: 1, path: "/devices/7" });
+  assert.equal(page.window.location.pathname, "/devices/7");
+  // An entry of the tab the URL opens in asks nothing.
+  const same = live(null, { path: "/devices/7" });
+  same.history.entries[0].state = { prism: 2, depth: 2, tab: 2, path: "/devices/7" };
+  same.ws.deliver({ t: "reset", p: reset(2) });
+  assert.equal(sent(same).filter((m) => m.t === "history").length, 0);
+});
+
 test("copy_on_click writes during the click and says how it went (#323)", async () => {
   const page = live([create(1, "view"), root(1), { op: "clickable", id: 1, on: true }, { op: "copy", id: 1, text: "hello" }]);
   let written = null;

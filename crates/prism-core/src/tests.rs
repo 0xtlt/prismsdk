@@ -1013,73 +1013,80 @@ fn a_link_while_running_opens_in_its_tab_and_selects_it() {
 }
 
 #[test]
-fn navigating_to_a_screen_of_another_tab_selects_that_tab() {
+fn navigating_under_another_tabs_root_stays_in_the_selected_tab() {
     let (mut rt, first) = tabbed("/");
     let tabs = tabs_id(&first);
-    // From Home, a path under Settings' root opens there and selects it.
+    let no_switch = |patches: &[Patch]| {
+        !patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetValue { id, .. } if *id == tabs))
+    };
+    // From Home, a path under Settings' root is pushed on Home (#332).
+    rt.dispatch(UiEvent::Click(find_text(&first, "open 7")));
     rt.app.navigate("/settings/4");
     let patches = rt.render();
-    assert!(patches.contains(&Patch::SetValue {
-        id: tabs,
-        value: 1.
-    }));
+    assert!(no_switch(&patches));
     assert_eq!(rt.app.current_path(), Some("/settings/4"));
-    // Home's stack did not get the screen.
-    rt.dispatch(UiEvent::Change(tabs, 0.));
-    assert_eq!(rt.app.current_path(), Some("/"));
-    // A path of the selected tab is pushed there, as before.
-    rt.dispatch(UiEvent::Change(tabs, 1.));
-    rt.app.navigate("/settings/5");
-    let same = rt.render();
-    assert!(
-        !same
-            .iter()
-            .any(|p| matches!(p, Patch::SetValue { id, .. } if *id == tabs))
-    );
-    assert_eq!(rt.app.current_path(), Some("/settings/5"));
-    // A path under no other tab's root (a screen several tabs show) stays
-    // in the selected tab, as on iOS: `/` is not every path's tab within
-    // the app, only for a link from outside.
-    rt.app.navigate("/items/3");
-    let shared = rt.render();
-    assert!(
-        !shared
-            .iter()
-            .any(|p| matches!(p, Patch::SetValue { id, .. } if *id == tabs))
-    );
-    assert_eq!(rt.app.current_path(), Some("/items/3"));
+    assert_eq!(rt.app.stack_depth(), 3);
+    // Back returns to the screen it came from.
     rt.app.back();
     rt.render();
-    assert_eq!(rt.app.current_path(), Some("/settings/5"));
-    // `/` itself is Home's root: it switches there.
+    assert_eq!(rt.app.current_path(), Some("/items/7"));
+    // Settings' stack did not get the screen.
+    rt.dispatch(UiEvent::Change(tabs, 1.));
+    assert_eq!(rt.app.current_path(), Some("/settings"));
+    // A path under no tab's root but `/` stays in the selected tab too.
+    rt.app.navigate("/items/3");
+    let shared = rt.render();
+    assert!(no_switch(&shared));
+    assert_eq!(rt.app.current_path(), Some("/items/3"));
+    // A tab's root exactly switches to that tab.
     rt.app.navigate("/");
     let home = rt.render();
     assert!(home.contains(&Patch::SetValue {
         id: tabs,
         value: 0.
     }));
+    assert_eq!(rt.app.current_path(), Some("/items/7"));
 }
 
 #[test]
-fn replacing_with_a_screen_of_another_tab_selects_that_tab() {
+fn replacing_stays_in_the_selected_tab_unless_the_path_is_another_tabs_root() {
     let (mut rt, first) = tabbed("/");
     let tabs = tabs_id(&first);
     rt.dispatch(UiEvent::Click(find_text(&first, "open 7")));
     assert_eq!(rt.app.current_path(), Some("/items/7"));
+    // Under another tab's root: replaced in place, in this tab (#332).
     rt.app.replace("/settings/2");
+    let patches = rt.render();
+    assert!(
+        !patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetValue { id, .. } if *id == tabs))
+    );
+    assert_eq!(rt.app.current_path(), Some("/settings/2"));
+    assert_eq!(rt.app.stack_depth(), 2);
+    rt.app.back();
+    rt.render();
+    assert_eq!(rt.app.current_path(), Some("/"));
+    // Another tab's root: that tab is selected; the screen it replaced is
+    // gone from this tab, whose root stays.
+    rt.app.navigate("/items/8");
+    rt.render();
+    rt.app.replace("/settings");
     let patches = rt.render();
     assert!(patches.contains(&Patch::SetValue {
         id: tabs,
         value: 1.
     }));
-    assert_eq!(rt.app.current_path(), Some("/settings/2"));
-    // The screen it replaced is gone from the first tab, its root stays.
+    assert_eq!(rt.app.current_path(), Some("/settings"));
+    assert_eq!(rt.app.stack_depth(), 1);
     rt.dispatch(UiEvent::Change(tabs, 0.));
     assert_eq!(rt.app.current_path(), Some("/"));
     // From a tab's root, the root stays too.
-    rt.app.replace("/settings/3");
+    rt.app.replace("/settings?section=privacy");
     rt.render();
-    assert_eq!(rt.app.current_path(), Some("/settings/3"));
+    assert_eq!(rt.app.current_path(), Some("/settings?section=privacy"));
     rt.dispatch(UiEvent::Change(tabs, 0.));
     assert_eq!(rt.app.current_path(), Some("/"));
 }
