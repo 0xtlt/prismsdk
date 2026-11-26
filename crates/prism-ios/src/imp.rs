@@ -3025,7 +3025,11 @@ impl Widgets for UiKit {
     fn set_style_animated(&mut self, view: &View, style: &Style, t: prism_core::Transition) {
         let v: Retained<UIView> = view.ui().retain();
         let (alpha, bg, transform) = (v.alpha(), v.backgroundColor(), v.transform());
+        let gradient = crate::decor::gradient_from(&v);
         self.set_style(view, style);
+        if let Some(from) = gradient {
+            crate::decor::animate_gradient(&v, from, t);
+        }
         let (new_alpha, new_bg, new_transform) = (v.alpha(), v.backgroundColor(), v.transform());
         v.setAlpha(alpha);
         v.setBackgroundColor(bg.as_deref());

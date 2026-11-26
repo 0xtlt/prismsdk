@@ -280,6 +280,67 @@ pub fn apply(view: &UIView, style: &Style) {
     });
 }
 
+/// A gradient as drawn before a style change (see [`animate_gradient`]).
+pub struct GradientFrom {
+    gradient: prism_core::Gradient,
+    colors: Retained<NSArray>,
+    locations: Option<Retained<NSArray<NSNumber>>>,
+    start: CGPoint,
+    end: CGPoint,
+}
+
+/// The gradient `view` shows now (mid-animation, where it is), to animate
+/// a style change from.
+pub fn gradient_from(view: &UIView) -> Option<GradientFrom> {
+    let id = view.tag() as NodeId;
+    DECOR.with(|d| {
+        let d = d.borrow();
+        let e = d.get(&id)?;
+        let gl = e.gradient.as_ref()?;
+        let gradient = e.style.gradient.clone()?;
+        // SAFETY: a copy of the layer as on screen, read on the main thread.
+        let now = unsafe { gl.presentationLayer() }
+            .and_then(|p| p.downcast::<CAGradientLayer>().ok())
+            .unwrap_or_else(|| gl.clone());
+        Some(GradientFrom {
+            gradient,
+            colors: now.colors()?,
+            locations: now.locations(),
+            start: now.startPoint(),
+            end: now.endPoint(),
+        })
+    })
+}
+
+/// After a style change with transition `t`: animates the gradient's
+/// colors, positions and line from `from`, when the new one is the same
+/// kind with as many stops (#330); otherwise it was replaced at once.
+pub fn animate_gradient(view: &UIView, from: GradientFrom, t: prism_core::Transition) {
+    use prism_native::apple::motion::animate_from;
+    let id = view.tag() as NodeId;
+    DECOR.with(|d| {
+        let d = d.borrow();
+        let Some(e) = d.get(&id) else { return };
+        let (Some(gl), Some(to)) = (&e.gradient, &e.style.gradient) else {
+            return;
+        };
+        if *to == from.gradient || !from.gradient.interpolates_with(to) {
+            return;
+        }
+        animate_from(gl, "colors", &from.colors, t);
+        if let Some(at) = &from.locations {
+            animate_from(gl, "locations", at, t);
+        }
+        animate_from(
+            gl,
+            "startPoint",
+            &objc2_foundation::NSValue::new(from.start),
+            t,
+        );
+        animate_from(gl, "endPoint", &objc2_foundation::NSValue::new(from.end), t);
+    });
+}
+
 /// Frosted background: a visual effect view under everything, tinted by
 /// the background color.
 fn set_effect(e: &mut Decor, view: &UIView, style: &Style) {
@@ -379,9 +440,13 @@ fn layout_entry(e: &mut Decor) {
             let [a, b, c, d] = g.geometry(w, h);
             match g.kind {
                 GradientKind::Linear { .. } => {
+                    // Core Animation spaces the colors in unit coordinates,
+                    // then stretches them to the box: the unit line keeping
+                    // CSS's angle in a box that is not square.
+                    let [sx, sy, ex, ey] = g.unit_points(w, h);
                     gl.setType(unsafe { objc2_quartz_core::kCAGradientLayerAxial });
-                    gl.setStartPoint(CGPoint::new((a / w) as _, (b / h) as _));
-                    gl.setEndPoint(CGPoint::new((c / w) as _, (d / h) as _));
+                    gl.setStartPoint(CGPoint::new(sx as _, sy as _));
+                    gl.setEndPoint(CGPoint::new(ex as _, ey as _));
                 }
                 GradientKind::Radial => {
                     gl.setType(unsafe { objc2_quartz_core::kCAGradientLayerRadial });

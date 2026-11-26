@@ -3483,6 +3483,46 @@ fn decorations_become_css() {
     // A scroll view keeps scrolling.
     assert!(!css(NodeKind::Scroll, &s).contains("overflow:hidden"));
 
+    // #330: with a transition, the angle and stops are registered custom
+    // properties (`prism.css`), which CSS interpolates.
+    let fade = Style::default()
+        .bg_linear_gradient(180., [(rgba(0xFFFFFF, 0.), 0.), (rgb(0xFFFFFF), 0.8)])
+        .transition(Transition::ease(300));
+    let c = css(NodeKind::View, &fade);
+    assert!(
+        c.contains(
+            "--prism-gc0:rgba(255,255,255,0);--prism-gp0:0%;--prism-gc1:rgba(255,255,255,1);--prism-gp1:80%;--prism-ga:180deg;background-image:linear-gradient(var(--prism-ga), var(--prism-gc0) var(--prism-gp0), var(--prism-gc1) var(--prism-gp1));"
+        ),
+        "{c}"
+    );
+    // `transition: all` leaves custom properties out: they are named.
+    assert!(
+        c.contains("transition:all 0.3s ease-in-out 0s,--prism-ga 0.3s ease-in-out 0s,--prism-gc0 0.3s ease-in-out 0s,--prism-gp0 0.3s ease-in-out 0s,--prism-gc1 0.3s ease-in-out 0s,--prism-gp1 0.3s ease-in-out 0s;"),
+        "{c}"
+    );
+    let ring = Style::default()
+        .bg_gradient(Gradient::conic(30., [rgb(0), rgb(0xFFFFFF)]))
+        .transition(Transition::ease(300));
+    assert!(css(NodeKind::View, &ring).contains(
+        "background-image:conic-gradient(from var(--prism-ga), var(--prism-gc0) var(--prism-gp0), var(--prism-gc1) var(--prism-gp1));"
+    ));
+    // Too many stops, or `currentColor` ones: the plain image.
+    let many = Style::default()
+        .bg_gradient(Gradient::linear(90., (0..9).map(rgb)))
+        .transition(Transition::ease(300));
+    assert!(css(NodeKind::View, &many).contains("background-image:linear-gradient(90deg, "));
+    let current = Style::default()
+        .bg_gradient(Gradient::linear(90., [Color::current(), rgb(0)]))
+        .transition(Transition::ease(300));
+    assert!(
+        css(NodeKind::View, &current)
+            .contains("background-image:linear-gradient(90deg, color-mix(")
+    );
+    let props = include_str!("prism.css");
+    for p in ["--prism-ga", "--prism-gc7", "--prism-gp7"] {
+        assert!(props.contains(&format!("@property {p} ")), "{p}");
+    }
+
     // Per-side borders are logical (they follow `dir`).
     let sides = css(
         NodeKind::View,
@@ -3542,6 +3582,35 @@ fn interaction_states_become_pseudo_class_rules() {
     }
     // Views have no text properties: the group rule changes nothing here.
     assert!(!rules.contains("[data-group]"));
+
+    // #330: a gradient keeps showing over a state's new color (the
+    // `background` shorthand would reset it); `bg_fill` replaces it.
+    let g = Gradient::linear(90., [rgb(0xFF0000), rgb(0x0000FF)]);
+    let fill = Style::default()
+        .bg(rgb(0xFFFFFF))
+        .bg_gradient(g.clone())
+        .hover(|s| s.bg(rgb(0xEEEEEE)))
+        .active(|s| s.bg_fill(rgb(0x00FF00)))
+        .resolve(Default::default());
+    let filled = css::states_css(NodeKind::View, false, 9, &fill);
+    assert!(
+        filled.contains(r#"[data-pid="9"]:hover{background:rgba(238,238,238,1) !important;background-image:linear-gradient(90deg, rgba(255,0,0,1) 0%, rgba(0,0,255,1) 100%) !important;}"#),
+        "{filled}"
+    );
+    assert!(
+        filled.contains(r#"[data-pid="9"]:active{background:rgba(0,255,0,1) !important;background-image:unset !important;}"#),
+        "{filled}"
+    );
+    // And back: a solid base, a gradient while pressed.
+    let fill = Style::default()
+        .bg(rgb(0xFFFFFF))
+        .active(move |s| s.bg_fill(g.clone()))
+        .resolve(Default::default());
+    let filled = css::states_css(NodeKind::View, false, 9, &fill);
+    assert!(
+        filled.contains(r#"[data-pid="9"]:active{background-image:linear-gradient(90deg, rgba(255,0,0,1) 0%, rgba(0,0,255,1) 100%) !important;background:unset !important;}"#),
+        "{filled}"
+    );
     let t = css::states_css(NodeKind::Text, false, 8, &s);
     assert!(
         t.contains(r#"@media (hover:hover){[data-group]:hover [data-pid="8"]:not(:where([data-group]:not(:hover) *)){color:rgba(255,0,0,1) !important;}}"#),

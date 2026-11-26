@@ -73,7 +73,8 @@ pub use controls::{
     PopoverSide, ReturnKey,
 };
 pub use decoration::{
-    BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
+    BorderSide, BorderSides, BorderStyle, Cursor, Fill, Gradient, GradientKind, GradientStop,
+    Shadow,
 };
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
@@ -1323,7 +1324,7 @@ pub mod prelude {
     pub use crate::{ClipboardContent, CopyEvent, PasteEvent, SelectionRectEvent, SpanClickEvent};
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
-    pub use crate::{Color, Cursor, Gradient, Shadow};
+    pub use crate::{Color, Cursor, Fill, Gradient, Shadow};
     pub use crate::{picture_data, svg};
     // Navigation bar buttons (#30).
     pub use crate::bar_button;

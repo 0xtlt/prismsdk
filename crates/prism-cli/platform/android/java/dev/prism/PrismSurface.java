@@ -152,6 +152,35 @@ final class PrismSurface {
     }
 
     private RemoteViews build(JSONObject n, String size, float w, float h) {
+        JSONObject gr = n.optJSONObject("gr");
+        if (gr != null) return gradientBox(n, gr, size, w, h);
+        RemoteViews v = content(n, size, w, h);
+        inside(v, n);
+        decorate(v, n, size, null);
+        return v;
+    }
+
+    /**
+     * A node with a gradient (#330). RemoteViews cannot give a view a
+     * drawable background, so the gradient is a picture stretched under
+     * the node (`fitXY`), in a frame that takes the node's box (size,
+     * margins, background color under the gradient, rounded clip, opacity,
+     * taps); the node fills the frame with its padding and content.
+     */
+    private RemoteViews gradientBox(JSONObject n, JSONObject gr, String size, float w, float h) {
+        RemoteViews frame = inflate("space", size);
+        frame.removeAllViews(node);
+        RemoteViews picture = inflate("image", "both");
+        gradient(picture, gr, fixed(n, "w", w), fixed(n, "h", h > 0 ? Math.min(h, 400) : 40));
+        frame.addView(node, picture);
+        RemoteViews v = content(n, "both", w, h);
+        inside(v, n);
+        frame.addView(node, v);
+        decorate(frame, n, size, gr);
+        return frame;
+    }
+
+    private RemoteViews content(JSONObject n, String size, float w, float h) {
         String k = n.optString("k", "v");
         RemoteViews v;
         switch (k) {
@@ -193,7 +222,6 @@ final class PrismSurface {
             default:
                 v = container(n, size, w, h);
         }
-        decorate(v, n, size);
         return v;
     }
 
@@ -372,6 +400,74 @@ final class PrismSurface {
                 return total + pad;
             }
         }
+    }
+
+    // --- Gradients as bitmaps -------------------------------------------------------------
+
+    /** The longest side of a gradient's picture, px: colors change slowly, the stretch smooths them. */
+    private static final int GRADIENT_SIDE = 128;
+
+    /**
+     * Draws snapshot gradient `gr` (`{k, a, s}`, prism-core `write_gradient`)
+     * for a box of about `w` × `h` dp, at most {@link #GRADIENT_SIDE} px on
+     * its longest side with the box's proportions (a diagonal gradient's
+     * angle follows the estimated size, like shapes). The picture's density
+     * is raised so that its own size is a few pixels: the frame takes the
+     * node's size, not the picture's. Android 12+: one picture per mode when
+     * a color has light and dark variants.
+     */
+    private void gradient(RemoteViews v, JSONObject gr, float w, float h) {
+        JSONArray stops = gr.optJSONArray("s");
+        if (stops == null || stops.length() == 0) return;
+        float wd = Math.max(1, w), hd = Math.max(1, h);
+        float k = GRADIENT_SIDE / Math.max(wd, hd);
+        int bw = Math.max(2, Math.round(wd * k)), bh = Math.max(2, Math.round(hd * k));
+        boolean pair = false;
+        for (int i = 0; i < stops.length(); i++) {
+            JSONArray st = stops.optJSONArray(i);
+            if (st != null && st.opt(0) instanceof JSONArray) pair = dayNight;
+        }
+        long need = (long) bw * bh * 4 * (pair ? 2 : 1);
+        if (need > budget) {
+            android.util.Log.w("prism", "surface: no memory left for a gradient");
+            return;
+        }
+        budget -= need;
+        if (pair) {
+            v.setIcon(node, "setImageIcon",
+                    Icon.createWithBitmap(gradientBitmap(gr, bw, bh, false)),
+                    Icon.createWithBitmap(gradientBitmap(gr, bw, bh, true)));
+        } else {
+            v.setImageViewBitmap(node, gradientBitmap(gr, bw, bh, dark));
+        }
+    }
+
+    private Bitmap gradientBitmap(JSONObject gr, int w, int h, boolean night) {
+        JSONArray stops = gr.optJSONArray("s");
+        int count = Math.max(2, stops.length());
+        int[] colors = new int[count];
+        float[] at = new float[count];
+        for (int i = 0; i < stops.length(); i++) {
+            JSONArray st = stops.optJSONArray(i);
+            int[] c = st == null ? null : colors(st.opt(0));
+            colors[i] = c == null ? 0 : c[night ? 1 : 0];
+            at[i] = st == null ? 0 : (float) st.optDouble(1, 0);
+        }
+        if (stops.length() == 1) {
+            colors[1] = colors[0];
+            at[1] = 1;
+        }
+        String kind = gr.optString("k", "l");
+        double angle = gr.optDouble("a", 180);
+        // Not mirrored right to left: CSS angles are physical.
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+        paint.setShader(PrismDecor.gradient(kind.equals("r") ? "radial" : kind.equals("c") ? "conic" : "linear",
+                angle, colors, at, new android.graphics.Rect(0, 0, w, h)));
+        new Canvas(bmp).drawRect(0, 0, w, h, paint);
+        // A tiny intrinsic size: the picture stretches to the frame.
+        bmp.setDensity(Math.max(1, Math.round(DisplayMetrics.DENSITY_DEFAULT * density * Math.max(w, h))));
+        return bmp;
     }
 
     // --- Shapes (charts) as bitmaps ---------------------------------------------------------
@@ -556,21 +652,36 @@ final class PrismSurface {
         return s;
     }
 
-    private void decorate(RemoteViews v, JSONObject n, String size) {
+    /** What stays on the node itself: its padding and a text's minimum sizes. */
+    private void inside(RemoteViews v, JSONObject n) {
         JSONArray pd = n.optJSONArray("pd");
         if (pd != null && pd.length() == 4) {
             // [top, right, bottom, left]
             v.setViewPadding(node, px(pd.optDouble(3)), px(pd.optDouble(0)), px(pd.optDouble(1)), px(pd.optDouble(2)));
         }
-        // Minimum sizes (`min_w`, `min_h`, #321): a text's own; a box
-        // wrapping its content as wide as `min_w` when narrower.
-        String k = n.optString("k", "v");
-        boolean text = k.equals("t") || k.equals("i") || k.equals("m");
-        Object mw = n.has("w") ? null : n.opt("mw"), mh = n.has("h") ? null : n.opt("mh");
-        if (text) {
+        // Minimum sizes (`min_w`, `min_h`, #321): a text's own.
+        if (text(n)) {
+            Object mw = n.has("w") ? null : n.opt("mw"), mh = n.has("h") ? null : n.opt("mh");
             if (mw instanceof Number) v.setInt(node, "setMinWidth", px(((Number) mw).doubleValue()));
             if (mh instanceof Number) v.setInt(node, "setMinHeight", px(((Number) mh).doubleValue()));
         }
+    }
+
+    private static boolean text(JSONObject n) {
+        String k = n.optString("k", "v");
+        return k.equals("t") || k.equals("i") || k.equals("m");
+    }
+
+    /**
+     * The node's box on `v` (the node, or the frame around a gradient's
+     * picture, `gr`): its size, margins, background, rounding, opacity,
+     * label and taps.
+     */
+    private void decorate(RemoteViews v, JSONObject n, String size, JSONObject gr) {
+        // Minimum sizes (#321): a box wrapping its content as wide as
+        // `min_w` when narrower.
+        boolean text = text(n) && gr == null;
+        Object mw = n.has("w") ? null : n.opt("mw");
         if (Build.VERSION.SDK_INT >= 31) {
             if (n.has("w") && !"f".equals(n.optString("w"))) v.setViewLayoutWidth(node, (float) n.optDouble("w"), TypedValue.COMPLEX_UNIT_DIP);
             else if (!text && mw instanceof Number && "wrap".equals(size)
@@ -589,8 +700,8 @@ final class PrismSurface {
             }
         }
         int[] bg = colors(n.opt("bg"));
-        if (bg != null) {
-            setColor(v, "setBackgroundColor", bg);
+        if (bg != null) setColor(v, "setBackgroundColor", bg);
+        if (bg != null || gr != null) {
             double r = n.optDouble("r", 0);
             // RemoteViews outlines round every corner alike: some corners
             // only ("rc") stay square here.

@@ -175,8 +175,13 @@ impl BorderSides {
 /// The geometry of a [`Gradient`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GradientKind {
-    /// Along a line at `angle` degrees, CSS-style: `0` goes up, `90` to the
-    /// right, `180` (the default of CSS) down.
+    /// Along a line at `angle` degrees, the CSS `linear-gradient(<angle>)`
+    /// convention on every platform: the angle names the direction the
+    /// colors go *to*, clockwise from up. `0` goes to the top, `90` to the
+    /// right, `180` (the default of CSS) to the bottom, `270` to the left;
+    /// `45` goes to the top right. The gradient line runs through the
+    /// center and is as long as CSS makes it, so the first and last colors
+    /// reach the corners whatever the box's shape.
     Linear {
         /// Degrees, clockwise from "to top".
         angle: f32,
@@ -202,7 +207,14 @@ pub struct GradientStop {
     pub at: f32,
 }
 
-/// A background gradient (see [`Styled::bg_gradient`](crate::Styled::bg_gradient)).
+/// A background gradient (see [`Styled::bg_gradient`](crate::Styled::bg_gradient)
+/// and [`Styled::bg_linear_gradient`](crate::Styled::bg_linear_gradient)).
+///
+/// Stops are placed like CSS places them: positions are clamped to
+/// `0.0..=1.0` and a position lower than the one before moves up to it (a
+/// hard edge), so every backend gets increasing positions; one stop is a
+/// solid fill and no stop is no gradient (see [`normalized`](Self::normalized),
+/// which the style builders apply).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
     /// Linear, radial or conic.
@@ -255,6 +267,14 @@ impl Gradient {
         }
     }
 
+    /// A linear gradient at `angle` degrees (CSS convention: `0` to the top,
+    /// `90` to the right, `180` to the bottom) through `(color, position)`
+    /// stops, positions `0.0..=1.0` along the gradient line:
+    /// `Gradient::linear_stops(180., [(clear, 0.), (bg, 0.8)])`.
+    pub fn linear_stops(angle: f32, stops: impl IntoIterator<Item = (Color, f32)>) -> Gradient {
+        Gradient::linear(angle, []).with_stops(stops)
+    }
+
     /// Replaces the stops with `(color, position)` pairs (positions `0.0..=1.0`).
     pub fn with_stops(mut self, stops: impl IntoIterator<Item = (Color, f32)>) -> Gradient {
         self.stops = stops
@@ -262,6 +282,48 @@ impl Gradient {
             .map(|(color, at)| GradientStop { color, at })
             .collect();
         self
+    }
+
+    /// The gradient with its stops placed like CSS places them, or `None`
+    /// without stops: positions clamped to `0.0..=1.0` (a NaN takes the
+    /// position before it), each at least the one before (two stops at one
+    /// position make a hard edge), and a single stop doubled into a solid
+    /// fill (`0.0` and `1.0`). Native gradient APIs need increasing
+    /// positions and at least two colors (`CAGradientLayer`, Android's
+    /// shaders, XAML brushes); the style builders normalize, so backends
+    /// can rely on it.
+    pub fn normalized(mut self) -> Option<Gradient> {
+        let mut last = 0f32;
+        for s in &mut self.stops {
+            let at = if s.at.is_nan() {
+                last
+            } else {
+                s.at.clamp(0., 1.)
+            };
+            s.at = at.max(last);
+            last = s.at;
+        }
+        match self.stops.len() {
+            0 => None,
+            1 => {
+                let color = self.stops[0].color;
+                self.stops = vec![
+                    GradientStop { color, at: 0. },
+                    GradientStop { color, at: 1. },
+                ];
+                Some(self)
+            }
+            _ => Some(self),
+        }
+    }
+
+    /// Whether a transition from `self` to `to` can animate the stops
+    /// (their colors and positions) and the angle: the same kind and the
+    /// same number of stops, like interpolating the same CSS gradient's
+    /// values. Otherwise the new gradient replaces the old one at once.
+    pub fn interpolates_with(&self, to: &Gradient) -> bool {
+        std::mem::discriminant(&self.kind) == std::mem::discriminant(&to.kind)
+            && self.stops.len() == to.stops.len()
     }
 
     /// Every color changed by `f` (backends resolve [`Color::current`]).
@@ -328,6 +390,66 @@ impl Gradient {
                 [cx, cy, cx + a.sin() * r, cy - a.cos() * r]
             }
         }
+    }
+
+    /// A linear gradient's start and end in unit coordinates of a `w` × `h`
+    /// box (`0.0..=1.0`, from the top-left corner), `[x0, y0, x1, y1]`, for
+    /// renderers that space the colors in unit space and then stretch it
+    /// to the box (Core Animation's axial `CAGradientLayer`): the unit line
+    /// whose stretched isobars are perpendicular to CSS's gradient line, so
+    /// a 45° gradient in a wide box looks the same as in a browser. For
+    /// renderers working in points (CSS, Skia, SwiftUI, Direct2D), use
+    /// [`geometry`](Self::geometry). Other kinds: `geometry` divided by
+    /// the size.
+    pub fn unit_points(&self, w: f32, h: f32) -> [f32; 4] {
+        let [a, b, c, d] = self.geometry(w, h);
+        let ux = |x: f32| if w > 0. { x / w } else { 0.5 };
+        let uy = |y: f32| if h > 0. { y / h } else { 0.5 };
+        if !matches!(self.kind, GradientKind::Linear { .. }) {
+            return [ux(a), uy(b), ux(c), uy(d)];
+        }
+        // Colors are constant along lines perpendicular, in unit space, to
+        // the unit line; stretched by (w, h), a unit direction (x, y)
+        // becomes (x·w, y·h). Isobars perpendicular to CSS's line g in
+        // points need the unit line along (g.x·w, g.y·h).
+        let (gx, gy) = (c - a, d - b);
+        let (vx, vy) = (gx * w, gy * h);
+        let len2 = vx * vx + vy * vy;
+        let along = |x: f32, y: f32| {
+            if len2 > 0. {
+                ((x - 0.5) * vx + (y - 0.5) * vy) / len2
+            } else {
+                0.
+            }
+        };
+        let (t0, t1) = (along(ux(a), uy(b)), along(ux(c), uy(d)));
+        [0.5 + t0 * vx, 0.5 + t0 * vy, 0.5 + t1 * vx, 0.5 + t1 * vy]
+    }
+}
+
+/// A box's background: a solid color or a gradient
+/// ([`Styled::bg_fill`](crate::Styled::bg_fill)). Setting one replaces the
+/// other, where [`bg`](crate::Styled::bg) and
+/// [`bg_gradient`](crate::Styled::bg_gradient) layer (the gradient is drawn
+/// over the color, like CSS `background-image` over `background-color`):
+/// `.hover(|s| s.bg_fill(accent))` turns a gradient button solid.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fill {
+    /// One color.
+    Solid(Color),
+    /// A gradient over nothing.
+    Gradient(Gradient),
+}
+
+impl From<Color> for Fill {
+    fn from(c: Color) -> Fill {
+        Fill::Solid(c)
+    }
+}
+
+impl From<Gradient> for Fill {
+    fn from(g: Gradient) -> Fill {
+        Fill::Gradient(g)
     }
 }
 

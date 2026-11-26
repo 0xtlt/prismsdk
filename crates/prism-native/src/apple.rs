@@ -1101,6 +1101,27 @@ pub mod motion {
         layer.addAnimation_forKey(&a, Some(&NSString::from_str("prism.transform")));
     }
 
+    /// Animates `layer`'s `key` (an animatable property: a gradient's
+    /// `colors`, `locations`, `startPoint`, `endPoint`) from `from` to its
+    /// current model value, with `t`'s curve (springs without overshoot:
+    /// colors and positions must not go past their ends).
+    pub fn animate_from(
+        layer: &CALayer,
+        key: &str,
+        from: &objc2::runtime::AnyObject,
+        t: Transition,
+    ) {
+        let a = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(key)));
+        unsafe { a.setFromValue(Some(from)) };
+        a.setDuration(t.duration.max(0.01) as f64);
+        a.setTimingFunction(Some(&timing(t)));
+        if t.delay > 0. {
+            a.setBeginTime(CACurrentMediaTime() + t.delay as f64);
+            a.setFillMode(unsafe { kCAFillModeBoth });
+        }
+        layer.addAnimation_forKey(&a, Some(&NSString::from_str(&format!("prism.{key}"))));
+    }
+
     /// The curve of `t`, springs overshooting.
     pub fn timing_overshoot(t: Transition) -> Retained<CAMediaTimingFunction> {
         let (x1, y1, x2, y2) = t.bezier();
