@@ -569,6 +569,11 @@ pub enum UiEvent {
     Change(NodeId, f64),
     /// A menu item was chosen (context menu, tray, app menu).
     MenuSelect(u64),
+    /// A clickable run of a rich input (a chip, a link) was clicked with
+    /// the pointer (#327): its item id, as [`MenuSelect`](Self::MenuSelect)
+    /// gives it, and its box in the field's coordinates, for
+    /// [`ClickEvent::span_rect`](crate::ClickEvent::span_rect).
+    RunClick(u64, crate::events::Rect),
     /// An alert button was chosen: (alert id, button index).
     AlertAction(u64, usize),
     /// A scroll view moved: (id, content offset, viewport height).
@@ -984,6 +989,10 @@ pub struct Reconciler {
     /// Nodes that name the element they control
     /// (`accessibility_controls`, #291): resolved after every render.
     controllers: IdSet<NodeId>,
+    /// Overlays anchored to a chip (#327): their config as the app built
+    /// it, the field's name and the chip's key, resolved after every
+    /// render.
+    anchored: IdMap<NodeId, (String, (String, String))>,
     /// Nodes created with `.autofocus()` in this render.
     autofocus: Vec<NodeId>,
     /// Runtime-mounted layers: (entity, its root node), bottom first.
@@ -1591,8 +1600,66 @@ impl Reconciler {
             });
         }
         self.resolve_controls(&mut patches);
+        self.resolve_anchors(&mut patches);
         self.push_commands(app, &mut patches);
         patches
+    }
+
+    /// The configs of overlays anchored to a chip (#327), once every node
+    /// is mounted: the field may come later in the tree, and its chips
+    /// move as its text changes.
+    fn resolve_anchors(&mut self, patches: &mut Vec<Patch>) {
+        let ids: Vec<NodeId> = self.anchored.keys().copied().collect();
+        for id in ids {
+            let (base, anchor) = &self.anchored[&id];
+            let config = self.anchored_config(base, anchor);
+            let Some(m) = self.nodes.get_mut(&id) else {
+                self.anchored.remove(&id);
+                continue;
+            };
+            if m.config != config {
+                m.config = config.clone();
+                patches.push(Patch::SetConfig { id, config });
+            }
+        }
+    }
+
+    /// `config` (an overlay's) anchored to `chip` (its field's name, its
+    /// key) as backends find it: the chip's character in its field, the
+    /// field while it shows no such chip, the parent without a field of
+    /// that name.
+    fn anchored_config(&self, config: &str, (field, key): &(String, String)) -> String {
+        let mut c = crate::controls::OverlayConfig::decode(config);
+        c.anchor = self.chip_anchor(field, key);
+        c.encode()
+    }
+
+    /// Where the chip `key` of the rich input named `field` is now (#327),
+    /// as [`Overlay::anchor_chip`](crate::Overlay::anchor_chip) anchors to
+    /// it.
+    pub fn chip_anchor(&self, field: &str, key: &str) -> crate::OverlayAnchor {
+        use crate::OverlayAnchor;
+        let Some(f) = self.node_named(field) else {
+            return OverlayAnchor::Parent;
+        };
+        let at = self.rich.get(&f).and_then(|r| {
+            let mut at = 0;
+            for (_, span) in &r.spans {
+                if span.chip_key() == Some(key) {
+                    return Some(at);
+                }
+                at += span.len();
+            }
+            None
+        });
+        match at {
+            Some(start) => OverlayAnchor::Text {
+                field: f,
+                start,
+                end: start + 1,
+            },
+            None => OverlayAnchor::Field(f),
+        }
     }
 
     /// The nodes controllers name (#291), once every node is mounted: the
@@ -1953,8 +2020,29 @@ impl Reconciler {
             edit,
             selection_group,
             across,
+            chip_anchor,
             ..
         } = *vnode;
+        // An overlay anchored to a chip (#327): its config carries the
+        // anchor as found now, and again after the render (the field may
+        // come later in the tree).
+        let config = match chip_anchor {
+            Some(chip) if kind == NodeKind::Overlay => {
+                let resolved = self.anchored_config(&config, &chip);
+                self.anchored.insert(id, (config, chip));
+                resolved
+            }
+            _ => {
+                self.anchored.remove(&id);
+                config
+            }
+        };
+        // A rich input with clickable runs reports its frame, so their
+        // clicks carry their box in the window too (#327).
+        let clickable_runs = kind == NodeKind::RichInput
+            && spans
+                .iter()
+                .any(|s| s.on_click.is_some() || s.run.href.is_some());
         app.window.watch_widths(&style);
         {
             let m = self.nodes.get_mut(&id).expect("node exists");
@@ -1979,6 +2067,7 @@ impl Reconciler {
             };
             let reports = on_layout.is_some()
                 || track_layout
+                || clickable_runs
                 || edit_mask & crate::edit_events::SELECTION_RECT != 0;
             if m.edit_mask != edit_mask {
                 m.edit_mask = edit_mask;
@@ -2905,6 +2994,7 @@ impl Reconciler {
             self.entity_roots.remove(&e.id());
         }
         self.controllers.remove(&id);
+        self.anchored.remove(&id);
         self.click.remove(&id);
         self.input.remove(&id);
         self.rich_input.remove(&id);

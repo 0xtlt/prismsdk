@@ -64,6 +64,27 @@ bumps the minor version). Every crate of the workspace shares one version.
   `prism::ChipIcon`, `attributes::CHIP_DATA_ATTRIBUTES`, prism-testing's
   `Host::chip(id, test_id)`, and prism-native's `chips` module (the box
   every native backend draws) are new.
+- A popover or dialog anchored to a chip of a `rich_input` (#327):
+  `.anchor_chip(field_id, chip_key)` opens it on its `.side(…)` of the
+  chip, lined up as `.align(…)` says, flipped without room and kept inside
+  the window. Every backend finds the chip in its own text layout (the
+  web's DOM range, the Apple text views' glyph boxes, Android's `Layout`,
+  GTK's iter locations, RichEdit's `ITextRange::GetRect`) and keeps the
+  overlay on it as the text wraps, the field scrolls or the window
+  resizes, through the caret anchor's placement (#328). Without the chip
+  it is anchored to the field, without the field to its parent. Backends
+  receive `OverlayAnchor::Text { field, start, end }` (the chip's
+  character) or `OverlayAnchor::Field(field)` (`anchor=text:…` and
+  `anchor=field:…` in the config string), and the field's view through
+  `Widgets::set_overlay_anchor`; `OverlayAnchor` is `#[non_exhaustive]`.
+- `ClickEvent::span_rect` and `span_frame` (#327): a click on a chip of a
+  `rich_input` says where the chip is, in the field and in the window's
+  layout coordinates. Backends report it as `UiEvent::RunClick`; remote
+  hosts add `x`, `y`, `w`, `h` to their `menu` event.
+- Windows: a tap on a chip with `on_click` in a `rich_input` reports it,
+  as on the other platforms.
+- The counter example's rich note opens a menu under a clicked chip
+  (open, remove).
 
 ### Changed
 
@@ -88,6 +109,11 @@ bumps the minor version). Every crate of the workspace shares one version.
 - Android measures a rich input with its runs, its chips as wide and tall
   as they are drawn: a field whose chips wrap to more lines is tall
   enough for them (#329).
+- **Breaking:** `ClickEvent` has `span_rect` and `span_frame` (code
+  building one with a struct literal adds them, or starts from
+  `ClickEvent::default()`), `UiEvent` the `RunClick` variant (backends
+  matching it exhaustively add the arm), and `VNode` a `chip_anchor`
+  field (#327).
 
 ### Fixed
 
@@ -102,6 +128,9 @@ bumps the minor version). Every crate of the workspace shares one version.
 - macOS: the `PRISM_TAP` test hook scrolls its target into view and does
   not click a text field that is already editing (the click went to the
   container's key handler instead of the field).
+- macOS: a popover anchored at a caret or a chip (#327, #328) no longer
+  crashes when it follows an anchor AppKit has not shown it at yet (the
+  anchor scrolled out of view): it is shown there instead of moved.
 
 ## 0.5.0 (2026-11-25)
 

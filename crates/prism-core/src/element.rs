@@ -242,6 +242,20 @@ pub struct ClickEvent {
     /// can extend a selection to it from elsewhere (another field of a
     /// [`text_flow`](crate::text_flow)). `None` elsewhere.
     pub text_offset: Option<usize>,
+    /// On a [`chip`](crate::chip) of a [`rich_input`] clicked with the
+    /// pointer (#327): the chip's box in the field's coordinates (its
+    /// top-left corner is `(0, 0)`, scrolling inside the field included),
+    /// to place something under it, on every platform that shows chips. A
+    /// clicked link run reports a box too on the web (the link's) and on
+    /// iOS (the character tapped). `None` elsewhere and from the keyboard.
+    /// To keep a popover on the chip while the text moves, anchor it with
+    /// [`Overlay::anchor`] instead.
+    pub span_rect: Option<crate::events::Rect>,
+    /// The same box in the window's layout coordinates, like
+    /// [`App::frame_of`](crate::App::frame_of): the field's frame plus
+    /// [`span_rect`](Self::span_rect). `None` until the field has been
+    /// laid out.
+    pub span_frame: Option<crate::events::Rect>,
 }
 
 impl Default for ClickEvent {
@@ -266,6 +280,8 @@ pub const ClickEvent: ClickEvent = ClickEvent {
     count: 1,
     button: crate::events::PointerButton::Primary,
     text_offset: None,
+    span_rect: None,
+    span_frame: None,
 };
 
 /// Fired on every edit of a text input, with its new content.
@@ -667,6 +683,10 @@ pub struct VNode {
     /// A menu opened below the element when it is clicked (#247), in
     /// place of `on_click`.
     pub click_menu: Option<crate::menu::Menu>,
+    /// The chip an overlay is anchored to (#327): its rich input's `.id`
+    /// and the chip's key, resolved into its config once the tree is
+    /// mounted ([`Overlay::anchor_chip`](crate::Overlay::anchor_chip)).
+    pub chip_anchor: Option<(String, String)>,
     /// Text put on the clipboard when the element is clicked (#323), on
     /// the web by the page during the click.
     pub copy_on_click: Option<String>,
@@ -832,6 +852,7 @@ impl VNode {
             link_root: false,
             context_menu: None,
             click_menu: None,
+            chip_anchor: None,
             copy_on_click: None,
             on_copied: None,
             key: None,
@@ -3355,8 +3376,10 @@ impl Overlay {
     /// `GetRectFromCharacterIndex` (a rich box's selection rectangle) as
     /// the `Flyout`'s position and exclusion rectangle. tvOS presents
     /// overlays as centered cards and ignores it, as do watchOS, sheets and
-    /// centered dialogs.
-    pub fn anchor(self, anchor: crate::OverlayAnchor) -> Self {
+    /// centered dialogs. To anchor it to a chip of a rich input, see
+    /// [`anchor_chip`](Overlay::anchor_chip).
+    pub fn anchor(mut self, anchor: crate::OverlayAnchor) -> Self {
+        self.0.chip_anchor = None;
         self.overlay_config(|c| {
             c.anchor = anchor;
             if c.kind == crate::OverlayKind::Dialog {
@@ -3369,6 +3392,73 @@ impl Overlay {
     /// parent (#328): [`anchor(OverlayAnchor::Caret)`](Overlay::anchor).
     pub fn anchor_caret(self) -> Self {
         self.anchor(crate::OverlayAnchor::Caret)
+    }
+
+    /// Anchors a popover or a dialog to a [`chip`](crate::chip) of a
+    /// [`rich_input`] (#327): the chip whose key is `key` in the field
+    /// whose `.id(…)` is `field` (the first one with that key). It opens
+    /// on its [`side`](Overlay::side) of the chip, lined up as
+    /// [`align`](Overlay::align) says, flips when there is no room and
+    /// stays inside the window, like any popover; it follows the chip when
+    /// the text wraps again, the field or the page scrolls, or the window
+    /// resizes. A dialog anchored this way is placed (below the chip
+    /// unless `side` says otherwise) and stays modal. A menu under a
+    /// clicked chip:
+    ///
+    /// ```
+    /// # use prism_core::prelude::*;
+    /// struct Note { spans: Vec<Span>, menu: Option<String> }
+    ///
+    /// impl Render for Note {
+    ///     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    ///         let spans = self.spans.iter().cloned().map(|s| match s.chip_key().map(str::to_string) {
+    ///             Some(key) => s.on_click(cx.listener(move |this, _: &ClickEvent, _| {
+    ///                 this.menu = Some(key.clone())
+    ///             })),
+    ///             None => s,
+    ///         });
+    ///         div()
+    ///             .child(rich_input(spans).id("note"))
+    ///             .children(self.menu.clone().map(|key| {
+    ///                 popover(text("Remove"))
+    ///                     .open(true)
+    ///                     .anchor_chip("note", key)
+    ///                     .on_dismiss(cx.listener(|this, _, _| this.menu = None))
+    ///             }))
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The runtime finds the chip on each render and hands the backend its
+    /// characters ([`OverlayAnchor::Text`](crate::OverlayAnchor::Text));
+    /// the backend finds their box in its own text layout when it lays the
+    /// overlay out, and places the overlay again as they move, like the
+    /// [caret](crate::OverlayAnchor::Caret): there is no round trip
+    /// through the app. While the field shows no such chip (deleted, its
+    /// key changed) the overlay stays open, anchored to the whole field
+    /// ([`OverlayAnchor::Field`](crate::OverlayAnchor::Field)): close it
+    /// from [`on_input`](RichInput::on_input) if it should go with the
+    /// chip. Without a field of that id it is anchored to its parent.
+    /// Sheets and keyboard bars ignore it.
+    ///
+    /// Web: the chip's element (else a DOM range over its character);
+    /// macOS: the chip's glyph box in the text view, as the `NSPopover`'s
+    /// positioning rect or the panel's anchor; iOS, iPadOS, visionOS: the
+    /// chip's glyph rectangle in the `UITextView`, as the popover's
+    /// `sourceRect` or the card's anchor; Linux: the chip's iter location
+    /// in the `GtkTextView`, as the `GtkPopover`'s pointing rectangle;
+    /// Android: the chip's box in the `EditText`'s `Layout`, placed again
+    /// before each frame; Windows: RichEdit's `ITextRange::GetRect`, as
+    /// the `Flyout`'s position and exclusion rectangle. tvOS presents
+    /// overlays as centered cards and watchOS as sheets: both ignore it.
+    pub fn anchor_chip(self, field: impl Into<String>, key: impl Into<String>) -> Self {
+        let mut o = self.anchor(crate::OverlayAnchor::Parent);
+        o.0.chip_anchor = Some((field.into(), key.into()));
+        o.overlay_config(|c| {
+            if c.kind == crate::OverlayKind::Dialog {
+                c.placed = true;
+            }
+        })
     }
 
     /// How a popover lines up with its anchor along its

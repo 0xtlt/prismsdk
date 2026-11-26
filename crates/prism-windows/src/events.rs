@@ -60,6 +60,8 @@ fn click_with(id: NodeId, d: Details) -> UiEvent {
             count: d.count,
             button: PointerButton::Primary,
             text_offset: None,
+            span_rect: None,
+            span_frame: None,
         },
     )
 }

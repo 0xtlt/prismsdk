@@ -265,11 +265,16 @@ pub(crate) fn mouse_down(tv: &PrismTextView, event: &NSEvent) -> bool {
             | NSEventModifierFlags::Shift,
     );
     // A click on a chip with `on_click` is the chip's (#115).
+    // With its box in the field (#327): a menu goes under it.
     if plain
-        && let Some(link) =
+        && let Some((link, index)) =
             crate::rich::chip_link_at(tv, tv.convertPoint_fromView(event.locationInWindow(), None))
     {
-        crate::imp::dispatch_or_defer(UiEvent::MenuSelect(link));
+        let rect = range_box(tv, NSRange::new(index, 1)).and_then(|r| in_field(tv, r));
+        crate::imp::dispatch_or_defer(match rect {
+            Some(rect) => UiEvent::RunClick(link, rect),
+            None => UiEvent::MenuSelect(link),
+        });
         return true;
     }
     let group = (plain && event.clickCount() == 1)
@@ -287,6 +292,8 @@ pub(crate) fn mouse_down(tv: &PrismTextView, event: &NSEvent) -> bool {
                 count: event.clickCount().max(1) as u32,
                 button: prism_core::PointerButton::Primary,
                 text_offset: Some(at),
+                span_rect: None,
+                span_frame: None,
             },
         ));
     }
@@ -361,8 +368,6 @@ pub(crate) fn forget(id: NodeId) {
 /// area's container): the selected glyphs' bounding box, or the caret's
 /// line box one point wide.
 fn selection_rect(tv: &NSTextView) -> Option<Rect> {
-    // SAFETY: the text area's scroll view sits in its container.
-    let field: Retained<NSView> = unsafe { tv.enclosingScrollView()?.superview() }?;
     let range = tv.selectedRange();
     let in_view = if range.length > 0 {
         let (lm, tc) = (unsafe { tv.layoutManager() }?, unsafe {
@@ -388,7 +393,15 @@ fn selection_rect(tv: &NSTextView) -> Option<Rect> {
         let r = tv.convertRect_fromView(window.convertRectFromScreen(screen), None);
         NSRect::new(r.origin, NSSize::new(r.size.width.max(1.), r.size.height))
     };
-    let r = field.convertRect_fromView(in_view, Some(tv));
+    in_field(tv, in_view)
+}
+
+/// `r`, a box in `tv`, in the field's coordinates (the text area's
+/// container, y down).
+fn in_field(tv: &NSTextView, r: NSRect) -> Option<Rect> {
+    // SAFETY: the text area's scroll view sits in its container.
+    let field: Retained<NSView> = unsafe { tv.enclosingScrollView()?.superview() }?;
+    let r = field.convertRect_fromView(r, Some(tv));
     // The field's view is flipped (Prism's): y grows downwards.
     let y = if field.isFlipped() {
         r.origin.y
@@ -400,5 +413,49 @@ fn selection_rect(tv: &NSTextView) -> Option<Rect> {
         y as f32,
         r.size.width as f32,
         r.size.height as f32,
+    ))
+}
+
+/// The box of the UTF-16 range `range` of `tv`'s text, in `tv`'s
+/// coordinates: its glyphs on the first line they are on (a chip: its
+/// attachment's box), the caret's line box one point wide when empty.
+/// `None` without a layout (#327).
+pub(crate) fn range_box(tv: &NSTextView, range: NSRange) -> Option<NSRect> {
+    let (lm, tc) = (unsafe { tv.layoutManager() }?, unsafe {
+        tv.textContainer()
+    }?);
+    lm.ensureLayoutForTextContainer(&tc);
+    let n = lm.numberOfGlyphs();
+    // SAFETY: a null `actualCharacterRange` is allowed.
+    let glyphs =
+        unsafe { lm.glyphRangeForCharacterRange_actualCharacterRange(range, std::ptr::null_mut()) };
+    let o = tv.textContainerOrigin();
+    let shift = |r: NSRect| NSRect::new(NSPoint::new(r.origin.x + o.x, r.origin.y + o.y), r.size);
+    if n == 0 {
+        let extra = lm.extraLineFragmentRect();
+        return Some(shift(NSRect::new(
+            extra.origin,
+            NSSize::new(1., extra.size.height),
+        )));
+    }
+    let first = glyphs.location.min(n - 1);
+    let mut line = NSRange::new(0, 0);
+    let frag = unsafe { lm.lineFragmentRectForGlyphAtIndex_effectiveRange(first, &mut line) };
+    if glyphs.length == 0 {
+        let x = if glyphs.location >= n {
+            let r = lm.boundingRectForGlyphRange_inTextContainer(NSRange::new(n - 1, 1), &tc);
+            r.origin.x + r.size.width
+        } else {
+            frag.origin.x + lm.locationForGlyphAtIndex(first).x
+        };
+        return Some(shift(NSRect::new(
+            NSPoint::new(x, frag.origin.y),
+            NSSize::new(1., frag.size.height),
+        )));
+    }
+    let end = (glyphs.location + glyphs.length).min(line.location + line.length);
+    let part = NSRange::new(first, end.saturating_sub(first).max(1));
+    Some(shift(
+        lm.boundingRectForGlyphRange_inTextContainer(part, &tc),
     ))
 }

@@ -255,7 +255,7 @@ self.sel = SelectionEvent::caret(at - 2);
 |---|---|
 | Web | a `contenteditable` drawn from runs the client owns: `beforeinput` edits them (typing, deletion by character, word or line, a chip as one character), an IME composition is the browser's and is read back when it ends, undo/redo step through the field's own edits |
 | macOS | `NSTextView` with the runs as attributes and each chip an `NSTextAttachment` (its icon and label drawn in a rounded box), each icon an attachment of its SF Symbol; a click on a chip with an `on_click` reports it; undo is AppKit's |
-| Windows | `RichEditBox` with the runs as RichEdit character formats and each chip a picture embedded in the text (`InsertImage`: its Segoe Fluent icon and label drawn in a rounded box with Direct2D, at the window's scale); undo is RichEdit's |
+| Windows | `RichEditBox` with the runs as RichEdit character formats and each chip a picture embedded in the text (`InsertImage`: its Segoe Fluent icon and label drawn in a rounded box with Direct2D, at the window's scale); a tap on a chip with an `on_click` reports it; undo is RichEdit's |
 | iOS, iPadOS, visionOS | `UITextView` with the runs as attributes and each chip or icon an `NSTextAttachment` (its SF Symbol and label drawn in a rounded box, again when the appearance changes); restyling the text the field shows changes its attributes in place, so the caret, the selection and a composition stay; a tap on a chip with an `on_click` reports it; undo is UIKit's |
 | Linux | `GtkTextView` with the runs as text tags and each chip or icon a widget at a child anchor (its symbol and label in a rounded box, on the text's baseline), which the caret, the selection and Backspace treat as one character; a click on a chip with an `on_click` reports it; undo is GTK's |
 | Android | `EditText` with the runs as spans, and each chip or icon a span drawn in place of its character (its glyph and label in a rounded box, on the baseline); restyling the text the field shows changes its spans in place, caret and IME composition untouched; a tap on a chip with an `on_click` reports it |
@@ -352,6 +352,49 @@ div() // laid out at the field's origin: no padding
 | Windows | RichEdit's `ITextRange::GetRect` | `CopyingToClipboard` / `CuttingToClipboard`: every type (`HTML Format`, MIME-named formats) | `Paste`: text, HTML, the clipboard's types and their text | Ctrl or Alt |
 | Android | the `Layout`'s line bounds | the field's copy / cut actions: plain text and HTML, the other types listed in the clip's description with their text in its extras | the paste action: text, HTML, the app's own types and their text (another app's `text/…` item as its text) | none (touch) |
 | tvOS, watchOS | none | none: no clipboard | none | none |
+
+### A menu under a clicked chip
+
+A chip opens a menu below itself: a mention's actions, a page link's preview (#327). Give the field an `.id(…)` and anchor the popover to the chip by its key with `.anchor_chip(field, key)`:
+
+```rust
+let spans = self.spans.iter().cloned().map(|s| match s.chip_key().map(str::to_string) {
+    Some(key) => s.on_click(cx.listener(move |this, _: &ClickEvent, _| this.menu = Some(key.clone()))),
+    None => s,
+});
+div()
+    .child(rich_input(spans).id("note").on_input(cx.listener(|this, e: &RichInputEvent, _| {
+        this.spans = e.spans.clone();
+        // The menu goes with its chip.
+        if let Some(key) = &this.menu
+            && !this.spans.iter().any(|s| s.chip_key() == Some(key.as_str()))
+        {
+            this.menu = None;
+        }
+    })))
+    .children(self.menu.clone().map(|key| {
+        popover(chip_actions(&key))
+            .open(true)
+            .anchor_chip("note", key)
+            .side(PopoverSide::Bottom)
+            .on_dismiss(cx.listener(|this, _, _| this.menu = None))
+    }))
+```
+
+- **Placement**: the popover opens on its `.side(…)` of the chip, lined up as `.align(…)` says, flipped without room and kept inside the window, like a popover on its parent. A dialog anchored this way is placed beside the chip (below it by default) and stays modal.
+- **Following the chip**: each backend finds the chip in its own text layout when it lays the window out, with no round trip through the app, the way it follows a caret anchor ([at the caret](dialogs-menus.md#at-the-caret-completion-lists)), so the popover stays on the chip as the text wraps again, the field or the page scrolls, or the window resizes.
+- **Without the chip**: while the field shows no chip with that key (the user deleted it, the app changed its key) the overlay stays open, anchored to the whole field; close it from `on_input` as above if it should go with the chip. Without a field of that `id`, it is anchored to its parent. Sheets and keyboard bars ignore the anchor.
+- **The chip's box**: the click on a chip also says where it is: `ClickEvent::span_rect` in the field's coordinates and `span_frame` in the window's layout coordinates (like `cx.frame_of`), to place something there yourself. `None` from the keyboard. Anchor a popover rather than placing it at `span_frame` when it should follow the chip.
+
+| | The chip's box | The anchored popover |
+|---|---|---|
+| Web | the chip element's (else the DOM range's) client rectangle | placed by the client at the chip, again after typing, scrolling and resizing |
+| macOS | the layout manager's glyph box | an `NSPopover` pointing at the chip (a `take_focus(false)` panel placed by Prism), placed again on text changes, scrolling and layout |
+| iOS, iPadOS, visionOS | the text view's glyph rectangle | the popover's source rectangle (the dialog's card beside it), placed again on editing, scrolling and layout |
+| Android | the chip's span in the `EditText`'s `Layout` | the `PopupWindow` (the dialog's window) placed at the chip again before each frame |
+| Linux | the chip widget's bounds in the field | the `GtkPopover`'s pointing rectangle, placed again each frame while shown |
+| Windows | RichEdit's `ITextRange::GetRect` | the `Flyout`'s position and exclusion rectangle, shown again there on text changes, scrolling and after a layout that moved it |
+| tvOS, watchOS | none: the field shows no chips | anchored to the field (tvOS) or its parent (watchOS) |
 
 ### One selection across several fields
 

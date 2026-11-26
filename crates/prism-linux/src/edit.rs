@@ -118,6 +118,8 @@ pub(crate) fn connect(id: NodeId, view: &gtk::TextView) {
                     count: n.max(1) as u32,
                     button: prism_core::PointerButton::Primary,
                     text_offset: Some(at),
+                    span_rect: None,
+                    span_frame: None,
                 },
             ));
         }

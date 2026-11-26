@@ -21,7 +21,7 @@ use objc2_app_kit::{
     NSWindowOrderingMode, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize, NSString,
+    NSArray, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSRectEdge, NSSize, NSString,
 };
 use prism_core::controls::{OverlayConfig, RadioConfig};
 use prism_core::{
@@ -667,6 +667,28 @@ pub struct MacOverlay {
     /// A placed dialog's event monitor (#79): presses outside close it and
     /// go no further, so the dialog stays modal.
     outside: RefCell<Option<Retained<AnyObject>>>,
+    /// The field it is anchored in (#327), for a config anchor naming one:
+    /// its view (a rich input's text view).
+    anchor_to: RefCell<Option<Retained<NSView>>>,
+}
+
+/// Scrolls `rect` (in `view`) into view in every scroll view around
+/// `view`: a field's own, then the page's (`scrollRectToVisible:` scrolls
+/// only the nearest).
+fn scroll_to_visible(view: &NSView, rect: NSRect) {
+    let mut view: Retained<NSView> = objc2::Message::retain(view);
+    let mut rect = rect;
+    loop {
+        view.scrollRectToVisible(rect);
+        let Some(outer) = view
+            .enclosingScrollView()
+            .and_then(|s| unsafe { s.superview() })
+        else {
+            return;
+        };
+        rect = outer.convertRect_fromView(rect, Some(&view));
+        view = outer;
+    }
 }
 
 impl MacOverlay {
@@ -686,6 +708,17 @@ impl MacOverlay {
             panel: RefCell::new(None),
             in_panel: Cell::new(false),
             outside: RefCell::new(None),
+            anchor_to: RefCell::new(None),
+        }
+    }
+
+    /// The field it is anchored in (#327): its view, or `None`. Placed
+    /// again there if shown.
+    pub(crate) fn set_anchor(&self, field: Option<Retained<NSView>>) {
+        let changed = *self.anchor_to.borrow() != field;
+        *self.anchor_to.borrow_mut() = field;
+        if changed {
+            self.follow_anchor();
         }
     }
 
@@ -860,6 +893,8 @@ impl MacOverlay {
         if parent.window().is_none() {
             return;
         }
+        // Its parent, a caret in it (#328) or a chip (#327).
+        let b = self.anchor_rect(&parent);
         let mtm = self.host.mtm();
         let popover = NSPopover::new(mtm);
         let vc = NSViewController::new(mtm);
@@ -876,30 +911,26 @@ impl MacOverlay {
             parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft;
         // AppKit shows no popover for an anchor scrolled out of view: bring
         // it, and the room the popover takes below or above it, into view.
-        let b = parent.bounds();
         let room = match c.side {
             PopoverSide::Bottom | PopoverSide::Top => size.height + 16.,
             PopoverSide::Trailing | PopoverSide::Leading => 0.,
         };
         let down = (c.side == PopoverSide::Bottom) == flipped;
-        parent.scrollRectToVisible(NSRect::new(
-            NSPoint::new(
-                b.origin.x,
-                if down { b.origin.y } else { b.origin.y - room },
+        scroll_to_visible(
+            &parent,
+            NSRect::new(
+                NSPoint::new(
+                    b.origin.x,
+                    if down { b.origin.y } else { b.origin.y - room },
+                ),
+                NSSize::new(b.size.width, b.size.height + room),
             ),
-            NSSize::new(b.size.width, b.size.height + room),
-        ));
+        );
         // On the asked side (AppKit flips it without room there), its
         // arrow on the part of the anchor it lines up with (#113).
+        let rect = popover_rect(b, size, c.side, c.align, rtl, flipped);
         popover.showRelativeToRect_ofView_preferredEdge(
-            popover_rect(
-                self.anchor_rect(&parent),
-                size,
-                c.side,
-                c.align,
-                rtl,
-                flipped,
-            ),
+            rect,
             &parent,
             popover_edge(c.side, rtl, flipped),
         );
@@ -1082,19 +1113,62 @@ impl MacOverlay {
     }
 
     /// What it goes against, in `parent`'s coordinates: `parent`'s bounds,
-    /// or the caret of a text field in it (#328).
+    /// the caret of a text field in it (#328), or characters of the field
+    /// it is anchored in (a chip, #327).
     fn anchor_rect(&self, parent: &NSView) -> NSRect {
         match self.config.get().anchor {
-            OverlayAnchor::Parent => parent.bounds(),
-            OverlayAnchor::Caret => caret_anchor(parent).unwrap_or_else(|| parent.bounds()),
+            OverlayAnchor::Caret => caret_anchor(parent),
+            anchor @ (OverlayAnchor::Text { .. } | OverlayAnchor::Field(_)) => {
+                self.field_anchor(parent, anchor)
+            }
+            _ => None,
         }
+        .unwrap_or_else(|| parent.bounds())
     }
 
-    /// An overlay at the caret follows it (#328): the panel moves, or the
-    /// popover's positioning rect (AppKit moves the popover with it).
-    pub(crate) fn follow_caret(&self) {
+    /// The box of the anchor's characters in its field's text view (a
+    /// chip's glyph box), kept inside the field's visible part, or the
+    /// whole field, in `parent`'s coordinates (#327). `None` without the
+    /// field in the window.
+    fn field_anchor(&self, parent: &NSView, anchor: OverlayAnchor) -> Option<NSRect> {
+        let view = self.anchor_to.borrow().clone()?;
+        view.window()?;
+        let tv = view.downcast_ref::<objc2_app_kit::NSTextView>();
+        // What shows of the field: a text view's scroll view.
+        let shown = tv.and_then(field_view).unwrap_or_else(|| view.clone());
+        let field = parent.convertRect_fromView(shown.bounds(), Some(&shown));
+        let (OverlayAnchor::Text { start, end, .. }, Some(tv)) = (anchor, tv) else {
+            return Some(field);
+        };
+        let text = tv.string().to_string();
+        let a = prism_native::fields::chars_to_utf16(&text, start);
+        let b = prism_native::fields::chars_to_utf16(&text, end);
+        let Some(chars) = crate::edit::range_box(tv, NSRange::new(a, b.saturating_sub(a))) else {
+            return Some(field);
+        };
+        let chars = parent.convertRect_fromView(chars, Some(tv));
+        let f = |r: NSRect| {
+            (
+                r.origin.x as f32,
+                r.origin.y as f32,
+                r.size.width as f32,
+                r.size.height as f32,
+            )
+        };
+        // Scrolled out of the field: on its nearest edge, as a caret.
+        let (x, y, w, h) = prism_core::controls::caret_in_field(f(chars), f(field));
+        Some(NSRect::new(
+            NSPoint::new(f64::from(x), f64::from(y)),
+            NSSize::new(f64::from(w), f64::from(h)),
+        ))
+    }
+
+    /// An overlay at a caret (#328) or a chip (#327) follows it: the panel
+    /// moves, or the popover's positioning rect (AppKit moves the popover
+    /// with it).
+    pub(crate) fn follow_anchor(&self) {
         let c = self.config.get();
-        if !self.presented.get() || c.anchor != OverlayAnchor::Caret {
+        if !self.presented.get() || c.anchor == OverlayAnchor::Parent {
             return;
         }
         if self.in_panel.get() {
@@ -1109,15 +1183,25 @@ impl MacOverlay {
         };
         let rtl =
             parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft;
+        let flipped = parent.isFlipped();
         let rect = popover_rect(
             self.anchor_rect(&parent),
             self.size.get(),
             c.side,
             c.align,
             rtl,
-            parent.isFlipped(),
+            flipped,
         );
-        if popover.positioningRect() != rect {
+        if !popover.isShown() {
+            // AppKit showed none while its anchor was out of view, and
+            // moving one it does not show throws: shown now, if it is in
+            // view.
+            popover.showRelativeToRect_ofView_preferredEdge(
+                rect,
+                &parent,
+                popover_edge(c.side, rtl, flipped),
+            );
+        } else if popover.positioningRect() != rect {
             popover.setPositioningRect(rect);
         }
     }
@@ -1536,10 +1620,10 @@ impl Interaction {
         self.follow(main);
     }
 
-    /// Overlays anchored at a caret follow it (#328).
-    pub(crate) fn follow_carets(&self) {
+    /// Overlays anchored at a caret (#328) or a chip (#327) follow it.
+    pub(crate) fn follow_anchors(&self) {
         for o in &self.overlays {
-            o.follow_caret();
+            o.follow_anchor();
         }
     }
 

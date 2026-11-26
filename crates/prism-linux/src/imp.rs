@@ -276,6 +276,7 @@ fn place_popover(
     parent: &gtk::Widget,
     config: prism_core::controls::OverlayConfig,
     size: (i32, i32),
+    field: Option<&AnchorField>,
 ) {
     use prism_core::PopoverSide as S;
     let rtl = parent.direction() == gtk::TextDirection::Rtl;
@@ -291,7 +292,7 @@ fn place_popover(
     if p.position() != position {
         p.set_position(position);
     }
-    let (ax, ay, w, h) = anchor_rect(parent, config, size.0, rtl);
+    let (ax, ay, w, h) = anchor_rect(parent, config, size.0, rtl, field);
     let rect = if config.side.beside() {
         // Start is the top (GTK's y goes down).
         let (o, l) = config.align.arrow_span(h as f64, size.1 as f64, true);
@@ -300,16 +301,16 @@ fn place_popover(
         let (o, l) = config.align.arrow_span(w as f64, size.0 as f64, !rtl);
         gdk::Rectangle::new(ax + o.round() as i32, ay, (l.round() as i32).max(1), h)
     };
-    // Placed again on every frame while it follows a caret: only when it
-    // moved.
+    // Placed again on every frame while it follows a caret or a chip: only
+    // when it moved.
     if p.pointing_to().1 != rect {
         p.set_pointing_to(Some(&rect));
     }
 }
 
 /// What a popover goes against, in `parent`'s coordinates `(x, y, width,
-/// height)`: `parent`'s whole box, or the caret of a text field in it
-/// (#328). GTK centers a popover on what it points at: a bare one (no
+/// height)`: `parent`'s whole box, the caret of a text field in it
+/// (#328), or characters of a rich input (a chip's, #327) or the field. GTK centers a popover on what it points at: a bare one (no
 /// arrow) lines up with the caret as `align` says when that spans its
 /// `width` from the caret.
 fn anchor_rect(
@@ -317,10 +318,17 @@ fn anchor_rect(
     config: prism_core::controls::OverlayConfig,
     width: i32,
     rtl: bool,
+    field: Option<&AnchorField>,
 ) -> (i32, i32, i32, i32) {
     let whole = (0, 0, parent.width(), parent.height());
-    if config.anchor != prism_core::OverlayAnchor::Caret {
-        return whole;
+    match config.anchor {
+        prism_core::OverlayAnchor::Caret => {}
+        prism_core::OverlayAnchor::Parent => return whole,
+        anchor => {
+            return field
+                .and_then(|f| field_anchor(parent, f, anchor))
+                .unwrap_or(whole);
+        }
     }
     let Some((x, y, w, h, caret)) = caret_anchor(parent) else {
         return whole;
@@ -336,6 +344,46 @@ fn anchor_rect(
         _ => x - width,
     };
     (left, y, width, h)
+}
+
+/// A field an overlay is anchored to (#327): its widget, and its text
+/// view (a rich input's, which lays its chips out).
+type AnchorField = (gtk::Widget, Option<gtk::TextView>);
+
+/// A field anchor's box in `parent`'s coordinates: the characters
+/// ([`OverlayAnchor::Text`](prism_core::OverlayAnchor::Text), a chip's) in
+/// its text view, kept inside the field's visible box; the whole field
+/// otherwise (also when they are not laid out).
+fn field_anchor(
+    parent: &gtk::Widget,
+    (field, view): &AnchorField,
+    anchor: prism_core::OverlayAnchor,
+) -> Option<(i32, i32, i32, i32)> {
+    let int = |(x, y, w, h): (f32, f32, f32, f32)| {
+        (
+            x.round() as i32,
+            y.round() as i32,
+            w.round().max(1.) as i32,
+            h.round().max(1.) as i32,
+        )
+    };
+    if let (prism_core::OverlayAnchor::Text { start, end, .. }, Some(v)) = (anchor, view)
+        && let Some(r) = crate::rich::range_box(v, start, end)
+    {
+        let bounds = (0., 0., v.width() as f32, v.height() as f32);
+        let chip = (
+            r.x() as f32,
+            r.y() as f32,
+            r.width() as f32,
+            r.height() as f32,
+        );
+        let (x, y, w, h) = prism_core::controls::caret_in_field(chip, bounds);
+        if let Some(at) = v.compute_point(parent, &gtk::graphene::Point::new(x, y)) {
+            return Some(int((at.x(), at.y(), w, h)));
+        }
+    }
+    let b = field.compute_bounds(parent)?;
+    Some(int((b.x(), b.y(), b.width(), b.height())))
 }
 
 /// The caret an overlay anchored at it goes against (#328), in `parent`'s
@@ -443,9 +491,33 @@ pub struct OverlayView {
     /// The press watcher on the anchor's window of a popover that leaves
     /// the focus to its anchor (#182).
     outside: RefCell<Option<(gtk::Window, gtk::GestureClick)>>,
+    /// The field it is anchored to instead of its parent (#327), when its
+    /// config names one.
+    anchor_to: RefCell<Option<AnchorField>>,
 }
 
 impl OverlayView {
+    /// Anchors it to a field (#327), or back to its parent, and places it
+    /// there again (the layouts that call it move the field).
+    fn set_anchor(&self, field: Option<AnchorField>) {
+        *self.anchor_to.borrow_mut() = field;
+        if let Some(p) = self.popover.borrow().as_ref()
+            && let Some(parent) = p.parent()
+        {
+            self.place(p, &parent);
+        }
+    }
+
+    fn place(&self, p: &gtk::Popover, parent: &gtk::Widget) {
+        place_popover(
+            p,
+            parent,
+            self.config.get(),
+            self.size.get(),
+            self.anchor_to.borrow().as_ref(),
+        );
+    }
+
     /// Builds the popover or window `config` asks for.
     fn configure(
         self: &Rc<Self>,
@@ -461,7 +533,7 @@ impl OverlayView {
             if let Some(p) = self.popover.borrow().as_ref() {
                 set_popover_mode(p, config);
                 if let Some(parent) = p.parent() {
-                    place_popover(p, &parent, config, self.size.get());
+                    self.place(p, &parent);
                 }
             }
             if let Some(w) = self.window.borrow().as_ref() {
@@ -488,16 +560,17 @@ impl OverlayView {
                 glib::Propagation::Proceed
             });
             p.add_controller(keys);
-            // At a caret (#328): follows it on every frame while shown,
-            // before the frame is drawn (typing, the cursor moving, the
-            // field or the page scrolling, the field moving).
+            // At a caret (#328) or a chip (#327): follows it on every
+            // frame while shown, before the frame is drawn (typing, the
+            // cursor moving, the text wrapping, the field or the page
+            // scrolling, the field moving).
             let weak = Rc::downgrade(self);
             p.add_tick_callback(move |p, _| {
                 if let Some(o) = weak.upgrade()
-                    && o.config.get().anchor == prism_core::OverlayAnchor::Caret
+                    && o.config.get().anchor != prism_core::OverlayAnchor::Parent
                     && let Some(parent) = p.parent()
                 {
-                    place_popover(p, &parent, o.config.get(), o.size.get());
+                    o.place(p, &parent);
                 }
                 glib::ControlFlow::Continue
             });
@@ -621,7 +694,7 @@ impl OverlayView {
                 p.set_parent(&parent);
             }
             if let Some(parent) = p.parent() {
-                place_popover(p, &parent, self.config.get(), self.size.get());
+                self.place(p, &parent);
                 p.popup();
                 self.watch_outside(p, &parent);
             }
@@ -695,7 +768,7 @@ impl OverlayView {
         if let Some(p) = self.popover.borrow().as_ref()
             && let Some(parent) = p.parent()
         {
-            place_popover(p, &parent, self.config.get(), (w, h));
+            self.place(p, &parent);
         }
         if let Some(win) = self.window.borrow().as_ref() {
             win.set_default_size(w, h);
@@ -737,6 +810,8 @@ fn click_event(
                 count,
                 button: prism_core::PointerButton::Primary,
                 text_offset: None,
+                span_rect: None,
+                span_frame: None,
             },
         ),
         Some(p) => UiEvent::ClickAt(id, p),
@@ -2235,6 +2310,7 @@ impl Widgets for Gtk {
                         open: Cell::new(false),
                         size: Cell::new((0, 0)),
                         outside: RefCell::new(None),
+                        anchor_to: RefCell::new(None),
                     }),
                 )
             }
@@ -3511,6 +3587,21 @@ impl Widgets for Gtk {
         }
     }
 
+    fn set_overlay_anchor(
+        &mut self,
+        overlay: &View,
+        anchor: Option<(View, prism_core::OverlayAnchor)>,
+    ) {
+        let View::Overlay(_, o) = overlay else {
+            return;
+        };
+        // A rich input's chip: its text view lays it out (#327).
+        o.set_anchor(anchor.map(|(field, _)| match &field {
+            View::TextArea(_, t) => (t.root.clone().upcast(), Some(t.view.clone())),
+            _ => (field.widget(), None),
+        }));
+    }
+
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
         match view {
             View::Scroll(_, _, content) => {
@@ -3859,6 +3950,8 @@ impl Widgets for Gtk {
                         count: n.max(1) as u32,
                         button,
                         text_offset: None,
+                        span_rect: None,
+                        span_frame: None,
                     },
                 ));
             });
@@ -4843,9 +4936,10 @@ fn activate(app: &gtk::Application) {
 /// `fill:@slider=40` drags the first slider), `submit:Placeholder` presses
 /// Enter in it, `type:Placeholder=text` types at the end of the text area
 /// with that placeholder (its other text and chips kept).
+/// `chip:Label` clicks the rich input chip labelled Label (its `on_click`).
 /// `PRISM_SCROLL=600` scrolls the visible scroll views.
-/// `PRISM_SNAPSHOT=out.png` then saves the window (and open popovers) and
-/// quits. `PRISM_DELAY` (seconds, default 1) before.
+/// `PRISM_SNAPSHOT=out.png` then saves the window (and open popovers, each
+/// logged with its place in the window) and quits. `PRISM_DELAY` (seconds, default 1) before.
 fn automation(window: gtk::ApplicationWindow) {
     let snapshot = std::env::var("PRISM_SNAPSHOT").ok();
     let clicks = std::env::var("PRISM_CLICK").ok();
@@ -4872,6 +4966,18 @@ fn automation(window: gtk::ApplicationWindow) {
                 fill(&root, placeholder, Some(&text.replace("\\n", "\n")))
             } else if let Some(placeholder) = title.strip_prefix("submit:") {
                 fill(&root, placeholder, None)
+            } else if let Some(label) = title.strip_prefix("chip:") {
+                crate::rich::click_chip(label)
+                    .inspect(|b| {
+                        eprintln!(
+                            "prism-linux: chip {label:?} at {:.0},{:.0} {:.0}x{:.0}",
+                            b.x(),
+                            b.y(),
+                            b.width(),
+                            b.height()
+                        )
+                    })
+                    .is_some()
             } else if let Some((placeholder, text)) =
                 title.strip_prefix("type:").and_then(|t| t.split_once('='))
             {
@@ -4936,6 +5042,27 @@ fn automation(window: gtk::ApplicationWindow) {
             let mut open = Vec::new();
             popovers(&window.clone().upcast(), &mut open);
             for p in &open {
+                // Where it points, in the window (#327): the test hooks
+                // compare it with the chip's box.
+                if let Some(pop) = p.downcast_ref::<gtk::Popover>()
+                    && let (true, r) = pop.pointing_to()
+                    && let Some(parent) = p.parent()
+                    && let Some(at) = parent.compute_point(
+                        &window,
+                        &gtk::graphene::Point::new(r.x() as f32, r.y() as f32),
+                    )
+                {
+                    eprintln!(
+                        "prism-linux: popover points at {},{} {}x{}, {:?}, {}x{}",
+                        at.x().round(),
+                        at.y().round(),
+                        r.width(),
+                        r.height(),
+                        pop.position(),
+                        p.width(),
+                        p.height()
+                    );
+                }
                 extra(p);
             }
             if let Some(app) = window.application() {

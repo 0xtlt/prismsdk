@@ -1633,6 +1633,18 @@ fn page_events_become_ui_events() {
         ev(json!({"t": "menu", "id": 65536})),
         Some(UiEvent::MenuSelect(65536))
     );
+    // A chip clicked with the pointer, with its box in the field (#327).
+    assert_eq!(
+        ev(json!({"t": "menu", "id": 65536, "x": 40, "y": 2.5, "w": 52, "h": 18})),
+        Some(UiEvent::RunClick(
+            65536,
+            prism_core::Rect::new(40., 2.5, 52., 18.)
+        ))
+    );
+    assert_eq!(
+        ev(json!({"t": "menu", "id": 65536, "x": 40, "y": "2", "w": 52, "h": 18})),
+        Some(UiEvent::MenuSelect(65536))
+    );
     // A frame the page measured (#192).
     assert_eq!(
         ev(json!({"t": "layout", "id": 3, "x": 0, "y": 40.5, "w": 300, "h": 24})),

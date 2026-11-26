@@ -219,7 +219,7 @@ pub fn selection_changed(view: &objc2_ui_kit::UIView) {
     // and a list open at the caret (#328).
     #[cfg(not(target_os = "tvos"))]
     crate::carets::refresh(id);
-    crate::imp::follow_carets();
+    crate::imp::follow_anchors();
     if !SELECT_EVENTS.with(|s| s.borrow().contains(&id)) {
         return;
     }

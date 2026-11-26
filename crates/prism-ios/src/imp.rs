@@ -128,10 +128,10 @@ fn with_state(f: impl FnOnce(&mut State)) {
     });
 }
 
-/// Overlays anchored at a caret follow it (#328): called as soon as a
-/// field's text, selection or scrolling changes.
-pub(crate) fn follow_carets() {
-    with_state(|s| s.renderer.widgets.follow_carets());
+/// Overlays anchored at a caret (#328) or a chip (#327) follow it: called
+/// as soon as a field's text, selection or scrolling changes.
+pub(crate) fn follow_anchors() {
+    with_state(|s| s.renderer.widgets.follow_anchors());
 }
 
 /// For the development hooks.
@@ -406,7 +406,7 @@ impl State {
             .layout(size.width as f32, size.height as f32, insets);
         self.renderer.widgets.attach_layers();
         // Overlays at a caret follow the field's new place (#328).
-        self.renderer.widgets.follow_carets();
+        self.renderer.widgets.follow_anchors();
         crate::interaction::claim_keys(&self.renderer.widgets.controller);
         // Elements that report their frame and moved (#192).
         let more = prism_native::report_layout(&mut self.runtime, &mut self.renderer);
@@ -560,7 +560,7 @@ define_class!(
             dispatch(UiEvent::Input(sender.tag() as NodeId, text));
             crate::interaction::refresh_suggestions(sender, self);
             // A list open at its caret follows it, before the frame (#328).
-            follow_carets();
+            follow_anchors();
             #[cfg(not(target_os = "tvos"))]
             crate::carets::refresh(sender.tag() as NodeId);
         }
@@ -953,7 +953,7 @@ define_class!(
         fn scroll_view_did_scroll(&self, s: &UIScrollView) {
             crate::layout::scrolled(s);
             // The field or the page scrolled under a list at a caret (#328).
-            follow_carets();
+            follow_anchors();
             if !crate::layout::scroll_events(s.tag() as NodeId) {
                 return;
             }
@@ -1718,10 +1718,10 @@ impl UiKit {
 impl UiKit {
     /// Puts the layers in their pass-through window, once the app's window
     /// is on screen, framed like the app's root.
-    /// Overlays anchored at a caret follow it (#328).
-    fn follow_carets(&self) {
+    /// Overlays anchored at a caret (#328) or a chip (#327) follow it.
+    fn follow_anchors(&self) {
         for o in self.overlays.values() {
-            o.follow_caret();
+            o.follow_anchor();
         }
     }
 
@@ -3869,6 +3869,19 @@ impl Widgets for UiKit {
             i.top = i.top.max((f.origin.y + f.size.height) as f32);
         }
         i
+    }
+
+    fn set_overlay_anchor(
+        &mut self,
+        overlay: &View,
+        anchor: Option<(View, prism_core::OverlayAnchor)>,
+    ) {
+        let View::Overlay(o) = overlay else {
+            return;
+        };
+        // A rich input's view is its text view, which lays its chips out
+        // (#327).
+        o.set_anchor(anchor.map(|(field, _)| field.ui().retain()));
     }
 
     fn overlay_viewport(&mut self, overlay: &View, _content: &View) -> Viewport {

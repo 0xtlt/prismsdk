@@ -337,10 +337,57 @@ final class PrismRich {
                 float slop = ViewConfiguration.get(e.getContext()).getScaledTouchSlop();
                 if (Math.abs(ev.getX() - downX) > slop || Math.abs(ev.getY() - downY) > slop) break;
                 Chip chip = chipAt(e, ev.getX(), ev.getY());
-                if (chip != null && chip.link >= 0) PrismHost.send(PrismHost.event("menu", chip.link));
+                if (chip != null && chip.link >= 0) {
+                    JSONObject m = PrismHost.event("menu", chip.link);
+                    // Its box in the field, in points (#327).
+                    int s = e.getText().getSpanStart(chip);
+                    float[] b = s < 0 ? null : boxOf(e, s, s + 1);
+                    if (b != null) {
+                        float d = PrismHost.density;
+                        try {
+                            m.put("x", b[0] / d).put("y", b[1] / d).put("w", (b[2] - b[0]) / d).put("h", (b[3] - b[1]) / d);
+                        } catch (org.json.JSONException ignored) { }
+                    }
+                    PrismHost.send(m);
+                }
                 break;
             }
         }
+    }
+
+    /** The box of characters `start..end` (in characters, as Rust counts
+     *  them) in the field's view, in pixels {left, top, right, bottom}: a
+     *  chip's own box, else the run on the first line it covers; null
+     *  before the field is laid out (#327). */
+    static float[] rangeBox(EditText e, int start, int end) {
+        Editable ed = e.getText();
+        int s = PrismInput.units(ed, start);
+        return boxOf(e, s, Math.max(s, PrismInput.units(ed, Math.max(start, end))));
+    }
+
+    /** {@link #rangeBox} in UTF-16 units, kept inside the field's visible area. */
+    static float[] boxOf(EditText e, int s, int en) {
+        Layout layout = e.getLayout();
+        if (layout == null) return null;
+        Editable ed = e.getText();
+        s = Math.max(0, Math.min(s, ed.length()));
+        en = Math.max(s, Math.min(en, ed.length()));
+        int line = layout.getLineForOffset(s);
+        float x0 = layout.getPrimaryHorizontal(s), x1;
+        Chip[] chips = en == s + 1 ? ed.getSpans(s, en, Chip.class) : new Chip[0];
+        if (chips.length > 0) x1 = x0 + chips[0].width(e.getPaint());
+        else if (en > s && layout.getLineForOffset(en) == line) x1 = layout.getPrimaryHorizontal(en);
+        else if (en > s) x1 = layout.getLineRight(line);
+        else x1 = x0;
+        float dx = e.getTotalPaddingLeft() - e.getScrollX(), dy = e.getTotalPaddingTop() - e.getScrollY();
+        float l = Math.min(x0, x1) + dx, r = Math.max(x0, x1) + dx;
+        float t = layout.getLineTop(line) + dy, b = layout.getLineBottom(line) + dy;
+        float w = e.getWidth(), h = e.getHeight();
+        l = Math.max(0, Math.min(l, w));
+        r = Math.max(l, Math.min(r, w));
+        t = Math.max(0, Math.min(t, h));
+        b = Math.max(t, Math.min(b, h));
+        return new float[]{l, t, r, b};
     }
 
     /** The chip drawn at view point (x, y), if any. */

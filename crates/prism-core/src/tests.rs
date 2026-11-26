@@ -3166,6 +3166,8 @@ fn clicks_say_keys_and_count_and_key_ups_are_heard() {
         count: 2,
         button: crate::PointerButton::Primary,
         text_offset: None,
+        span_rect: None,
+        span_frame: None,
     };
     find_text(
         &rt.dispatch(UiEvent::ClickWith(row, click)),

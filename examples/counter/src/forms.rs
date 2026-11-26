@@ -32,6 +32,8 @@ pub struct Forms {
     note: Vec<Span>,
     note_sel: SelectionEvent,
     toolbar: Option<Rect>,
+    /// The chip whose menu is open, by key (#327): the menu sits under it.
+    chip_menu: Option<String>,
     note_log: String,
     /// Styled chips (#329): the field's runs and the chip opened by a
     /// click or a tap.
@@ -73,6 +75,7 @@ impl Default for Forms {
             note: Vec::new(),
             note_sel: SelectionEvent::default(),
             toolbar: None,
+            chip_menu: None,
             note_log: String::new(),
             chips: Vec::new(),
             chip_open: None,
@@ -476,25 +479,34 @@ impl Forms {
     /// A rich note (#217): a Bold button above the selected words, copies
     /// with Markdown, pastes and ⌘-clicks reported.
     fn note(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // A tap or click on a chip opens its page (here, says so).
+        // A tap or click on a chip opens a menu under it (#327).
         let spans: Vec<Span> = self
             .note
             .iter()
-            .map(|s| match s.chip_label() {
-                Some(label) if s.is_chip() => {
-                    let label = label.to_string();
+            .map(|s| match s.chip_key() {
+                Some(key) => {
+                    let key = key.to_string();
                     s.clone()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, cx| {
-                            this.note_log = strings::forms_note_chip(cx, &label);
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _| {
+                            this.chip_menu = Some(key.clone());
                         }))
                 }
-                _ => s.clone(),
+                None => s.clone(),
             })
             .collect();
         let field = rich_input(spans)
+            .id("forms-note")
             .placeholder(strings::forms_note_placeholder(cx))
             .accessibility_label(strings::forms_note(cx))
-            .on_input(cx.listener(|this, e: &RichInputEvent, _| this.note = e.spans.clone()))
+            .on_input(cx.listener(|this, e: &RichInputEvent, _| {
+                this.note = e.spans.clone();
+                // Its chip deleted: the menu goes with it.
+                if let Some(key) = &this.chip_menu
+                    && !this.note.iter().any(|s| s.chip_key() == Some(key))
+                {
+                    this.chip_menu = None;
+                }
+            }))
             .on_select(cx.listener(|this, e: &SelectionEvent, _| this.note_sel = *e))
             .selection(self.note_sel)
             .on_selection_rect(cx.listener(|this, e: &SelectionRectEvent, _| {
@@ -542,6 +554,7 @@ impl Forms {
                         )
                 })),
             )
+            .children(self.chip_menu.clone().map(|key| self.chip_menu(&key, cx)))
             .child(text(self.note_log.clone()).text_size(12.))
     }
 
@@ -675,6 +688,49 @@ impl Forms {
                             .on_dismiss(cx.listener(|this, _, _| this.completion_closed = true))
                     })),
             )
+    }
+
+    /// The menu of the note's chip `key` (#327): a popover anchored to the
+    /// chip, under it, following it as the text moves.
+    fn chip_menu(&self, key: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let label = self
+            .note
+            .iter()
+            .find(|s| s.chip_key() == Some(key))
+            .and_then(|s| s.chip_label())
+            .unwrap_or_default()
+            .to_string();
+        let open = {
+            let label = label.clone();
+            cx.listener(move |this, _: &ClickEvent, cx| {
+                this.note_log = strings::forms_note_chip(cx, &label);
+                this.chip_menu = None;
+            })
+        };
+        let remove = {
+            let key = key.to_string();
+            cx.listener(move |this, _: &ClickEvent, _| {
+                this.note.retain(|s| s.chip_key() != Some(key.as_str()));
+                this.chip_menu = None;
+            })
+        };
+        popover(
+            div()
+                .flex_col()
+                .gap(4.)
+                .p(4.)
+                .child(ui::button(strings::forms_note_chip_open(cx, &label)).on_click(open))
+                .child(
+                    ui::button(strings::forms_note_chip_remove(cx))
+                        .variant(ui::Variant::Ghost)
+                        .on_click(remove),
+                ),
+        )
+        .open(true)
+        .anchor_chip("forms-note", key)
+        .side(PopoverSide::Bottom)
+        .size(220., 0.)
+        .on_dismiss(cx.listener(|this, _, _| this.chip_menu = None))
     }
 
     /// A paragraph other people edit too (#240): Camille's caret with her
