@@ -79,7 +79,7 @@ While the focus is in the element, those keys reach its `on_key_down` (and its a
 | Linux (GTK) | the window's capture-phase key controller stops it |
 | Windows | the message loop drops the key message before XAML sees it |
 
-**Chords**: an entry can name modifiers before its key, `cmd+`, `ctrl+`, `alt+` and `shift+` (#294): `consume_keys(&["cmd+b", "cmd+i", "cmd+shift+z"])` takes ⌘B from the field (the browser's bold, Firefox's bookmarks sidebar) only with exactly those modifiers held, the letter whatever its case. `cmd` is ⌘ on Apple platforms and Ctrl elsewhere (`Modifiers::command()`), `ctrl` the other control key (⌃ on Apple platforms, the Windows key elsewhere). An entry without modifiers takes its key whatever is held, as before. On iOS, iPadOS and visionOS, chords are key commands too (letters, digits and the named keys, with ⌘, ⌘⇧, ⌃, ⌥ or ⌥⇧).
+**Chords**: an entry can name modifiers before its key, `cmd+`, `ctrl+`, `alt+` and `shift+` (#294): `consume_keys(&["cmd+b", "cmd+i", "cmd+shift+z"])` takes ⌘B from the field (the browser's bold, Firefox's bookmarks sidebar) only with exactly those modifiers held, the letter whatever its case. `cmd` is ⌘ on Apple platforms and Ctrl elsewhere (`Modifiers::command()`), `ctrl` the other control key (⌃ on Apple platforms, the Windows key elsewhere). An entry without modifiers takes its key whatever is held, as before. On iOS, iPadOS and visionOS, chords are key commands too (letters, digits and the named keys, with ⌘, ⌘⇧, ⌃, ⌥ or ⌥⇧). An app with its own undo consumes `cmd+z`, `cmd+shift+z` and `cmd+y` around its text fields, so their own undo does not run on the same keystroke ([Rich inputs › Undo](forms.md), #338).
 
 ### Leaving a field at its edges
 

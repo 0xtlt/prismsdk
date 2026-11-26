@@ -13,6 +13,11 @@
 //! its chips as plain U+FFFC characters that become anchors here. Without
 //! the app's hooks, a copy is plain text with each chip's label, and a
 //! paste is plain text without chips.
+//!
+//! GTK's undo history keeps characters, not anchors: undoing the deletion
+//! of a chip puts back a plain U+FFFC. It becomes an anchor again while the
+//! undo applies, when the history records nothing, so the history (and the
+//! redo) survives the app's runs that show the chip again (#338).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -95,6 +100,26 @@ pub(crate) fn range_box(view: &gtk::TextView, start: usize, end: usize) -> Optio
 
 /// Makes text area `view` of node `id` a rich input.
 pub(crate) fn setup(id: NodeId, view: &gtk::TextView) {
+    let b = view.buffer();
+    // While an undo or a redo applies (between the handlers before and
+    // after the signal's own).
+    let applying = Rc::new(Cell::new(false));
+    for after in [false, true] {
+        for signal in ["undo", "redo"] {
+            let applying = applying.clone();
+            b.connect_local(signal, after, move |_| {
+                applying.set(!after);
+                None
+            });
+        }
+    }
+    let busy = Cell::new(false);
+    b.connect_changed(move |b| {
+        if applying.get() && !busy.replace(true) {
+            anchor_objects(b);
+            busy.set(false);
+        }
+    });
     RICH.with(|r| {
         r.borrow_mut().insert(
             id,
@@ -140,6 +165,30 @@ pub(crate) fn set_style(id: NodeId, style: &Style) {
 /// The appearance changed: colors take their light or dark variant.
 pub(crate) fn restyle_all() {
     RICH.with(|r| r.borrow_mut().values_mut().for_each(show));
+}
+
+/// Makes each plain U+FFFC of `b` (a chip's character an undo put back)
+/// an anchor again, the characters unchanged: the app's runs then show
+/// the chip in it.
+fn anchor_objects(b: &gtk::TextBuffer) {
+    let plain: Vec<i32> = slice(b)
+        .chars()
+        .enumerate()
+        .filter(|&(_, c)| c == OBJECT_CHAR)
+        .map(|(i, _)| i as i32)
+        .filter(|&i| b.iter_at_offset(i).child_anchor().is_none())
+        .collect();
+    if plain.is_empty() {
+        return;
+    }
+    // Not the user's edit: the field's text, for the app, is the same.
+    crate::imp::updating(|| {
+        for at in plain {
+            let (mut from, mut to) = (b.iter_at_offset(at), b.iter_at_offset(at + 1));
+            b.delete(&mut from, &mut to);
+            b.create_child_anchor(&mut b.iter_at_offset(at));
+        }
+    });
 }
 
 /// The buffer's characters, a chip as its U+FFFC (unlike `text()`).
@@ -262,7 +311,9 @@ fn chip_at(
     let anchor = match b.iter_at_offset(at).child_anchor() {
         Some(a) => a,
         None => {
-            // Not an edit to undo: the app's value.
+            // Not an edit to undo: the app's new value, whose `set_text`
+            // started the history over already (an undo's characters are
+            // anchors by now, `anchor_objects`).
             b.begin_irreversible_action();
             let (mut from, mut to) = (b.iter_at_offset(at), b.iter_at_offset(at + 1));
             b.delete(&mut from, &mut to);
@@ -625,6 +676,40 @@ pub(crate) fn attributes(id: NodeId) -> Option<pango::AttrList> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undoing_a_chips_deletion_keeps_the_history() {
+        // GTK needs a display (Xvfb in the Linux image): skipped without.
+        if gtk::init().is_err() {
+            return;
+        }
+        let view = gtk::TextView::new();
+        setup(1, &view);
+        let b = view.buffer();
+        b.set_text("ab");
+        b.create_child_anchor(&mut b.iter_at_offset(1));
+        assert_eq!(slice(&b), "a\u{fffc}b");
+        // Backspace after the chip.
+        b.place_cursor(&b.iter_at_offset(2));
+        b.begin_user_action();
+        let (mut from, mut to) = (b.iter_at_offset(1), b.iter_at_offset(2));
+        b.delete_interactive(&mut from, &mut to, true);
+        b.end_user_action();
+        assert_eq!(slice(&b), "ab");
+        b.undo();
+        assert_eq!(slice(&b), "a\u{fffc}b");
+        assert!(
+            b.iter_at_offset(1).child_anchor().is_some(),
+            "an anchor again, for the chip's widget"
+        );
+        assert!(b.can_redo(), "the redo survives");
+        b.redo();
+        assert_eq!(slice(&b), "ab");
+        assert!(b.can_undo());
+        b.undo();
+        assert!(b.iter_at_offset(1).child_anchor().is_some());
+        forget(1);
+    }
 
     #[test]
     fn a_chip_shows_its_symbol_and_label_and_copies_its_label() {

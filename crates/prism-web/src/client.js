@@ -2548,6 +2548,16 @@
       if (!el._composing && !e.isComposing) richReadBack(el, id);
     });
     el.addEventListener("keydown", (e) => {
+      // ⌘Z, ⌘⇧Z (and Ctrl+Y off Apple platforms): the field's own history,
+      // run here so the browser's undo never runs too (#338). A key the app
+      // consumes (`consume_keys`) or a menu shortcut never gets here.
+      const undo = historyKey(e);
+      if (undo !== null) {
+        if (e.defaultPrevented || e.isComposing || el._composing) return;
+        e.preventDefault();
+        richHistory(el, id, undo);
+        return;
+      }
       if (e.key !== "Enter" || e.isComposing || el._composing) return;
       e.preventDefault();
       // Shift+Enter: a line break; Enter: the app's (submit, split…).
@@ -2558,10 +2568,11 @@
     el.addEventListener("compositionend", () => {
       el._composing = false;
       richReadBack(el, id);
-      const runs = el._deferred, sel = el._deferredSel;
+      const runs = el._deferred, sel = el._deferredSel, follows = el._deferredFollows;
       delete el._deferred;
       delete el._deferredSel;
-      if (runs !== undefined) richApply(el, runs);
+      delete el._deferredFollows;
+      if (runs !== undefined) richApply(el, runs, follows);
       if (sel) applyFieldSelection(el, sel[0], sel[1]);
     });
     // Copy and cut as plain text (a chip as its label, an icon its glyph).
@@ -2801,6 +2812,21 @@
     replaceAtCaret();
   }
 
+  /** Whether key event `e` is undo (`true`), redo (`false`) or neither
+   *  (`null`): ⌘Z and ⌘⇧Z, `cmd` being ⌘ on Apple platforms and Ctrl
+   *  elsewhere, where Ctrl+Y redoes too. */
+  function historyKey(e) {
+    if (!e.key) return null;
+    const cmd = applePlatform ? e.metaKey : e.ctrlKey;
+    const other = applePlatform ? e.ctrlKey : e.metaKey;
+    if (!cmd || other || e.altKey) return null;
+    // The letter, or the key where it sits on a non-Latin layout.
+    const k = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : ({ KeyZ: "z", KeyY: "y" })[e.code] || "";
+    if (k === "z") return !e.shiftKey;
+    if (k === "y" && !e.shiftKey && !applePlatform) return false;
+    return null;
+  }
+
   function richHistory(el, id, undo) {
     const from = undo ? el._undo : el._redo, to = undo ? el._redo : el._undo;
     const step = from.pop();
@@ -2865,21 +2891,35 @@
       }
       return;
     }
-    if (el._composing && document.activeElement === el) { el._deferred = runs; return; }
+    // Runs that answer the user's edit (one still in flight): the app's
+    // take on it (normalised runs, a markdown shortcut), not new content.
+    const follows = !!(sent && sent.length);
+    if (el._composing && document.activeElement === el) { el._deferred = runs; el._deferredFollows = follows; return; }
     delete el._deferred;
-    richApply(el, runs);
+    richApply(el, runs, follows);
   }
 
-  /** Shows the app's `runs`, keeping the caret's distance from the end. */
-  function richApply(el, runs) {
+  /**
+   * Shows the app's `runs`, keeping the caret's distance from the end.
+   * Runs that answer the user's edit (`follows`) join that edit: the
+   * history stays, and ⌘Z goes back to before the edit (#338). Other runs
+   * are new content, as a text area's new `value`: the history starts over.
+   */
+  function richApply(el, runs, follows) {
     if (el._sent) el._sent.length = 0;
     const next = richNormalize(richRuns(runs));
     const focused = document.activeElement === el;
     const sel = focused ? richSelection(el) : null;
-    const oldLen = clen(richText(el._model));
+    const oldText = richText(el._model);
+    const oldLen = clen(oldText);
     el._model = next;
-    el._undo.length = 0;
-    el._redo.length = 0;
+    if (!follows) {
+      el._undo.length = 0;
+      el._redo.length = 0;
+    }
+    // Other characters (or new content): what is typed next is a step of
+    // its own.
+    if (!follows || richText(next) !== oldText) el._lastEdit = null;
     richDraw(el);
     if (sel) {
       const caret = Math.max(0, clen(richText(next)) - (oldLen - sel[1]));

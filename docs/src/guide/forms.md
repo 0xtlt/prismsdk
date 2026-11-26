@@ -250,10 +250,27 @@ self.sel = SelectionEvent::caret(at - 2);
 - **Enter** calls `on_submit` and inserts nothing; **Shift+Enter** inserts a line break (`'\n'`). The field wraps like a paragraph and grows with its text (one line at least; cap it with `max_h`).
 - **Click to edit**: with no padding, border or background (`.p(0.).border(0.).bg(transparent)`), a `rich_input` or `text_area` with the same typography as a `text()` draws its text exactly where the text was: same start, same line height (`line_height`), same baseline, on every line (#179). Swap one for the other and nothing moves.
 - **App values and echoes** follow the text field rules: runs the user just typed, rendered back, leave the field alone (caret, IME composition); other runs are the app's and replace the field's, the caret keeping its distance from the end, after the composition on the web. `.selection(..)` after them places the caret.
+- **Undo** is the field's own (#338): ⌘Z and ⌘⇧Z on Apple platforms, Ctrl+Z with Ctrl+Shift+Z or Ctrl+Y elsewhere (as each platform binds them; the web takes both), and the Edit menu's Undo and Redo. Runs the app renders back with the same characters (an echo, a restyle, runs normalized after the user deleted a chip) keep the history on every platform: ⌘Z after deleting a chip brings it back, and the app hears it in `on_input` as any edit. Runs with other characters are new content, like a text area's new `value`: the history starts over, so ⌘Z never steps back into what they replaced (another note's text). On the web, where Prism keeps the history itself, runs with other characters that answer the user's edit (a Markdown shortcut turning `# ` into a heading) join that edit instead: ⌘Z goes back to before it.
+- **An app with its own undo** (a document history, a canvas) takes those keys from the field, or two undo systems act on one keystroke: the field's and the app's. Consume them on the field or on any view around it, the root view for the whole window, and handle them there:
+
+  ```rust
+  div()
+      .child(rich_input(self.spans.clone()))
+      .consume_keys(&["cmd+z", "cmd+shift+z", "cmd+y"])
+      .on_key_down(cx.listener(|this, e: &KeyEvent, cx| {
+          if e.is("z") && e.modifiers.command() {
+              if e.modifiers.shift { this.redo(cx) } else { this.undo(cx) }
+          } else if e.is("y") && e.modifiers.command() {
+              this.redo(cx)
+          }
+      }))
+  ```
+
+  Consumed, the keys reach the app's `on_key_down` (and the global handlers) and the field's undo never runs, nor the browser's. Not consumed, the field undoes once (on the web its own history runs and the browser's is prevented) and an `on_global_key_down` still hears the key: the app must then leave ⌘Z alone. An app menu item with the shortcut (`MenuItem::new("Undo").shortcut("cmd+z")`) takes it from the field too ([Dialogs and menus](dialogs-menus.md)).
 
 | | Rich editing |
 |---|---|
-| Web | a `contenteditable` drawn from runs the client owns: `beforeinput` edits them (typing, deletion by character, word or line, a chip as one character), an IME composition is the browser's and is read back when it ends, undo/redo step through the field's own edits |
+| Web | a `contenteditable` drawn from runs the client owns: `beforeinput` edits them (typing, deletion by character, word or line, a chip as one character), an IME composition is the browser's and is read back when it ends, undo/redo step through the field's own edits (the keys handled on `keydown`, so the browser's own undo never runs too) |
 | macOS | `NSTextView` with the runs as attributes and each chip an `NSTextAttachment` (its icon and label drawn in a rounded box), each icon an attachment of its SF Symbol; a click on a chip with an `on_click` reports it; undo is AppKit's |
 | Windows | `RichEditBox` with the runs as RichEdit character formats and each chip a picture embedded in the text (`InsertImage`: its Segoe Fluent icon and label drawn in a rounded box with Direct2D, at the window's scale); a tap on a chip with an `on_click` reports it; undo is RichEdit's |
 | iOS, iPadOS, visionOS | `UITextView` with the runs as attributes and each chip or icon an `NSTextAttachment` (its SF Symbol and label drawn in a rounded box, again when the appearance changes); restyling the text the field shows changes its attributes in place, so the caret, the selection and a composition stay; a tap on a chip with an `on_click` reports it; undo is UIKit's |

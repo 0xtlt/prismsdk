@@ -9,7 +9,8 @@
 //! same turn: when they hold the text the field shows (the echo of the
 //! typing, or the app restyling it), their formats are applied in place,
 //! the caret, the selection and the undo history untouched; other runs
-//! replace the text, the caret keeping its distance from the end (#73).
+//! replace the text, the caret keeping its distance from the end (#73),
+//! and start the undo history over, as on the other platforms (#338).
 //! Return calls `on_submit`, Shift+Return inserts a line break; pastes
 //! are plain text. A chip (#115) is a picture embedded in the text
 //! (`chips.rs`): one character the caret jumps over.
@@ -247,7 +248,14 @@ impl Rich {
             let field = crate::carets::Field::Rich(self.element.clone());
             crate::carets::set_underlines(self.id, &outer, field, marks, pal);
         }
-        self.place_chips(&doc, &st, &runs, pal, scale, replaced)
+        self.place_chips(&doc, &st, &runs, pal, scale, replaced)?;
+        if replaced {
+            // New characters from the app (with their formats and chip
+            // pictures): Ctrl+Z does not step back into what they replaced
+            // (#338).
+            doc.ClearUndoRedoHistory()?;
+        }
+        Ok(())
     }
 
     /// The theme changed: the runs' colors (and chips) again.
