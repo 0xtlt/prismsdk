@@ -280,24 +280,144 @@ fn place_popover(
     use prism_core::PopoverSide as S;
     let rtl = parent.direction() == gtk::TextDirection::Rtl;
     // GTK's left and right are the screen's.
-    p.set_position(match config.side {
+    let position = match config.side {
         S::Bottom => gtk::PositionType::Bottom,
         S::Top => gtk::PositionType::Top,
         S::Trailing if rtl => gtk::PositionType::Left,
         S::Trailing => gtk::PositionType::Right,
         S::Leading if rtl => gtk::PositionType::Right,
         S::Leading => gtk::PositionType::Left,
-    });
-    let (w, h) = (parent.width(), parent.height());
+    };
+    if p.position() != position {
+        p.set_position(position);
+    }
+    let (ax, ay, w, h) = anchor_rect(parent, config, size.0, rtl);
     let rect = if config.side.beside() {
         // Start is the top (GTK's y goes down).
         let (o, l) = config.align.arrow_span(h as f64, size.1 as f64, true);
-        gdk::Rectangle::new(0, o.round() as i32, w, (l.round() as i32).max(1))
+        gdk::Rectangle::new(ax, ay + o.round() as i32, w, (l.round() as i32).max(1))
     } else {
         let (o, l) = config.align.arrow_span(w as f64, size.0 as f64, !rtl);
-        gdk::Rectangle::new(o.round() as i32, 0, (l.round() as i32).max(1), h)
+        gdk::Rectangle::new(ax + o.round() as i32, ay, (l.round() as i32).max(1), h)
     };
-    p.set_pointing_to(Some(&rect));
+    // Placed again on every frame while it follows a caret: only when it
+    // moved.
+    if p.pointing_to().1 != rect {
+        p.set_pointing_to(Some(&rect));
+    }
+}
+
+/// What a popover goes against, in `parent`'s coordinates `(x, y, width,
+/// height)`: `parent`'s whole box, or the caret of a text field in it
+/// (#328). GTK centers a popover on what it points at: a bare one (no
+/// arrow) lines up with the caret as `align` says when that spans its
+/// `width` from the caret.
+fn anchor_rect(
+    parent: &gtk::Widget,
+    config: prism_core::controls::OverlayConfig,
+    width: i32,
+    rtl: bool,
+) -> (i32, i32, i32, i32) {
+    let whole = (0, 0, parent.width(), parent.height());
+    if config.anchor != prism_core::OverlayAnchor::Caret {
+        return whole;
+    }
+    let Some((x, y, w, h, caret)) = caret_anchor(parent) else {
+        return whole;
+    };
+    if !(caret && config.bare && !config.side.beside() && width > 0) {
+        return (x, y, w, h);
+    }
+    use prism_core::PopoverAlign as A;
+    let left = match config.align {
+        A::Center => return (x, y, w, h),
+        A::Start if !rtl => x,
+        A::End if rtl => x,
+        _ => x - width,
+    };
+    (left, y, width, h)
+}
+
+/// The caret an overlay anchored at it goes against (#328), in `parent`'s
+/// coordinates, and whether it is a caret: the cursor of the text field
+/// inside `parent` that has the focus (a text input's `GtkText` cursor
+/// extents, a text view's insert mark location), kept inside the field's
+/// visible box; the whole first field there when none has the focus;
+/// `None` without one.
+fn caret_anchor(parent: &gtk::Widget) -> Option<(i32, i32, i32, i32, bool)> {
+    let tuple = |r: gtk::graphene::Rect| (r.x(), r.y(), r.width(), r.height());
+    let int = |(x, y, w, h): (f32, f32, f32, f32), caret| {
+        Some((
+            x.round() as i32,
+            y.round() as i32,
+            w.round().max(1.) as i32,
+            h.round() as i32,
+            caret,
+        ))
+    };
+    let focused = parent.root().and_then(|r| r.focus());
+    if let Some(f) = focused.filter(|f| f.is_ancestor(parent)) {
+        // The cursor in the focused widget's coordinates, and the field
+        // showing it.
+        let found: Option<(gtk::graphene::Rect, gtk::Widget)> = if let Some(text) =
+            f.downcast_ref::<gtk::Text>()
+        {
+            let (strong, _) = text.compute_cursor_extents(text.position().max(0) as usize);
+            let field = text
+                .parent()
+                .filter(|p| p.is::<gtk::Entry>())
+                .unwrap_or_else(|| text.clone().upcast());
+            let at = text.compute_point(&field, &strong.top_left())?;
+            Some((
+                gtk::graphene::Rect::new(at.x(), at.y(), strong.width(), strong.height()),
+                field,
+            ))
+        } else if let Some(view) = f.downcast_ref::<gtk::TextView>() {
+            let b = view.buffer();
+            let at = view.iter_location(&b.iter_at_mark(&b.get_insert()));
+            let (x, y) = view.buffer_to_window_coords(gtk::TextWindowType::Widget, at.x(), at.y());
+            Some((
+                gtk::graphene::Rect::new(x as f32, y as f32, 1., at.height() as f32),
+                view.clone().upcast(),
+            ))
+        } else {
+            None
+        };
+        if let Some((caret, field)) = found {
+            let bounds =
+                gtk::graphene::Rect::new(0., 0., field.width() as f32, field.height() as f32);
+            let (x, y, w, h) = prism_core::controls::caret_in_field(tuple(caret), tuple(bounds));
+            let at = field.compute_point(parent, &gtk::graphene::Point::new(x, y))?;
+            return int((at.x(), at.y(), w, h), true);
+        }
+    }
+    let first = first_field(parent)?;
+    int(tuple(first.compute_bounds(parent)?), false)
+}
+
+/// The first editable text field in `widget` (a text input's `GtkEntry`,
+/// a text area's or rich input's `GtkTextView`), in tree order.
+fn first_field(widget: &gtk::Widget) -> Option<gtk::Widget> {
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        if c.is_visible() {
+            let editable = c
+                .downcast_ref::<gtk::Entry>()
+                .is_some_and(|e| e.is_editable())
+                || c.downcast_ref::<gtk::TextView>()
+                    .is_some_and(|t| t.is_editable());
+            if editable {
+                return Some(c);
+            }
+            if !c.is::<gtk::Popover>()
+                && let Some(f) = first_field(&c)
+            {
+                return Some(f);
+            }
+        }
+        child = c.next_sibling();
+    }
+    None
 }
 
 /// Shown in a `GtkPopover`: popovers, and dialogs placed beside their
@@ -368,6 +488,19 @@ impl OverlayView {
                 glib::Propagation::Proceed
             });
             p.add_controller(keys);
+            // At a caret (#328): follows it on every frame while shown,
+            // before the frame is drawn (typing, the cursor moving, the
+            // field or the page scrolling, the field moving).
+            let weak = Rc::downgrade(self);
+            p.add_tick_callback(move |p, _| {
+                if let Some(o) = weak.upgrade()
+                    && o.config.get().anchor == prism_core::OverlayAnchor::Caret
+                    && let Some(parent) = p.parent()
+                {
+                    place_popover(p, &parent, o.config.get(), o.size.get());
+                }
+                glib::ControlFlow::Continue
+            });
             let weak = Rc::downgrade(self);
             p.connect_closed(move |p| {
                 let Some(o) = weak.upgrade() else { return };

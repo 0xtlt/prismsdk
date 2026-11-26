@@ -1181,7 +1181,7 @@ final class PrismInput {
 
     /** `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`,
      *  `side=top`/`trailing`/`leading`, `align=center`/`end`, `placed`,
-     *  `backdrop=…`, `bare` (the size is Rust's layout). */
+     *  `backdrop=…`, `bare` (the size is Rust's layout), `anchor=caret`. */
     static void overlayConfig(PrismHost.Node n, String config) {
         n.overlay = "sheet";
         n.placed = false;
@@ -1193,6 +1193,7 @@ final class PrismInput {
         n.keepFocus = false;
         n.side = "bottom";
         n.align = "start";
+        n.caret = false;
         for (String t : config.trim().split("\\s+")) {
             switch (t) {
                 case "popover": case "dialog": case "keyboard": n.overlay = t; break;
@@ -1206,6 +1207,7 @@ final class PrismInput {
                     if (t.startsWith("side=")) n.side = t.substring(5);
                     else if (t.startsWith("align=")) n.align = t.substring(6);
                     else if (t.startsWith("backdrop=")) n.backdrop = t.substring(9);
+                    else if (t.startsWith("anchor=")) n.caret = t.substring(7).equals("caret");
             }
         }
         reportArea(n);
@@ -1233,9 +1235,8 @@ final class PrismInput {
         int w = Math.max(1, n.contentSize[0]), h = Math.max(1, n.contentSize[1]);
         View win = anchor.getRootView();
         int vw = win.getWidth(), vh = win.getHeight();
-        int[] loc = new int[2];
-        anchor.getLocationInWindow(loc);
-        int x0 = loc[0], y0 = loc[1], x1 = x0 + anchor.getWidth(), y1 = y0 + anchor.getHeight();
+        int[] box = anchorBox(n, anchor);
+        int x0 = box[0], y0 = box[1], x1 = box[2], y1 = box[3];
         int m = Math.round(8 * d);
         boolean rtl = anchor.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL;
         String side;
@@ -1264,6 +1265,94 @@ final class PrismInput {
         return new int[]{x, y, room ? 1 : 0};
     }
 
+    /** What an overlay goes against, in window pixels {x0, y0, x1, y1}: its
+     *  anchor, or with `anchor=caret` the caret of the anchor's focused
+     *  field (else its first one), kept inside the field; the whole field
+     *  while it has no focus, the anchor without a field (#328). */
+    static int[] anchorBox(PrismHost.Node n, View anchor) {
+        int[] loc = new int[2];
+        anchor.getLocationInWindow(loc);
+        int[] whole = {loc[0], loc[1], loc[0] + anchor.getWidth(), loc[1] + anchor.getHeight()};
+        if (!n.caret) return whole;
+        EditText e = caretField(n, anchor);
+        if (e == null) return whole;
+        e.getLocationInWindow(loc);
+        int fx = loc[0], fy = loc[1], fw = e.getWidth(), fh = e.getHeight();
+        android.text.Layout l = e.getLayout();
+        int at = e.getSelectionEnd();
+        if (!e.isFocused() || l == null || at < 0) return new int[]{fx, fy, fx + fw, fy + fh};
+        int line = l.getLineForOffset(at);
+        float cx = fx + e.getTotalPaddingLeft() - e.getScrollX() + l.getPrimaryHorizontal(at);
+        float cy = fy + e.getTotalPaddingTop() - e.getScrollY() + l.getLineTop(line);
+        // As `caret_in_field` in prism-core.
+        int w = 1;
+        int h = Math.round(Math.min(Math.max(0, l.getLineBottom(line) - l.getLineTop(line)), Math.max(0, fh)));
+        int x = Math.round(Math.max(fx, Math.min(cx, fx + fw - w)));
+        int y = Math.round(Math.max(fy, Math.min(cy, fy + fh - h)));
+        return new int[]{x, y, x + w, y + h};
+    }
+
+    /** The field a caret anchor follows: the focused one inside `anchor`,
+     *  else the first one there, never inside the overlay itself (#328). */
+    static EditText caretField(PrismHost.Node n, View anchor) {
+        View f = anchor.findFocus();
+        if (f instanceof EditText && f != n.view && !inside(f, n.view)) return (EditText) f;
+        return firstField(anchor, n.view);
+    }
+
+    static EditText firstField(View v, View skip) {
+        if (v == skip || v.getVisibility() != View.VISIBLE) return null;
+        if (v instanceof EditText && v.isEnabled()) return (EditText) v;
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                EditText e = firstField(g.getChildAt(i), skip);
+                if (e != null) return e;
+            }
+        }
+        return null;
+    }
+
+    /** Follows the caret while shown (#328): placed again before every
+     *  frame of the app's window, so typing, a selection or a scroll moves
+     *  it in the frame that moves the caret. */
+    static void followCaret(PrismHost.Node n) {
+        if (!n.caret || n.caretFollow != null || PrismHost.root == null) return;
+        android.view.ViewTreeObserver.OnPreDrawListener l = () -> {
+            placeAtCaret(n);
+            return true;
+        };
+        n.caretFollow = l;
+        n.caretTree = PrismHost.root;
+        PrismHost.root.getViewTreeObserver().addOnPreDrawListener(l);
+    }
+
+    static void unfollowCaret(PrismHost.Node n) {
+        if (n.caretFollow == null) return;
+        android.view.ViewTreeObserver o = n.caretTree.getViewTreeObserver();
+        if (o.isAlive()) o.removeOnPreDrawListener(n.caretFollow);
+        n.caretFollow = null;
+        n.caretTree = null;
+    }
+
+    static void placeAtCaret(PrismHost.Node n) {
+        View anchor = n.view.getParent() instanceof View ? (View) n.view.getParent() : null;
+        if (anchor == null || anchor.getWindowToken() == null) return;
+        if (n.popup != null && n.popup.isShowing()) {
+            int[] at = popoverOrigin(n, anchor);
+            if (n.caretAt == null || n.caretAt[0] != at[0] || n.caretAt[1] != at[1]) {
+                n.caretAt = at;
+                n.popup.update(at[0], at[1], -1, -1);
+            }
+        } else if (n.dialog != null && n.dialog.isShowing() && n.dialog.getWindow() != null) {
+            int[] at = placeOrigin(n, anchor, Math.round(8 * PrismHost.density));
+            if (n.caretAt == null || n.caretAt[0] != at[0] || n.caretAt[1] != at[1] || n.caretAt[2] != at[2]) {
+                n.caretAt = at;
+                placeDialog(n, n.dialog.getWindow());
+            }
+        }
+    }
+
     static boolean fits(String side, int x0, int y0, int x1, int y1, int w, int h, int vw, int vh, int m, int gap) {
         switch (side) {
             case "top": return y0 - gap - h >= m;
@@ -1276,7 +1365,7 @@ final class PrismInput {
     /** The default placement: under the anchor, leading-aligned (above it
      *  without room below), as `showAsDropDown` places it. */
     static boolean dropDown(PrismHost.Node n) {
-        return n.side.equals("bottom") && n.align.equals("start");
+        return n.side.equals("bottom") && n.align.equals("start") && !n.caret;
     }
 
     /** The area the content may take (Rust lays it out in it), in pixels. */
@@ -1421,7 +1510,10 @@ final class PrismInput {
                 return false;
             });
             p.setOnDismissListener(() -> {
-                if (n.popup == p) n.popup = null;
+                if (n.popup == p) {
+                    n.popup = null;
+                    unfollowCaret(n);
+                }
                 if (!n.closing) dismissed(n);
             });
             n.popup = p;
@@ -1429,8 +1521,10 @@ final class PrismInput {
             if (dropDown(n)) p.showAsDropDown(anchor, 0, Math.round(4 * d), Gravity.START);
             else {
                 int[] at = popoverOrigin(n, anchor);
+                n.caretAt = at;
                 p.showAtLocation(anchor, Gravity.LEFT | Gravity.TOP, at[0], at[1]);
             }
+            followCaret(n);
             return;
         }
         boolean sheet = n.overlay.equals("sheet");
@@ -1449,7 +1543,10 @@ final class PrismInput {
         dialog.setContentView(n.host);
         dialog.setCancelable(!n.fixed);
         dialog.setCanceledOnTouchOutside(!n.fixed);
-        dialog.setOnCancelListener(x -> dismissed(n));
+        dialog.setOnCancelListener(x -> {
+            unfollowCaret(n);
+            dismissed(n);
+        });
         dialog.setOnKeyListener((x, code, e) -> {
             // Escape on a hardware keyboard closes it, as Back does (#156).
             if (code == KeyEvent.KEYCODE_ESCAPE && e.getAction() == KeyEvent.ACTION_UP && !n.fixed) {
@@ -1479,6 +1576,8 @@ final class PrismInput {
         n.closing = false;
         PrismForms.show(dialog);
         if (w != null) size(n, w);
+        n.caretAt = null;
+        followCaret(n);
     }
 
     /** The user closed it (Back, Escape, a tap outside): Prism's on_dismiss, with how (#156). */
@@ -1494,6 +1593,7 @@ final class PrismInput {
         if (n == shownBar) showKeyboardBar(null);
         n.pendingOpen = false;
         n.closing = true;
+        unfollowCaret(n);
         if (n.popup != null) { n.popup.dismiss(); n.popup = null; }
         if (n.dialog != null) { n.dialog.dismiss(); n.dialog = null; }
         n.closing = false;

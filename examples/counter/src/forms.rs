@@ -1,7 +1,8 @@
 //! The Forms card of the Components tab: sliders, a select, date and time
 //! pickers, text input variants, a text area, a rich note with a toolbar
 //! over its selection (#217), blocks selected as one text (#231), a rich
-//! text editor with its toolbar and Markdown (#294), a spinner
+//! text editor with its toolbar and Markdown (#294), a template field
+//! whose `{{` opens a completion list at the caret (#328), a spinner
 //! and toasts. It is
 //! its own entity, so dragging a slider only re-renders this card.
 
@@ -35,6 +36,12 @@ pub struct Forms {
     /// spans.
     blocks: Vec<String>,
     blocks_selected: usize,
+    /// The template (#328): its text, its caret, the completion item
+    /// highlighted, and whether Escape closed the list.
+    template: String,
+    template_sel: SelectionEvent,
+    completion_item: usize,
+    completion_closed: bool,
     /// The rich text editor (#294), and its value as Markdown.
     editor: Option<Entity<ui::RichTextInput>>,
     editor_markdown: String,
@@ -64,6 +71,10 @@ impl Default for Forms {
             note_log: String::new(),
             blocks: Vec::new(),
             blocks_selected: 0,
+            template: String::new(),
+            template_sel: SelectionEvent::default(),
+            completion_item: 0,
+            completion_closed: false,
             editor: None,
             editor_markdown: String::new(),
             samples: false,
@@ -222,6 +233,7 @@ impl Render for Forms {
             .child(self.shared_draft(cx))
             .child(self.note(cx))
             .child(self.blocks(cx))
+            .child(self.template(cx))
             .child(self.editor(cx))
             .child(ui::spinner().label(strings::forms_syncing(cx)))
             .child(
@@ -253,6 +265,21 @@ impl Render for Forms {
                     ),
             )
     }
+}
+
+/// The fields a template can insert (#328).
+const TEMPLATE_FIELDS: [&str; 6] = ["name", "email", "company", "city", "date", "due_date"];
+
+/// The `{{query` typed just before `caret` in `text`: where its braces
+/// start (characters) and the query, if the caret is in one.
+fn completion_query(text: &str, caret: usize) -> Option<(usize, String)> {
+    let before: String = text.chars().take(caret).collect();
+    let at = before.rfind("{{")?;
+    let query = &before[at + 2..];
+    query
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_')
+        .then(|| (before[..at].chars().count(), query.to_string()))
 }
 
 /// The selection's runs as Markdown: bold, links and chips (what the
@@ -385,6 +412,138 @@ impl Forms {
                 })),
             )
             .child(text(self.note_log.clone()).text_size(12.))
+    }
+
+    /// The fields matching the `{{query` at the template's caret (#328),
+    /// and where the braces start; `None` while no list shows.
+    fn completions(&self) -> Option<(usize, String, Vec<&'static str>)> {
+        if self.completion_closed {
+            return None;
+        }
+        let (start, query) = completion_query(&self.template, self.template_sel.end)?;
+        let found: Vec<&str> = TEMPLATE_FIELDS
+            .iter()
+            .copied()
+            .filter(|f| f.starts_with(&query))
+            .collect();
+        (!found.is_empty()).then_some((start, query, found))
+    }
+
+    /// Replaces the `{{query` at the caret with `{{field}}`, the caret
+    /// after it.
+    fn complete(&mut self, field: &str) {
+        let Some((start, query, _)) = self.completions() else {
+            return;
+        };
+        let chars: Vec<char> = self.template.chars().collect();
+        let end = (start + 2 + query.chars().count()).min(chars.len());
+        let inserted = format!("{{{{{field}}}}}");
+        let caret = start + inserted.chars().count();
+        self.template = chars[..start].iter().collect::<String>()
+            + &inserted
+            + &chars[end..].iter().collect::<String>();
+        self.template_sel = SelectionEvent::new(caret, caret);
+        self.completion_item = 0;
+    }
+
+    /// A template field (#328): typing `{{` opens the fields it can insert
+    /// in a list at the caret, which follows it as the user types. The
+    /// field keeps the focus and the keys: ↑ and ↓ move through the list,
+    /// Enter or Tab insert, Escape closes it; a click on an item inserts it.
+    fn template(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = Theme::of(cx);
+        let completions = self.completions();
+        let open = completions.is_some();
+        let field = text_input()
+            .value(self.template.clone())
+            .selection(self.template_sel)
+            .placeholder(strings::forms_template_placeholder(cx, "{{"))
+            .accessibility_label(strings::forms_template(cx))
+            .on_input(cx.listener(|this, e: &InputEvent, _| {
+                // The caret moves with what was typed; `on_select` says
+                // exactly where right after.
+                let (old, new) = (this.template.chars().count(), e.value.chars().count());
+                let caret = (this.template_sel.end + new).saturating_sub(old).min(new);
+                this.template = e.value.clone();
+                this.template_sel = SelectionEvent::new(caret, caret);
+                this.completion_closed = false;
+                this.completion_item = 0;
+            }))
+            .on_select(cx.listener(|this, e: &SelectionEvent, _| this.template_sel = *e))
+            .flex_1();
+        let list = completions.map(|(_, _, found)| {
+            let current = self.completion_item.min(found.len() - 1);
+            div()
+                .flex_col()
+                .p(4.)
+                .gap(2.)
+                .bg(t.surface)
+                .rounded(8.)
+                .border(1.)
+                .border_color(t.border)
+                .shadow(shadow_md())
+                .children(found.into_iter().enumerate().map(|(i, f)| {
+                    let selected = i == current;
+                    div()
+                        .px(8.)
+                        .py(4.)
+                        .rounded(6.)
+                        .bg(if selected { t.accent } else { t.surface })
+                        .child(text(format!("{{{{{f}}}}}")).text_color(if selected {
+                            t.on_accent
+                        } else {
+                            t.text
+                        }))
+                        .on_click(cx.listener(move |this, _, _| this.complete(f)))
+                }))
+        });
+        div()
+            .flex_col()
+            .gap(4.)
+            .child(
+                text(strings::forms_template(cx))
+                    .text_size(13.)
+                    .text_color(t.muted),
+            )
+            .child(
+                div()
+                    .flex_row()
+                    .consume_keys(if open {
+                        &["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"][..]
+                    } else {
+                        &[]
+                    })
+                    .on_key_down(cx.listener(|this, e: &KeyEvent, _| {
+                        if let Some(sel) = e.selection {
+                            this.template_sel = sel;
+                        }
+                        let Some((_, _, found)) = this.completions() else {
+                            return;
+                        };
+                        let n = found.len();
+                        match e.key.as_str() {
+                            "ArrowDown" => this.completion_item = (this.completion_item + 1) % n,
+                            "ArrowUp" => this.completion_item = (this.completion_item + n - 1) % n,
+                            "Enter" | "Tab" => {
+                                this.complete(found[this.completion_item.min(n - 1)])
+                            }
+                            "Escape" => this.completion_closed = true,
+                            _ => {}
+                        }
+                    }))
+                    .child(field)
+                    .children(list.map(|list| {
+                        // At the caret, below it (above without room), the
+                        // field keeping the focus (#328).
+                        popover(list)
+                            .open(true)
+                            .anchor_caret()
+                            .take_focus(false)
+                            .bare()
+                            .size(200., 0.)
+                            .on_dismiss(cx.listener(|this, _, _| this.completion_closed = true))
+                    })),
+            )
     }
 
     /// A paragraph other people edit too (#240): Camille's caret with her

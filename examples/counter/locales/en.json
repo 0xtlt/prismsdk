@@ -380,6 +380,8 @@
     "note": "Rich note",
     "note_placeholder": "Select words for the toolbar",
     "note_bold": "Bold",
+    "template": "Template",
+    "template_placeholder": "Type {open} to insert a field",
     "note_copied": "Copied {count} characters with Markdown",
     "note_pasted": "Pasted, the clipboard had {count} types",
     "note_clicked": "Modifier-clicked span {count}",

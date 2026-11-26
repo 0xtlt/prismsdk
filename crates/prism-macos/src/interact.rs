@@ -24,7 +24,9 @@ use objc2_foundation::{
     NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize, NSString,
 };
 use prism_core::controls::{OverlayConfig, RadioConfig};
-use prism_core::{KeyEvent, Modifiers, NodeId, OverlayKind, PopoverAlign, PopoverSide};
+use prism_core::{
+    KeyEvent, Modifiers, NodeId, OverlayAnchor, OverlayKind, PopoverAlign, PopoverSide,
+};
 
 use crate::imp::PrismView;
 
@@ -890,7 +892,14 @@ impl MacOverlay {
         // On the asked side (AppKit flips it without room there), its
         // arrow on the part of the anchor it lines up with (#113).
         popover.showRelativeToRect_ofView_preferredEdge(
-            popover_rect(b, size, c.side, c.align, rtl, flipped),
+            popover_rect(
+                self.anchor_rect(&parent),
+                size,
+                c.side,
+                c.align,
+                rtl,
+                flipped,
+            ),
             &parent,
             popover_edge(c.side, rtl, flipped),
         );
@@ -1046,7 +1055,8 @@ impl MacOverlay {
         let Some(window) = parent.window() else {
             return;
         };
-        let anchor = window.convertRectToScreen(parent.convertRect_toView(parent.bounds(), None));
+        let anchor =
+            window.convertRectToScreen(parent.convertRect_toView(self.anchor_rect(&parent), None));
         let c = self.config.get();
         let rtl =
             parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft;
@@ -1069,6 +1079,47 @@ impl MacOverlay {
         let local = NSRect::new(NSPoint::ZERO, size);
         background.setFrame(local);
         self.host.setFrame(local);
+    }
+
+    /// What it goes against, in `parent`'s coordinates: `parent`'s bounds,
+    /// or the caret of a text field in it (#328).
+    fn anchor_rect(&self, parent: &NSView) -> NSRect {
+        match self.config.get().anchor {
+            OverlayAnchor::Parent => parent.bounds(),
+            OverlayAnchor::Caret => caret_anchor(parent).unwrap_or_else(|| parent.bounds()),
+        }
+    }
+
+    /// An overlay at the caret follows it (#328): the panel moves, or the
+    /// popover's positioning rect (AppKit moves the popover with it).
+    pub(crate) fn follow_caret(&self) {
+        let c = self.config.get();
+        if !self.presented.get() || c.anchor != OverlayAnchor::Caret {
+            return;
+        }
+        if self.in_panel.get() {
+            self.place_panel(self.size.get());
+            return;
+        }
+        let Some(popover) = self.popover.borrow().clone() else {
+            return;
+        };
+        let Some(parent) = (unsafe { self.anchor.superview() }) else {
+            return;
+        };
+        let rtl =
+            parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft;
+        let rect = popover_rect(
+            self.anchor_rect(&parent),
+            self.size.get(),
+            c.side,
+            c.align,
+            rtl,
+            parent.isFlipped(),
+        );
+        if popover.positioningRect() != rect {
+            popover.setPositioningRect(rect);
+        }
     }
 
     /// Closes it (the app asked, or it was destroyed).
@@ -1109,6 +1160,90 @@ impl MacOverlay {
         self.popover.borrow_mut().take();
         self.presented.replace(false)
     }
+}
+
+/// The caret an overlay anchored at it goes against (#328), in `parent`'s
+/// coordinates: the caret of the text field inside `parent` that has the
+/// focus (its text view's, or the field editor's of a text input:
+/// `firstRectForCharacterRange` at the selection's end), kept inside the
+/// field's visible part; the whole first field there when none has the
+/// focus; `None` without one.
+pub(crate) fn caret_anchor(parent: &NSView) -> Option<NSRect> {
+    let window = parent.window()?;
+    if let Some(responder) = window.firstResponder()
+        && let Some(tv) = responder.downcast_ref::<objc2_app_kit::NSTextView>()
+        && let Some(shown) = field_view(tv)
+        && shown.isDescendantOf(parent)
+    {
+        let sel = tv.selectedRange();
+        // SAFETY: a null `actualRange` is allowed.
+        let screen = unsafe {
+            objc2_app_kit::NSTextInputClient::firstRectForCharacterRange_actualRange(
+                tv,
+                objc2_foundation::NSRange::new(sel.location + sel.length, 0),
+                std::ptr::null_mut(),
+            )
+        };
+        let caret = parent.convertRect_fromView(window.convertRectFromScreen(screen), None);
+        let field = parent.convertRect_fromView(shown.bounds(), Some(&shown));
+        let f = |r: NSRect| {
+            (
+                r.origin.x as f32,
+                r.origin.y as f32,
+                r.size.width as f32,
+                r.size.height as f32,
+            )
+        };
+        let (x, y, w, h) = prism_core::controls::caret_in_field(f(caret), f(field));
+        return Some(NSRect::new(
+            NSPoint::new(f64::from(x), f64::from(y)),
+            NSSize::new(f64::from(w), f64::from(h)),
+        ));
+    }
+    let first = first_field(parent)?;
+    Some(parent.convertRect_fromView(first.bounds(), Some(&first)))
+}
+
+/// The view showing text view `tv`'s text: the text input it edits (a
+/// field editor), or a text area's or rich input's scroll view.
+fn field_view(tv: &objc2_app_kit::NSTextView) -> Option<Retained<NSView>> {
+    if tv.isFieldEditor() {
+        let delegate = tv.delegate()?;
+        let obj: &AnyObject = delegate.as_ref();
+        let field = obj.downcast_ref::<objc2_app_kit::NSTextField>()?;
+        return Some(Retained::into_super(Retained::into_super(
+            objc2::Message::retain(field),
+        )));
+    }
+    tv.downcast_ref::<crate::imp::PrismTextView>()?;
+    let scroll = tv.enclosingScrollView()?;
+    Some(Retained::into_super(scroll))
+}
+
+/// The first text field in `view` (a text input, or a text area's or rich
+/// input's scroll view), in tree order.
+fn first_field(view: &NSView) -> Option<Retained<NSView>> {
+    for v in view.subviews().iter() {
+        if v.isHidden() {
+            continue;
+        }
+        if let Some(f) = v.downcast_ref::<objc2_app_kit::NSTextField>()
+            && f.isEditable()
+        {
+            return Some(v.clone());
+        }
+        if let Some(sc) = v.downcast_ref::<objc2_app_kit::NSScrollView>()
+            && sc
+                .documentView()
+                .is_some_and(|d| d.downcast_ref::<crate::imp::PrismTextView>().is_some())
+        {
+            return Some(v.clone());
+        }
+        if let Some(f) = first_field(&v) {
+            return Some(f);
+        }
+    }
+    None
 }
 
 /// A side of the anchor on screen, once leading and trailing are resolved.
@@ -1399,6 +1534,13 @@ impl Interaction {
             }
         }
         self.follow(main);
+    }
+
+    /// Overlays anchored at a caret follow it (#328).
+    pub(crate) fn follow_carets(&self) {
+        for o in &self.overlays {
+            o.follow_caret();
+        }
     }
 
     /// Keeps the layer window over `main`'s content and above its sheets

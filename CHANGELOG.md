@@ -32,6 +32,18 @@ bumps the minor version). Every crate of the workspace shares one version.
   (`gr`); SwiftUI draws them on iOS and macOS (a root gradient fills the
   whole widget, under the system's margins too), CSS on the web, and
   Android's `RemoteViews` a stretched bitmap under the node.
+- A popover or dialog can open at the caret of a text field (#328):
+  `Overlay::anchor(OverlayAnchor::Caret)`, or `anchor_caret()`, anchors
+  it at the caret of the field inside its parent (`text_input`,
+  `text_area`, `rich_input`, `rich_text_input`), with the usual side,
+  flip and keep-inside-the-window rules. Every backend measures the caret
+  when it lays the overlay out and follows it as the user types, selects
+  or scrolls, without asking the app; with `take_focus(false)` the field
+  keeps the focus and the keys. `OverlayAnchor` (`Parent`, the default,
+  or `Caret`) can gain kinds of anchors; `OverlayConfig::anchor`
+  (`anchor=caret` in the config string) and `controls::caret_in_field`
+  for backends. The counter example's Forms section has a template field with a
+  `{{` completion list.
 
 ### Changed
 
@@ -56,6 +68,9 @@ bumps the minor version). Every crate of the workspace shares one version.
   (`.bg_gradient(g).hover(|s| s.bg(c))`) keeps the gradient over the new
   color, as natively; the `background` shorthand of the state's rule used
   to remove it (#330).
+- macOS: the `PRISM_TAP` test hook scrolls its target into view and does
+  not click a text field that is already editing (the click went to the
+  container's key handler instead of the field).
 
 ## 0.5.0 (2026-11-25)
 

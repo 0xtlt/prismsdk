@@ -744,6 +744,45 @@ fn a_bare_dialog_drops_prisms_box_and_stays_a_dialog() {
     assert!(config("popover").bare);
 }
 
+struct Completion;
+
+impl Render for Completion {
+    fn render(&mut self, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(text_input())
+            .child(
+                popover(text("suggestions"))
+                    .open(true)
+                    .anchor_caret()
+                    .take_focus(false)
+                    .side(PopoverSide::Top),
+            )
+            .child(dialog(text("at the caret")).anchor(OverlayAnchor::Caret))
+    }
+}
+
+#[test]
+fn overlays_can_open_at_a_fields_caret() {
+    use prism_core::controls::OverlayConfig;
+    let h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Completion);
+        mount(cx, root);
+    });
+    let config = |kind: &str| {
+        let id = h
+            .host
+            .find(|n| n.kind == NodeKind::Overlay && n.config.split(' ').next() == Some(kind))
+            .unwrap();
+        h.host.get(id).config.clone()
+    };
+    // Resolved by the backend at layout time (#328): the config says so.
+    assert_eq!(config("popover"), "popover keepfocus side=top anchor=caret");
+    // A dialog anchored at the caret is placed (below until a side says).
+    let d = OverlayConfig::decode(&config("dialog"));
+    assert_eq!(d.anchor, OverlayAnchor::Caret);
+    assert_eq!(d.anchored_side(), Some(PopoverSide::Bottom));
+}
+
 struct Tasks {
     names: Vec<&'static str>,
     list: Option<Entity<ReorderList>>,

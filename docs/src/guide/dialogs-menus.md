@@ -203,6 +203,44 @@ A popover can open from an item of another open popover (a submenu of a menu): e
 
 Phones that show popovers as sheets, tvOS and watchOS ignore both options, as do sheets. On a dialog, `.side(…)` places it beside its anchor (below).
 
+### At the caret: completion lists
+
+An autocomplete list (template fields after `{{`, mentions after `@`) opens where the user types, not under the whole field. `.anchor_caret()` (or `.anchor(OverlayAnchor::Caret)`) anchors a popover, or a dialog, at the caret of the text field inside the overlay's parent: `text_input`, `text_area`, `rich_input` or `rich_text_input`.
+
+```rust
+div()
+    .flex_row()
+    // The field keeps the keys: the list's arrows, Enter and Escape are the app's.
+    .consume_keys(if open { &["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"][..] } else { &[] })
+    .on_key_down(cx.listener(|this, e: &KeyEvent, _| this.completion_key(e)))
+    .child(text_input().value(text).selection(sel).on_input(…).on_select(…).flex_1())
+    .children(open.then(|| {
+        popover(completions)
+            .open(true)
+            .anchor_caret()         // below the caret, its leading edge at the caret
+            .take_focus(false)      // the field keeps the focus while the list is open
+            .bare()
+            .size(200., 0.)
+            .on_dismiss(…)
+    }))
+```
+
+- The field is the one with the keyboard focus inside the parent, else the first one there. A field without the focus has no caret: the overlay goes against the whole field. Without a field, against the parent, as usual.
+- The usual placement applies against the caret: `.side(…)` (below by default, flipped above without room), `.align(…)`, kept inside the window.
+- The backend measures the caret when it lays the overlay out and places it again whenever the caret moves: typing, the arrows, a click, a selection, the field or the page scrolling, the field moving. The app is not asked, so the list moves in the same frame as the caret.
+- With `.take_focus(false)`, typing keeps going to the field and does not close the list; handle the arrows, Enter and Escape on the field (`consume_keys`, `on_key_down`).
+
+| | Caret | Follows it |
+|---|---|---|
+| Web | a range in a rich input; a hidden copy of an `<input>` or `<textarea>` up to the caret | on input, selection changes, scrolling, resizing and each update |
+| macOS | `firstRectForCharacterRange` from the text view or the field editor | the `NSPopover`'s positioning rect or the panel, on text and selection changes, scrolling and layout |
+| iOS, iPadOS, visionOS | `caretRectForPosition` | the popover's `sourceRect` or the dialog's card, on editing, selection changes, scrolling and layout |
+| Linux | `gtk::Text::compute_cursor_extents`, or the text view's iter location | the `GtkPopover`'s pointing rectangle, each frame while shown |
+| Android | the `EditText`'s layout at the cursor | the `PopupWindow` or the dialog's window, before each frame while shown |
+| Windows | `TextBox::GetRectFromCharacterIndex`, a `RichEditBox`'s selection rectangle | the `Flyout`'s position and exclusion rectangle, on text and selection changes and scrolling |
+
+tvOS (centered cards), watchOS, sheets and centered dialogs ignore it. The counter example's Forms section has a template field: type `{{` to see the list.
+
 ### Beside the anchor, without a dim
 
 An editor opens small choice panels (a list of options, a colour picker) beside the column that asked for them, over the edge of the page being edited, without dimming it: the user keeps seeing what they change. A dialog with a side does that and stays a modal dialog: the focus stays inside, the rest is out of reach, and Escape or a click outside closes it.

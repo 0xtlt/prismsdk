@@ -567,6 +567,60 @@ impl Backdrop {
     }
 }
 
+/// What a popover or a placed dialog is anchored to (#328). Placement
+/// follows the usual rules against it: its [`side`](crate::Overlay::side)
+/// (flipped without room), its [`align`](crate::Overlay::align), kept
+/// inside the window. See [`Overlay::anchor`](crate::Overlay::anchor).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OverlayAnchor {
+    /// The element that contains the overlay (the default).
+    #[default]
+    Parent,
+    /// The caret of a text field (`text_input`, `text_area`, `rich_input`)
+    /// inside the overlay's parent: the one with the keyboard focus, else
+    /// the first one in tree order. A field without the focus has no
+    /// caret: the overlay goes against the whole field; with no field
+    /// there, against the parent. It follows the caret as the user types,
+    /// moves it, scrolls the field or the page, and as the field moves.
+    Caret,
+}
+
+impl OverlayAnchor {
+    /// Its `anchor=` token (`None` for the default).
+    fn token(self) -> Option<&'static str> {
+        match self {
+            OverlayAnchor::Parent => None,
+            OverlayAnchor::Caret => Some("caret"),
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "parent" => OverlayAnchor::Parent,
+            "caret" => OverlayAnchor::Caret,
+            _ => return None,
+        })
+    }
+}
+
+/// The caret rectangle `caret` kept inside the visible part of its field
+/// `field` (rectangles are `(x, y, width, height)`, in one coordinate
+/// space): a caret scrolled out of a field's view is pinned to the field's
+/// nearest edge, so an overlay anchored at it (#328) stays beside the
+/// field. At least one point wide.
+pub fn caret_in_field(
+    caret: (f32, f32, f32, f32),
+    field: (f32, f32, f32, f32),
+) -> (f32, f32, f32, f32) {
+    let (fx, fy, fw, fh) = field;
+    let (cx, cy, cw, ch) = caret;
+    let w = cw.max(1.).min(fw.max(1.));
+    let h = ch.max(0.).min(fh.max(0.));
+    let x = cx.clamp(fx, (fx + fw - w).max(fx));
+    let y = cy.clamp(fy, (fy + fh - h).max(fy));
+    (x, y, w, h)
+}
+
 /// Where an overlay of `size` goes on `side` of `anchor`, inside `area`
 /// (rectangles are `(x, y, width, height)`, y down), `gap` away: on its
 /// side, or on the opposite one when its side has no room, lined up with
@@ -684,13 +738,16 @@ pub struct OverlayConfig {
     /// field's own [`keyboard_toolbar`](crate::TextInput::keyboard_toolbar)),
     /// not every field in its parent (#242).
     pub field_only: bool,
+    /// What a popover or a placed dialog is anchored to (#328). See
+    /// [`Overlay::anchor`](crate::Overlay::anchor).
+    pub anchor: OverlayAnchor,
 }
 
 impl OverlayConfig {
     /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`, `manual`,
     /// `keepfocus`, `side=…` and `align=…` (left out when they are the
     /// defaults), `placed`, `backdrop=<clear|dim|blur>`,
-    /// `size=<width>x<height>`, `bare`, `field`. A keyboard bar is
+    /// `size=<width>x<height>`, `bare`, `field`, `anchor=caret`. A keyboard bar is
     /// `keyboard`, with `field` when it serves only the field before it.
     pub fn encode(&self) -> String {
         let mut out = String::from(match self.kind {
@@ -738,6 +795,10 @@ impl OverlayConfig {
         if self.field_only {
             out.push_str(" field");
         }
+        if let Some(a) = self.anchor.token() {
+            out.push_str(" anchor=");
+            out.push_str(a);
+        }
         out
     }
 
@@ -775,6 +836,8 @@ impl OverlayConfig {
                 _ => {
                     if let Some(b) = t.strip_prefix("backdrop=") {
                         c.backdrop = Backdrop::parse(b);
+                    } else if let Some(a) = t.strip_prefix("anchor=") {
+                        c.anchor = OverlayAnchor::parse(a).unwrap_or_default();
                     } else if let Some((w, h)) = t
                         .strip_prefix("size=")
                         .and_then(|s| s.split_once('x'))
@@ -999,6 +1062,27 @@ mod tests {
             Some(PopoverSide::Bottom)
         );
         assert_eq!(OverlayConfig::decode("sheet placed").anchored_side(), None);
+        // At a text field's caret (#328): popovers and placed dialogs.
+        let at_caret = OverlayConfig {
+            kind: OverlayKind::Popover,
+            keep_focus: true,
+            anchor: OverlayAnchor::Caret,
+            ..Default::default()
+        };
+        assert_eq!(at_caret.encode(), "popover keepfocus anchor=caret");
+        assert_eq!(OverlayConfig::decode(&at_caret.encode()), at_caret);
+        assert_eq!(
+            OverlayConfig::decode("dialog placed anchor=caret").anchor,
+            OverlayAnchor::Caret
+        );
+        assert_eq!(
+            OverlayConfig::decode("popover anchor=parent").encode(),
+            "popover"
+        );
+        assert_eq!(
+            OverlayConfig::decode("popover anchor=elsewhere").anchor,
+            OverlayAnchor::Parent
+        );
         // Unknown values are ignored.
         assert_eq!(
             OverlayConfig::decode("dialog backdrop=fog size=ax2"),
@@ -1040,6 +1124,30 @@ mod tests {
         assert_eq!(
             of_day.start(86_400. * 3. + 23.5 * 3600. + 12., 7200.),
             5400.
+        );
+    }
+
+    #[test]
+    fn carets_stay_inside_their_field() {
+        let field = (100., 50., 200., 30.);
+        // Inside: kept, one point wide at least.
+        assert_eq!(
+            caret_in_field((150., 55., 0., 20.), field),
+            (150., 55., 1., 20.)
+        );
+        // Scrolled out past the end, or before the start: on the edge.
+        assert_eq!(
+            caret_in_field((420., 55., 2., 20.), field),
+            (298., 55., 2., 20.)
+        );
+        assert_eq!(
+            caret_in_field((20., 10., 1., 20.), field),
+            (100., 50., 1., 20.)
+        );
+        // Taller than the field (a scrolled text area): no taller than it.
+        assert_eq!(
+            caret_in_field((150., 40., 1., 60.), field),
+            (150., 50., 1., 30.)
         );
     }
 
