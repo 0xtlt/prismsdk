@@ -7,6 +7,19 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** a push within the app stays in the selected tab (#332).
+  `navigate`, `navigate_to`, `navigate_with` and `replace` to a path
+  under another tab's root (`/devices/7` from the Rooms tab) no longer
+  switch to that tab: the screen goes on the selected tab's stack, so
+  Back returns to the screen the user came from and the tab bar stays,
+  as on iOS and Android. Only a tab's root exactly, or a link from
+  outside (a deep link at launch, `Runtime::open_link` from a widget or
+  a notification), selects another tab. On the web each history entry
+  is reopened in the tab it was made in, and a reload gives the screen
+  back to that tab; the URL is still the pushed path.
+
 ## 0.5.0 (2026-11-25)
 
 The web's history follows the path: browser Back and Forward reopen the

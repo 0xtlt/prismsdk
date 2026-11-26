@@ -350,6 +350,10 @@ pub struct Router {
     tint: Option<crate::style::Color>,
     /// How many times a tab's top path was replaced in place (#324).
     replaces: u64,
+    /// The tab the last reset opened its path in, over that tab's root,
+    /// until anything else happens: a web reload hands the path back to the
+    /// tab its history entry was in ([`show_entry`](Self::show_entry), #332).
+    reset_tab: Option<usize>,
 }
 
 /// Declares the routes (and optionally tabs), then [`build`](RouterBuilder::build)s the router.
@@ -419,6 +423,7 @@ impl Router {
             *self.next_state.borrow_mut() = Some(state);
             return;
         }
+        self.reset_tab = None;
         self.apply_op(op, cx);
         // Only the screen this operation built gets the value.
         self.next_state.borrow_mut().take();
@@ -483,8 +488,8 @@ impl Router {
                 let path = normalize_path(&path);
                 let tab = self.selected;
                 self.replaces += 1;
-                let owner = self.owning_tab(&path, false).unwrap_or(tab);
-                // A path of another tab opens there, selecting it; this tab
+                let owner = self.root_tab(&path).unwrap_or(tab);
+                // Another tab's root switches to that tab (#332); this tab
                 // keeps at least its root.
                 if (owner == tab || self.tabs[tab].entries.len() > 1)
                     && let Some(old) = self.tabs[tab].entries.pop()
@@ -514,10 +519,10 @@ impl Router {
     /// The tab whose root best matches `path` (its query aside): the
     /// longest root that is `path` or one of its parents. A `/` root is
     /// every path's parent only for a `link` (a deep link, at launch or
-    /// while the app runs: it has no tab of its own to stay in); within the
-    /// app, a path under no other tab's root (a screen several tabs show,
-    /// `/items/7`) stays in the selected tab, as on iOS. None without a tab
-    /// bar, or when no root matches.
+    /// while the app runs: it has no tab of its own to stay in). Used by
+    /// links, resets and [`root`](Self::root); a push within the app
+    /// follows [`root_tab`](Self::root_tab). None without a tab bar, or
+    /// when no root matches.
     fn owning_tab(&self, path: &str, link: bool) -> Option<usize> {
         if !self.tab_bar {
             return None;
@@ -535,14 +540,32 @@ impl Router {
             .map(|(i, _)| i)
     }
 
-    /// Pushes `path` on the tab it belongs to ([`owning_tab`](Self::owning_tab)),
-    /// selecting that tab: the tab bar follows the route, whether a deep
-    /// `link`, the app or the user changed it. A tab's root only switches
-    /// to its tab (keeping the screens pushed there); with a query the tab
-    /// doesn't show, it is pushed there too.
+    /// The tab whose root is `path` exactly (its query aside), the only
+    /// path that switches tab from within the app (#332): any other push
+    /// or replace stays in the selected tab, even under another tab's
+    /// root, so Back returns to the screen the user came from, as on iOS
+    /// and Android. None without a tab bar.
+    fn root_tab(&self, path: &str) -> Option<usize> {
+        if !self.tab_bar {
+            return None;
+        }
+        let path = split_query(path).0;
+        self.tabs.iter().position(|t| t.root == path)
+    }
+
+    /// Pushes `path` on the selected tab. A tab's root (its query aside)
+    /// switches to its tab instead (keeping the screens pushed there); with
+    /// a query the tab doesn't show, it is pushed there too. A `link` from
+    /// outside has no tab to stay in: it opens in the tab its path belongs
+    /// to ([`owning_tab`](Self::owning_tab)) and selects it.
     fn push(&mut self, path: &str, link: bool, cx: &mut Context<Self>) {
         let path = normalize_path(path);
-        if let Some(i) = self.owning_tab(&path, link) {
+        let owner = if link {
+            self.owning_tab(&path, true)
+        } else {
+            self.root_tab(&path)
+        };
+        if let Some(i) = owner {
             self.selected = i;
             if path == self.tabs[i].root {
                 return;
@@ -558,31 +581,44 @@ impl Router {
         });
     }
 
-    /// Shows a stack's history entry (#324): `path` at `depth` (browser
-    /// Back or Forward), else pushed. A screen still at that depth is
-    /// popped to; a root entry leaves its path alone in its stack; deeper,
-    /// the screens under the entry stay and `path` opens over them.
+    /// Shows a stack's history entry (#324) in tab `tab`, the one the
+    /// entry was made in (#332; the web asks that tab's stack): `path` at
+    /// `depth` (browser Back or Forward), else pushed. A screen still at
+    /// that depth is popped to; a root entry leaves its path alone in its
+    /// stack; deeper, the screens under the entry stay and `path` opens
+    /// over them. Right after a reset (a reload, a reconnection), a path
+    /// the reset opened in another tab moves back to `tab`: that tab
+    /// returns to its root.
     fn show_entry(&mut self, tab: usize, e: &NavigateEvent, cx: &mut Context<Self>) {
+        let reset_tab = self.reset_tab.take();
+        if tab >= self.tabs.len() {
+            return;
+        }
+        self.selected = tab;
         let Some(depth) = e.depth else {
             return self.push(&e.path, false, cx);
         };
         let path = normalize_path(&e.path);
-        let owner = self.owning_tab(&path, false).unwrap_or(tab);
-        let in_stack = self.tabs.get(owner).is_some_and(|t| {
-            t.entries
-                .get(depth.saturating_sub(1))
-                .is_some_and(|s| s.path == path)
-        });
+        let in_stack = self.tabs[tab]
+            .entries
+            .get(depth.saturating_sub(1))
+            .is_some_and(|s| s.path == path);
         if in_stack {
-            self.selected = owner;
-            self.truncate(owner, depth, cx);
+            self.truncate(tab, depth, cx);
         } else if depth <= 1 {
-            self.root(&path, cx);
-        } else if owner == tab {
+            self.root_in(tab, &path, cx);
+        } else {
             self.truncate(tab, depth - 1, cx);
             self.push(&path, false, cx);
-        } else {
-            self.push(&path, false, cx);
+        }
+        if let Some(other) = reset_tab
+            && other != tab
+            && self.tabs[other]
+                .entries
+                .last()
+                .is_some_and(|s| s.path == path)
+        {
+            self.truncate(other, 1, cx);
         }
         cx.notify();
     }
@@ -654,6 +690,7 @@ impl Router {
     }
 
     fn select(&mut self, index: usize) {
+        self.reset_tab = None;
         if index < self.tabs.len() {
             self.selected = index;
         }
@@ -682,8 +719,14 @@ impl Router {
     /// underneath.
     fn root(&mut self, path: &str, cx: &mut Context<Self>) {
         let path = normalize_path(path);
-        self.dismiss(cx);
         let tab = self.owning_tab(&path, false).unwrap_or(self.selected);
+        self.root_in(tab, &path, cx);
+    }
+
+    /// [`root`](Self::root) in tab `tab`, selecting it.
+    fn root_in(&mut self, tab: usize, path: &str, cx: &mut Context<Self>) {
+        let path = path.to_string();
+        self.dismiss(cx);
         self.selected = tab;
         if self.tabs[tab]
             .entries
@@ -741,6 +784,7 @@ impl Router {
             });
         }
         self.selected = tab;
+        self.reset_tab = (self.tab_bar && self.tabs[tab].entries.len() > 1).then_some(tab);
     }
 
     fn open(&self, path: &str, app: &mut App) -> AnyEntity {
@@ -967,6 +1011,7 @@ impl RouterBuilder {
             shared: RefCell::default(),
             tint: self.tint,
             replaces: 0,
+            reset_tab: None,
         });
         app.set_navigator(router);
         router.update(app, |r, cx| r.reset(&initial, cx));
@@ -998,7 +1043,10 @@ fn tab_stack(
         .header(header)
         .history_replaces(replaces)
         .path(t.entries.last().map_or("/", |e| e.path.as_str()))
-        .on_back(cx.listener(move |this, e: &BackEvent, cx| this.truncate(index, e.depth, cx)))
+        .on_back(cx.listener(move |this, e: &BackEvent, cx| {
+            this.reset_tab = None;
+            this.truncate(index, e.depth, cx)
+        }))
         .on_navigate(cx.listener(move |this, e: &NavigateEvent, cx| this.show_entry(index, e, cx)))
         // Lazy tabs: no screens until the tab is first selected.
         .children(

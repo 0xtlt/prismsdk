@@ -437,7 +437,10 @@ impl App {
 
     // --- Navigation (applied after the current event, by the active Router) ---
 
-    /// Pushes the screen for `path` (no-op if it is already on top).
+    /// Pushes the screen for `path` (no-op if it is already on top) on the
+    /// selected tab, even when `path` is under another tab's root: Back
+    /// returns to the screen it came from (#332). A tab's root (its query
+    /// aside) switches to that tab instead.
     pub fn navigate(&mut self, path: impl Into<String>) {
         self.nav_queue.push(NavOp::Push(path.into()));
     }
@@ -464,7 +467,9 @@ impl App {
         self.nav_queue.push(NavOp::Dismiss);
     }
 
-    /// Replaces the top screen (on the web, its history entry too, #324).
+    /// Replaces the top screen (on the web, its history entry too, #324),
+    /// in the selected tab. Another tab's root selects that tab instead,
+    /// the current tab keeping its root (#332).
     pub fn replace(&mut self, path: impl Into<String>) {
         self.nav_queue.push(NavOp::Replace(path.into()));
     }
