@@ -351,14 +351,14 @@ pub(crate) fn link_at(tv: &NSTextView, index: usize) -> Option<u64> {
 /// coordinates) in rich input `tv` (#115). The click is the text view's to
 /// read: AppKit tells the delegate of clicks on an attachment's cell
 /// (`textView:clickedOnCell:…`), and an image attachment has none.
-pub(crate) fn chip_link_at(tv: &PrismTextView, p: NSPoint) -> Option<u64> {
+pub(crate) fn chip_link_at(tv: &PrismTextView, p: NSPoint) -> Option<(u64, usize)> {
     if !tv.ivars().rich.get() {
         return None;
     }
     let (lm, tc) = unsafe { (tv.layoutManager()?, tv.textContainer()?) };
     let origin = tv.textContainerOrigin();
     let local = NSPoint::new(p.x - origin.x, p.y - origin.y);
-    char_drawn_at(&lm, &tc, local).and_then(|index| link_at(tv, index))
+    char_drawn_at(&lm, &tc, local).and_then(|index| Some((link_at(tv, index)?, index)))
 }
 
 /// The UTF-16 offset of the character drawn under `local` (in container

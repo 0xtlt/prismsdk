@@ -116,10 +116,10 @@ pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
 
-/// Overlays anchored at a caret follow it (#328): called as soon as a
-/// field's text, selection or scrolling changes.
-pub(crate) fn follow_carets() {
-    with_state(|s| s.renderer.widgets.ix.follow_carets());
+/// Overlays anchored at a caret (#328) or a chip (#327) follow it: called
+/// as soon as a field's text, selection or scrolling changes.
+pub(crate) fn follow_anchors() {
+    with_state(|s| s.renderer.widgets.ix.follow_anchors());
 }
 
 /// Lays everything out again, measures included (a video's size became
@@ -598,7 +598,7 @@ impl State {
             w.ix.follow(&main);
         }
         // Overlays at a caret follow the field's new place (#328).
-        w.ix.follow_carets();
+        w.ix.follow_anchors();
         // Elements that report their frame and moved (#192).
         let more = prism_native::report_layout(&mut self.runtime, &mut self.renderer);
         if !more.is_empty() {
@@ -1317,6 +1317,8 @@ define_class!(
                         count: event.clickCount().max(1) as u32,
                         button: prism_core::PointerButton::Primary,
                         text_offset: None,
+                        span_rect: None,
+                        span_frame: None,
                     },
                 ));
             }
@@ -1514,6 +1516,8 @@ impl PrismView {
                         count: event.clickCount().max(1) as u32,
                         button: iv.drag_button.get(),
                         text_offset: None,
+                        span_rect: None,
+                        span_frame: None,
                     },
                 ));
             }
@@ -2127,7 +2131,7 @@ define_class!(
             // Its rectangle (#217).
             crate::edit::rect_changed(&tv, id);
             // A list open at its caret follows it, before the frame (#328).
-            follow_carets();
+            follow_anchors();
         }
 
         /// A clip view scrolled: other people's carets in the text it
@@ -2136,9 +2140,10 @@ define_class!(
         fn on_clip_scroll(&self, n: &NSNotification) {
             if let Some(v) = n.object().and_then(|o| o.downcast::<NSView>().ok()) {
                 crate::carets::scrolled(&v);
+                // Popovers anchored to a chip in it (#327).
             }
             // The field or the page scrolled under a list at a caret (#328).
-            follow_carets();
+            follow_anchors();
         }
 
         #[unsafe(method(onEnvironment:))]
@@ -2280,7 +2285,7 @@ define_class!(
             }
             let grew = text.chars().count() > LAST_LEN.with(|l| l.replace(text.chars().count()));
             dispatch(UiEvent::Input(id, text));
-            follow_carets();
+            follow_anchors();
             // Suggestions: AppKit's completion list as the user types.
             if suggests
                 && grew
@@ -2368,7 +2373,7 @@ define_class!(
             dispatch(UiEvent::Input(tv.ivars().id.get(), tv.string().to_string()));
             // The text under the selection moved (#217).
             crate::edit::rect_changed(&tv, tv.ivars().id.get());
-            follow_carets();
+            follow_anchors();
         }
     }
 
@@ -5045,6 +5050,24 @@ impl Widgets for AppKit {
                 ProtocolObject::from_ref(&*self.target),
             );
         }
+    }
+
+    fn set_overlay_anchor(
+        &mut self,
+        overlay: &View,
+        anchor: Option<(View, prism_core::OverlayAnchor)>,
+    ) {
+        let View::Overlay(o) = overlay else {
+            return;
+        };
+        // A rich input's text view lays its chips out (#327).
+        o.set_anchor(anchor.map(|(field, _)| match &field {
+            View::TextArea(t) => {
+                let tv: &NSView = &t.text;
+                objc2::Message::retain(tv)
+            }
+            _ => objc2::Message::retain(field.ns()),
+        }));
     }
 
     fn overlay_viewport(&mut self, overlay: &View, _content: &View) -> Viewport {

@@ -418,7 +418,43 @@ test("a click with ⌘, Ctrl or ⌥ on a run is the app's on_span_click (#217)",
   // Without the hook, ⌘-click opens the link as before.
   const f = editor(enc("See ", ["docs", "u", "l=9", "h=/docs"]));
   f.el.dispatchEvent({ type: "click", target: f.el.childNodes[1], metaKey: true });
-  assert.deepEqual(f.page.ws.sent.filter((m) => m.t === "menu").at(-1), { t: "menu", id: 9 });
+  assert.deepEqual(f.page.ws.sent.filter((m) => m.t === "menu").at(-1), { t: "menu", id: 9, x: 0, y: 0, w: 0, h: 0 });
+});
+
+test("a chip's click gives its box in the field, and a popover anchored to it sits under it (#327)", () => {
+  const e = editor(enc("Hi ", [...CHIP, "l=65545"], " and ", ["￼", "k=date", "n=Date", "l=65546"]));
+  const box = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+  e.el.getBoundingClientRect = () => box(100, 200, 400, 60);
+  const date = e.el.childNodes[3];
+  assert.equal(date.className, "prism-chip");
+  date.getBoundingClientRect = () => box(260, 210, 50, 20);
+  e.el.dispatchEvent({ type: "click", target: date });
+  assert.deepEqual(e.page.ws.sent.filter((m) => m.t === "menu").at(-1), { t: "menu", id: 65546, x: 160, y: 10, w: 50, h: 20 });
+  // A popover anchored to that chip (character 9), elsewhere in the tree.
+  const open = (config) => {
+    e.patch(
+      { op: "create", id: 7, kind: "view" }, { op: "create", id: 8, kind: "overlay" },
+      { op: "config", id: 8, config }, { op: "children", id: 7, children: [8] },
+      { op: "value", id: 8, value: 1 },
+      { op: "create", id: 9, kind: "view" }, { op: "children", id: 9, children: [1, 7] }, { op: "root", id: 9 },
+    );
+    return e.page.node(8);
+  };
+  // The overlay's parent is beside the field, not the anchor.
+  const ov = open("popover anchor=text:1:9:10");
+  const pop = ov.firstChild;
+  pop.getBoundingClientRect = () => box(0, 0, 120, 80);
+  e.page.ws.deliver({ t: "patch", p: [{ op: "value", id: 8, value: 1 }] });
+  assert.deepEqual([pop.style.left, pop.style.top], ["260px", "236px"], "6 px under the chip, lined up with it");
+  // The text wrapped: the chip moved; the user typing places it again.
+  date.getBoundingClientRect = () => box(110, 240, 50, 20);
+  e.page.document.dispatchEvent({ type: "input", target: e.el });
+  e.page.frames.splice(0).forEach((f) => f());
+  assert.deepEqual([pop.style.left, pop.style.top], ["110px", "266px"]);
+  // The chip gone: anchored to the field, under it.
+  e.patch({ op: "config", id: 8, config: "popover anchor=field:1" });
+  e.page.frames.splice(0).forEach((f) => f());
+  assert.deepEqual([pop.style.left, pop.style.top], ["100px", "266px"]);
 });
 
 

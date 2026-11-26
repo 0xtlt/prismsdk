@@ -864,6 +864,25 @@ impl Widgets for Win {
         }
     }
 
+    fn set_overlay_anchor(
+        &mut self,
+        overlay: &NodeId,
+        anchor: Option<(NodeId, prism_core::OverlayAnchor)>,
+    ) {
+        // Placed after the layout (`place_overlays`), following its chip:
+        // a rich input's edit box lays it out.
+        let field = anchor.and_then(|(field, _)| {
+            let rich = match &self.views.get(&field)?.content {
+                crate::controls::Content::Rich(r) => Some(r.element.clone()),
+                _ => None,
+            };
+            Some((self.outer(field)?, rich))
+        });
+        if let Some(o) = self.layers.get_mut(overlay) {
+            o.field = field;
+        }
+    }
+
     fn overlay_viewport(&mut self, overlay: &NodeId, _content: &NodeId) -> Viewport {
         use prism_core::OverlayKind;
         let (w, h) = self.size;

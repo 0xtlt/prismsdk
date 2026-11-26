@@ -1433,3 +1433,16 @@ fn a_text_area_measures_its_minimum_lines() {
     w.set_text(&2, "One");
     assert_eq!(w.measure(&2, Some(1000.)).1, 20.);
 }
+
+/// A chip click with its box (#327): `RunClick`; without one it is left to
+/// the backend (a plain `MenuSelect`).
+#[test]
+fn chip_click_with_its_box() {
+    use prism_core::{Rect, UiEvent};
+    use prism_native::remote::parse_input_event;
+    assert_eq!(
+        parse_input_event(&json!({"t": "menu", "id": 9, "x": 4, "y": 20, "w": 60, "h": 18})),
+        Some(UiEvent::RunClick(9, Rect::new(4., 20., 60., 18.)))
+    );
+    assert_eq!(parse_input_event(&json!({"t": "menu", "id": 9})), None);
+}

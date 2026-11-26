@@ -1181,10 +1181,12 @@ final class PrismInput {
 
     /** `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`,
      *  `side=top`/`trailing`/`leading`, `align=center`/`end`, `placed`,
-     *  `backdrop=…`, `bare` (the size is Rust's layout), `anchor=caret`. */
+     *  `backdrop=…`, `bare` (the size is Rust's layout), `anchor=caret`,
+     *  `anchor=text:…`/`field:…` (#327). */
     static void overlayConfig(PrismHost.Node n, String config) {
         n.overlay = "sheet";
         n.placed = false;
+        n.anchor = "";
         n.backdrop = "";
         n.bareDialog = false;
         n.fixed = false;
@@ -1207,7 +1209,11 @@ final class PrismInput {
                     if (t.startsWith("side=")) n.side = t.substring(5);
                     else if (t.startsWith("align=")) n.align = t.substring(6);
                     else if (t.startsWith("backdrop=")) n.backdrop = t.substring(9);
-                    else if (t.startsWith("anchor=")) n.caret = t.substring(7).equals("caret");
+                    else if (t.startsWith("anchor=")) {
+                        String a = t.substring(7);
+                        n.caret = a.equals("caret");
+                        n.anchor = n.caret ? "" : a;
+                    }
             }
         }
         reportArea(n);
@@ -1268,11 +1274,16 @@ final class PrismInput {
     /** What an overlay goes against, in window pixels {x0, y0, x1, y1}: its
      *  anchor, or with `anchor=caret` the caret of the anchor's focused
      *  field (else its first one), kept inside the field; the whole field
-     *  while it has no focus, the anchor without a field (#328). */
+     *  while it has no focus, the anchor without a field (#328); with
+     *  another `anchor=` the field it names, see {@link #fieldBox}. */
     static int[] anchorBox(PrismHost.Node n, View anchor) {
         int[] loc = new int[2];
         anchor.getLocationInWindow(loc);
         int[] whole = {loc[0], loc[1], loc[0] + anchor.getWidth(), loc[1] + anchor.getHeight()};
+        if (!n.anchor.isEmpty()) {
+            int[] f = fieldBox(n);
+            return f != null ? f : whole;
+        }
         if (!n.caret) return whole;
         EditText e = caretField(n, anchor);
         if (e == null) return whole;
@@ -1290,6 +1301,36 @@ final class PrismInput {
         int x = Math.round(Math.max(fx, Math.min(cx, fx + fw - w)));
         int y = Math.round(Math.max(fy, Math.min(cy, fy + fh - h)));
         return new int[]{x, y, x + w, y + h};
+    }
+
+    /** The box of a field anchor (#327), in window pixels {x0, y0, x1, y1}:
+     *  the characters of `anchor=text:field:start:end` (a chip's, its line
+     *  box kept inside the field's visible area), the field when they are
+     *  gone or not laid out or with `anchor=field:field`; null without the
+     *  field. */
+    static int[] fieldBox(PrismHost.Node n) {
+        String[] a = n.anchor.split(":");
+        PrismHost.Node f = null;
+        if (a.length >= 2) {
+            try {
+                f = PrismHost.nodes.get(Long.parseLong(a[1]));
+            } catch (NumberFormatException ignored) { }
+        }
+        if (f == null || f.view == null || f.view.getWindowToken() == null) return null;
+        View v = f.view;
+        int[] loc = new int[2];
+        v.getLocationInWindow(loc);
+        if (a[0].equals("text") && a.length == 4 && v instanceof EditText) {
+            float[] b = null;
+            try {
+                b = PrismRich.rangeBox((EditText) v, Integer.parseInt(a[2]), Integer.parseInt(a[3]));
+            } catch (NumberFormatException ignored) { }
+            if (b != null) {
+                return new int[]{loc[0] + Math.round(b[0]), loc[1] + Math.round(b[1]),
+                        loc[0] + Math.round(b[2]), loc[1] + Math.round(b[3])};
+            }
+        }
+        return new int[]{loc[0], loc[1], loc[0] + v.getWidth(), loc[1] + v.getHeight()};
     }
 
     /** The field a caret anchor follows: the focused one inside `anchor`,
@@ -1313,11 +1354,12 @@ final class PrismInput {
         return null;
     }
 
-    /** Follows the caret while shown (#328): placed again before every
-     *  frame of the app's window, so typing, a selection or a scroll moves
-     *  it in the frame that moves the caret. */
+    /** Follows the caret (#328) or the field anchor (#327) while shown:
+     *  placed again before every frame of the app's window, so typing, a
+     *  selection, the text reflowing or a scroll moves it in the frame
+     *  that moves what it goes against. */
     static void followCaret(PrismHost.Node n) {
-        if (!n.caret || n.caretFollow != null || PrismHost.root == null) return;
+        if ((!n.caret && n.anchor.isEmpty()) || n.caretFollow != null || PrismHost.root == null) return;
         android.view.ViewTreeObserver.OnPreDrawListener l = () -> {
             placeAtCaret(n);
             return true;
@@ -1365,7 +1407,7 @@ final class PrismInput {
     /** The default placement: under the anchor, leading-aligned (above it
      *  without room below), as `showAsDropDown` places it. */
     static boolean dropDown(PrismHost.Node n) {
-        return n.side.equals("bottom") && n.align.equals("start") && !n.caret;
+        return n.side.equals("bottom") && n.align.equals("start") && !n.caret && n.anchor.isEmpty();
     }
 
     /** The area the content may take (Rust lays it out in it), in pixels. */

@@ -888,7 +888,8 @@
     // size (#79).
     el._placed = kind === "dialog" && t.includes("placed");
     const opt = (name) => (t.find((x) => x.startsWith(`${name}=`)) || "").slice(name.length + 1);
-    // Anchored at a text field's caret instead of the parent (#328).
+    // Anchored at a text field's caret (#328), or in a field (#327):
+    // `caret`, `text:<field>:<start>:<end>` (a chip), `field:<id>`.
     el._anchor = opt("anchor") || "parent";
     const [w, h] = opt("size").split("x").map(Number);
     let box = el._box;
@@ -1033,15 +1034,53 @@
     top = Math.max(m, Math.min(top, innerHeight - h - m));
     return { left, top, side, fits: fits[side] };
   }
-  /** A popover on its side of its anchor (the overlay's parent); a placed
-   *  dialog beside it, or centered when neither side has room (a phone,
-   *  #79). */
+  /** The rectangle (client coordinates) an overlay anchored in a field
+   *  goes against (#327): characters `start..end` of a rich input (a
+   *  chip's box, else the first line box of the range) kept inside the
+   *  field's box, or the whole field. Null for other anchors, or once the
+   *  field is gone (its parent then). */
+  function fieldAnchor(el) {
+    const [kind, ...n] = el._anchor.split(":");
+    if (kind !== "text" && kind !== "field") return null;
+    const field = nodes.get(Number(n[0]));
+    if (!field || !field.isConnected) return null;
+    const fr = field.getBoundingClientRect();
+    if (kind !== "text" || !field._rich) return fr;
+    const start = Number(n[1]), end = Number(n[2]);
+    let r = null;
+    // A chip is an element of its own: its box.
+    let at = 0;
+    for (const c of field.childNodes) {
+      if (c._tail) continue;
+      if (at === start && c._chip && end === start + 1) { r = c.getBoundingClientRect(); break; }
+      if (at > start) break;
+      at += richLen(c);
+    }
+    if (!r) {
+      try {
+        const [sn, so] = richPoint(field, start, true), [en, eo] = richPoint(field, end, true);
+        const range = document.createRange();
+        range.setStart(sn, so);
+        range.setEnd(en, eo);
+        r = [...range.getClientRects()].find((b) => b.width > 0 || b.height > 0) || null;
+      } catch { /* no layout yet */ }
+    }
+    if (!r) return fr;
+    // Scrolled out of the field: on its nearest edge (as the caret).
+    const h = Math.max(0, Math.min(r.height, fr.height)), w = Math.max(1, Math.min(r.width, fr.width));
+    const x = Math.max(fr.left, Math.min(r.left, fr.right - w));
+    const y = Math.max(fr.top, Math.min(r.top, fr.bottom - h));
+    return box4(x, y, w, h);
+  }
+  /** A popover on its side of its anchor (the overlay's parent, a caret
+   *  in it, #328, or a chip, #327); a placed dialog beside it, or centered
+   *  when neither side has room (a phone, #79). */
   function placeOverlay(el) {
     const box = el._box, anchor = el.parentElement;
     if (!box || !anchor || !el._open) return;
     const popover = el._boxKind === "popover";
     if (!popover && !(el._boxKind === "dialog" && el._placed)) return;
-    const a = el._anchor === "caret" ? caretAnchor(anchor, el) : anchor.getBoundingClientRect();
+    const a = el._anchor === "caret" ? caretAnchor(anchor, el) : fieldAnchor(el) || anchor.getBoundingClientRect();
     const b = box.getBoundingClientRect();
     const rtl = document.documentElement.dir === "rtl";
     const { left, top, side, fits } = placeBeside(a, b.width, b.height, el._side, el._align, rtl, popover ? 6 : 8, 8);
@@ -1065,7 +1104,6 @@
   const replace = () => placedOverlays.forEach(placeOverlay);
   addEventListener("resize", replace);
   addEventListener("scroll", replace, true);
-
   // --- Overlays at a text field's caret (#328) ---------------------------------
   // The field is the focused one inside the overlay's parent, else the first
   // one there (never one inside the overlay). Its caret is measured in the
@@ -1129,8 +1167,10 @@
     const r = rangeBox(el, range, sel[0]);
     return { left: r.left, top: r.top, height: r.height };
   }
+  /** Overlays at a caret, or in a field (a chip, #327), placed again: the
+   *  caret moved, the text moved the chip. */
   function replaceAtCaret() {
-    for (const el of placedOverlays) if (el._anchor === "caret") placeOverlay(el);
+    for (const el of placedOverlays) if (el._anchor !== "parent") placeOverlay(el);
   }
   document.addEventListener("selectionchange", replaceAtCaret);
   for (const t of ["input", "keyup", "pointerup", "focusin"]) document.addEventListener(t, replaceAtCaret, true);
@@ -1416,13 +1456,20 @@
     }));
   }
   // A link inside a text: reported like a menu item (the app navigates).
-  function activateRun(e) {
+  // In a rich input `field`, with the run's box in the field (a chip's
+  // menu goes under it, #327).
+  function activateRun(e, field) {
     const a = e.target.closest && e.target.closest("[data-link]");
     if (!a) return false;
     e.preventDefault();
     e.stopPropagation();
     userNavigated = true;
-    send({ t: "menu", id: Number(a.dataset.link) });
+    const msg = { t: "menu", id: Number(a.dataset.link) };
+    if (field) {
+      const r = a.getBoundingClientRect(), f = field.getBoundingClientRect();
+      Object.assign(msg, { x: r.left - f.left, y: r.top - f.top, w: r.width, h: r.height });
+    }
+    send(msg);
     return true;
   }
 
@@ -2487,7 +2534,7 @@
       const hit = e.target && e.target.closest && e.target.closest("[data-link]");
       if (!hit || !el.contains(hit)) return;
       if (!hit._chip && !hit.classList.contains("prism-chip") && !(e.metaKey || e.ctrlKey)) return;
-      activateRun(e);
+      activateRun(e, el);
     });
     trackSelectionRect(el, id);
     // A selection the app set while the field was not focused lands when

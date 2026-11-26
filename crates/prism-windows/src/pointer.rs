@@ -721,6 +721,8 @@ fn released(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()>
                 count: 1,
                 button: b,
                 text_offset: None,
+                span_rect: None,
+                span_frame: None,
             },
         ));
     }

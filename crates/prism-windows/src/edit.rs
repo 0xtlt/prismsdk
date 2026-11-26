@@ -24,7 +24,7 @@ use prism_core::{
     ClickEvent, ClipboardContent, ClipboardItem, NodeId, PasteEvent, Point, PointerButton, Rect,
     SelectionEvent, UiEvent,
 };
-use prism_native::fields::utf16_to_chars;
+use prism_native::fields::{chars_to_utf16, utf16_to_chars};
 use windows::Foundation::TypedEventHandler;
 use windows_core::{HSTRING, Interface, Result};
 
@@ -35,7 +35,9 @@ use crate::winui::bindings::Microsoft::UI::Text::{ITextRange, PointOptions, Rich
 use crate::winui::xaml::Controls::{
     RichEditBox, TextControlCopyingToClipboardEventArgs, TextControlCuttingToClipboardEventArgs,
 };
-use crate::winui::xaml::Input::{PointerEventHandler, PointerRoutedEventArgs};
+use crate::winui::xaml::Input::{
+    PointerEventHandler, PointerRoutedEventArgs, TappedRoutedEventArgs,
+};
 use crate::winui::xaml::{FrameworkElement, UIElement};
 
 /// A reported rectangle: the selection, then the box in half points.
@@ -291,6 +293,8 @@ fn pressed(id: NodeId, r: &RichEditBox, a: &PointerRoutedEventArgs) -> Result<()
                 count: crate::events::count_press(id, a).unwrap_or(1),
                 button: PointerButton::Primary,
                 text_offset: Some(at),
+                span_rect: None,
+                span_frame: None,
             },
         );
         trace(&e);
@@ -363,6 +367,63 @@ pub fn caret_rect(r: &RichEditBox) -> Result<(f32, f32, f32, f32)> {
     let at = doc.Selection()?.EndPosition()?;
     let (x, y, h) = caret_at(&doc, at, client_origin(r))?;
     Ok((x, y, 1., h))
+}
+
+/// The box of UTF-16 units `a..b` in the box (#327): a chip's picture
+/// for its one character, the text's bounding box otherwise (a caret line
+/// for an empty range), kept inside the box.
+pub fn range_box(r: &RichEditBox, a: i32, b: i32) -> Result<Rect> {
+    let doc = r.Document()?;
+    let origin = client_origin(r);
+    let (x0, y0, x1, y1) = if b <= a {
+        let (x, y, h) = caret_at(&doc, a, origin)?;
+        (x, y, x + 1., y + h)
+    } else {
+        let range: ITextRange = doc.GetRange(a, b)?.cast()?;
+        let mut rect = windows::Foundation::Rect::default();
+        let mut hit = 0;
+        range.GetRect(PointOptions::ClientCoordinates, &mut rect, &mut hit)?;
+        let (x, y) = (rect.X + origin.0, rect.Y + origin.1);
+        (x, y, x + rect.Width.max(1.), y + rect.Height.max(1.))
+    };
+    let fe: FrameworkElement = r.cast()?;
+    let (w, h) = (fe.ActualWidth()? as f32, fe.ActualHeight()? as f32);
+    let (x0, y0) = (x0.clamp(0., w), y0.clamp(0., h));
+    let (x1, y1) = (x1.clamp(x0, w), y1.clamp(y0, h));
+    Ok(Rect::new(x0, y0, (x1 - x0).max(1.), (y1 - y0).max(1.)))
+}
+
+/// [`range_box`] of characters `start..end` (as Rust counts them).
+pub fn chars_box(r: &RichEditBox, start: usize, end: usize) -> Option<Rect> {
+    let text = text_of(&r.Document().ok()?).ok()?;
+    if start > text.chars().count() {
+        return None;
+    }
+    let a = chars_to_utf16(&text, start) as i32;
+    let b = chars_to_utf16(&text, end.max(start)) as i32;
+    range_box(r, a, b).ok()
+}
+
+/// A tap on a chip with `on_click` (`links`: each one's first UTF-16
+/// unit and link id) reports it with the chip's box (#327).
+pub fn chip_tapped(r: &RichEditBox, a: &TappedRoutedEventArgs, links: &[(i32, u64)]) -> Result<()> {
+    if links.is_empty() {
+        return Ok(());
+    }
+    let e: UIElement = r.cast()?;
+    let p = a.GetPosition(&e)?;
+    for &(at, link) in links {
+        let Ok(b) = range_box(r, at, at + 1) else {
+            continue;
+        };
+        if p.X >= b.x && p.X <= b.x + b.width && p.Y >= b.y && p.Y <= b.y + b.height {
+            let e = UiEvent::RunClick(link, b);
+            trace(&e);
+            dispatch(e);
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// The selection, and the caret's box (one point wide) or the box around

@@ -26,6 +26,11 @@
 //! open flyout) as the field's text, selection or scrolling changes and
 //! after each layout.
 //!
+//! One anchored to a chip of a rich input (#327, `OverlayAnchor::Text`)
+//! goes the same way against the chip's box in its rich edit box
+//! (`ITextRange::GetRect`, kept inside the box), and against the field
+//! once the chip is gone (`OverlayAnchor::Field`).
+//!
 //! The content node is laid out by prism-native in the area
 //! `Widgets::overlay_viewport` gives; its canvas (`View::kids`) moves into
 //! the panel or the flyout.
@@ -147,10 +152,13 @@ pub struct Overlay {
     host: Canvas,
     state: Rc<FlyoutState>,
     /// Where the flyout was shown: its anchor, the layout direction, and
-    /// the caret it was shown at (#328).
+    /// the caret (#328) or chip (#327) it was shown at.
     anchor: Option<UIElement>,
     rtl: bool,
     caret: Option<(f32, f32, f32, f32)>,
+    /// The field it is anchored to instead of its parent (#327), when its
+    /// config names one.
+    pub field: Option<AnchorField>,
 }
 
 thread_local! {
@@ -217,6 +225,7 @@ impl Overlay {
             anchor: None,
             rtl: false,
             caret: None,
+            field: None,
         })
     }
 
@@ -571,7 +580,7 @@ impl Win {
                     base.SetAreOpenCloseAnimationsEnabled(!config.bare)?;
                     let options = show_options(config, rtl)?;
                     let transient = config.keep_focus;
-                    o.caret = at_caret(&options, &anchor, config)?;
+                    o.caret = at_anchor(&options, &anchor, config, o.field.as_ref())?;
                     o.anchor = Some(anchor.clone());
                     o.rtl = rtl;
                     base.SetAllowFocusOnInteraction(!config.keep_focus)?;
@@ -603,30 +612,30 @@ impl Win {
                     }
                     base.ShowAtWithOptions(&anchor, &options)?;
                 } else {
-                    // At a caret: where the field moved (#328).
-                    o.follow_caret()?;
+                    // At a caret (#328) or a chip (#327): where it moved.
+                    o.follow_anchor()?;
                 }
             }
         }
         Ok(())
     }
 
-    /// Flyouts at a caret follow it (#328).
-    pub fn follow_carets(&mut self) {
+    /// Flyouts at a caret (#328) or a chip (#327) follow it.
+    pub fn follow_anchors(&mut self) {
         for o in self.layers.values_mut() {
-            if let Err(e) = o.follow_caret() {
-                crate::win::log!("overlay {}: following the caret: {e}", o.id);
+            if let Err(e) = o.follow_anchor() {
+                crate::win::log!("overlay {}: following its anchor: {e}", o.id);
             }
         }
     }
 }
 
 impl Overlay {
-    /// A flyout at a caret follows it (#328): shown again at the caret's
-    /// new place, which moves the open flyout.
-    fn follow_caret(&mut self) -> Result<()> {
+    /// A flyout at a caret (#328) or a chip (#327) follows it: shown again
+    /// at its new place, which moves the open flyout.
+    fn follow_anchor(&mut self) -> Result<()> {
         let c = self.state.config.get();
-        if c.anchor != OverlayAnchor::Caret
+        if c.anchor == OverlayAnchor::Parent
             || self.shown != Some(Mode::Flyout)
             || !self.state.shown.get()
         {
@@ -636,7 +645,7 @@ impl Overlay {
             return Ok(());
         };
         let options = show_options(c, self.rtl)?;
-        let caret = at_caret(&options, &anchor, c)?;
+        let caret = at_anchor(&options, &anchor, c, self.field.as_ref())?;
         if caret == self.caret {
             return Ok(());
         }
@@ -653,7 +662,8 @@ thread_local! {
 }
 
 /// A field's text, selection or scrolling changed: flyouts at a caret
-/// follow it on the next turn, once XAML has laid the field out (#328).
+/// (#328) or a chip (#327) follow it on the next turn, once XAML has laid
+/// the field out.
 pub fn caret_moved() {
     if CARET_DUE.replace(true) {
         return;
@@ -665,7 +675,7 @@ pub fn caret_moved() {
                 &crate::winui::bindings::Microsoft::UI::Dispatching::DispatcherQueueHandler::new(
                     || {
                         CARET_DUE.set(false);
-                        crate::imp::with_state(|s| s.renderer.widgets.follow_carets());
+                        crate::imp::with_state(|s| s.renderer.widgets.follow_anchors());
                         Ok(())
                     },
                 ),
@@ -688,19 +698,22 @@ fn show_options(c: OverlayConfig, rtl: bool) -> Result<FlyoutShowOptions> {
     Ok(options)
 }
 
-/// At a caret (#328): the flyout opens at the caret's edge on its side
-/// (`Position`, in `anchor`'s coordinates), the caret kept clear
-/// (`ExclusionRect`). Returns the caret, `None` when the overlay is not
-/// anchored at one or has no field.
-fn at_caret(
+/// At a caret (#328) or a chip (#327): the flyout opens at its edge on
+/// its side (`Position`, in `anchor`'s coordinates), it kept clear
+/// (`ExclusionRect`). Returns its rectangle, `None` when the overlay is
+/// anchored to its parent or has no field.
+fn at_anchor(
     options: &FlyoutShowOptions,
     anchor: &UIElement,
     c: OverlayConfig,
+    field: Option<&AnchorField>,
 ) -> Result<Option<(f32, f32, f32, f32)>> {
-    if c.anchor != OverlayAnchor::Caret {
-        return Ok(None);
-    }
-    let Some((x, y, w, h)) = caret_anchor(anchor) else {
+    let rect = match c.anchor {
+        OverlayAnchor::Parent => None,
+        OverlayAnchor::Caret => caret_anchor(anchor),
+        a => field.and_then(|f| field_anchor(anchor, f, a)),
+    };
+    let Some((x, y, w, h)) = rect else {
         return Ok(None);
     };
     use prism_core::PopoverSide as S;
@@ -723,6 +736,41 @@ fn at_caret(
     };
     options.SetExclusionRect(&PropertyValue::CreateRect(exclusion)?.cast::<IReference<Rect>>()?)?;
     Ok(Some((x, y, w, h)))
+}
+
+/// A field an overlay is anchored to (#327): its outer element, and its
+/// rich edit box (a rich input's, which lays its chips out).
+pub type AnchorField = (UIElement, Option<RichEditBox>);
+
+/// A field anchor's box in `anchor`'s coordinates (#327): the characters
+/// ([`OverlayAnchor::Text`], a chip's) in its rich edit box, kept inside
+/// it; the whole field otherwise (also when they are not laid out).
+fn field_anchor(
+    anchor: &UIElement,
+    (outer, rich): &AnchorField,
+    a: OverlayAnchor,
+) -> Option<(f32, f32, f32, f32)> {
+    let in_anchor = |e: &UIElement, (x, y, w, h): (f32, f32, f32, f32)| {
+        let p = e
+            .TransformToVisual(anchor)
+            .ok()?
+            .TransformPoint(windows::Foundation::Point { X: x, Y: y })
+            .ok()?;
+        Some((p.X, p.Y, w, h))
+    };
+    if let (OverlayAnchor::Text { start, end, .. }, Some(r)) = (a, rich)
+        && let Some(b) = crate::edit::chars_box(r, start, end)
+        && let Ok(e) = r.cast::<UIElement>()
+        && let Some(at) = in_anchor(&e, (b.x, b.y, b.width, b.height))
+    {
+        return Some(at);
+    }
+    let fe: FrameworkElement = outer.cast().ok()?;
+    let (w, h) = (
+        fe.ActualWidth().ok()? as f32,
+        fe.ActualHeight().ok()? as f32,
+    );
+    in_anchor(outer, (0., 0., w, h))
 }
 
 /// The caret an overlay anchored at it goes against (#328), in `anchor`'s

@@ -4,6 +4,7 @@
 mod attributes;
 mod background;
 mod channel;
+mod chip_anchor;
 mod close;
 mod decoration;
 mod fonts;

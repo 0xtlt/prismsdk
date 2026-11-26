@@ -43,6 +43,19 @@ use crate::winui::{h, win_color};
 /// `CF_UNICODETEXT`: pastes as plain text.
 const PLAIN_TEXT: i32 = 13;
 
+thread_local! {
+    /// Each rich input's chips with `on_click`: their first UTF-16 unit and
+    /// link id (#327), for its taps.
+    static LINKS: RefCell<std::collections::HashMap<NodeId, Vec<(i32, u64)>>> =
+        RefCell::default();
+}
+
+impl Drop for Rich {
+    fn drop(&mut self) {
+        LINKS.with(|l| l.borrow_mut().remove(&self.id));
+    }
+}
+
 /// A rich input node's editor and the runs it shows.
 pub struct Rich {
     pub element: RichEditBox,
@@ -119,6 +132,23 @@ impl Rich {
         if let Err(e) = crate::across::connect(id, &r.cast()?) {
             crate::win::log!("rich input {id}: drags across fields: {e}");
         }
+        // A tap on a chip with `on_click` (the box takes its taps).
+        let e: crate::winui::xaml::UIElement = r.cast()?;
+        e.AddHandler(
+            &crate::winui::xaml::UIElement::TappedEvent()?,
+            &crate::boxed::boxed(crate::winui::xaml::Input::TappedEventHandler::new(
+                move |s, a| {
+                    if let (Some(s), Some(a)) = (s.as_ref(), a.as_ref())
+                        && let Ok(r) = s.cast::<RichEditBox>()
+                    {
+                        let links = LINKS.with(|l| l.borrow().get(&id).cloned());
+                        crate::edit::chip_tapped(&r, a, links.as_deref().unwrap_or_default())?;
+                    }
+                    Ok(())
+                },
+            )),
+            true,
+        )?;
         Ok(Rich {
             element: r,
             id,
@@ -248,6 +278,16 @@ impl Rich {
                 Some((r.utf16_start as i32, look))
             })
             .collect();
+        let links: Vec<(i32, u64)> = st
+            .runs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let t = runs.get(i).filter(|t| t.chip.is_some())?;
+                Some((r.utf16_start as i32, t.link?))
+            })
+            .collect();
+        LINKS.with(|l| l.borrow_mut().insert(self.id, links));
         let had = self.chips.borrow().clone();
         let redo: Vec<usize> = if replaced {
             (0..want.len()).collect()

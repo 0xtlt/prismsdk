@@ -497,7 +497,7 @@ pub fn paste(tv: &UITextView) -> bool {
 }
 
 /// The link of the clickable chip (or icon) under `point` of `tv`.
-fn tapped_link(tv: &UITextView, point: CGPoint) -> Option<u64> {
+fn tapped_link(tv: &UITextView, point: CGPoint) -> Option<(u64, CGRect)> {
     let runs = shown_runs(tv.tag() as NodeId, tv)?;
     let inset = tv.textContainerInset();
     let p = CGPoint::new(point.x - inset.left, point.y - inset.top);
@@ -519,9 +519,77 @@ fn tapped_link(tv: &UITextView, point: CGPoint) -> Option<u64> {
         return None;
     }
     let index = layout.characterIndexForGlyphAtIndex(glyph);
+    // Its box in the field's visible coordinates (#327).
+    let offset = tv.bounds().origin;
+    let at = CGRect::new(
+        CGPoint::new(
+            rect.origin.x + inset.left - offset.x,
+            rect.origin.y + inset.top - offset.y,
+        ),
+        rect.size,
+    );
     chip_at(&runs, index)
         .filter(|r| r.is_object())
         .and_then(|r| r.link)
+        .map(|link| (link, at))
+}
+
+/// The box of characters `start..end` of `tv`'s text, in `tv`'s
+/// coordinates (its content's, scrolling included): their glyphs on the
+/// first line they are on (a chip: its attachment), the caret's line box
+/// one point wide when empty (#327).
+pub fn range_box(tv: &UITextView, start: usize, end: usize) -> Option<CGRect> {
+    let text = tv.text().to_string();
+    let (a, b) = (
+        prism_native::fields::chars_to_utf16(&text, start),
+        prism_native::fields::chars_to_utf16(&text, end),
+    );
+    let layout = tv.layoutManager();
+    let container = tv.textContainer();
+    layout.ensureLayoutForTextContainer(&container);
+    let inset = tv.textContainerInset();
+    let shift = |r: CGRect| {
+        CGRect::new(
+            CGPoint::new(r.origin.x + inset.left, r.origin.y + inset.top),
+            r.size,
+        )
+    };
+    let n = layout.numberOfGlyphs();
+    if n == 0 {
+        let extra = layout.extraLineFragmentRect();
+        return Some(shift(CGRect::new(
+            extra.origin,
+            objc2_core_foundation::CGSize::new(1., extra.size.height),
+        )));
+    }
+    // SAFETY: a null `actualCharacterRange` is allowed.
+    let glyphs = unsafe {
+        layout.glyphRangeForCharacterRange_actualCharacterRange(
+            NSRange::new(a, b.saturating_sub(a)),
+            std::ptr::null_mut(),
+        )
+    };
+    let first = glyphs.location.min(n - 1);
+    let mut line = NSRange::new(0, 0);
+    let frag = unsafe { layout.lineFragmentRectForGlyphAtIndex_effectiveRange(first, &mut line) };
+    if glyphs.length == 0 {
+        let x = if glyphs.location >= n {
+            let r = layout
+                .boundingRectForGlyphRange_inTextContainer(NSRange::new(n - 1, 1), &container);
+            r.origin.x + r.size.width
+        } else {
+            frag.origin.x + layout.locationForGlyphAtIndex(first).x
+        };
+        return Some(shift(CGRect::new(
+            CGPoint::new(x, frag.origin.y),
+            objc2_core_foundation::CGSize::new(1., frag.size.height),
+        )));
+    }
+    let last = (glyphs.location + glyphs.length).min(line.location + line.length);
+    let part = NSRange::new(first, last.saturating_sub(first).max(1));
+    Some(shift(
+        layout.boundingRectForGlyphRange_inTextContainer(part, &container),
+    ))
 }
 
 define_class!(
@@ -549,8 +617,14 @@ define_class!(
                 return;
             };
             let point = tap.locationInView(Some(tv));
-            if let Some(link) = tapped_link(tv, point) {
-                crate::imp::dispatch(UiEvent::MenuSelect(link));
+            if let Some((link, r)) = tapped_link(tv, point) {
+                let rect = prism_core::Rect::new(
+                    r.origin.x as f32,
+                    r.origin.y as f32,
+                    r.size.width as f32,
+                    r.size.height as f32,
+                );
+                crate::imp::dispatch(UiEvent::RunClick(link, rect));
             }
         }
     }

@@ -279,6 +279,10 @@ public final class PrismHost {
         /** `anchor=caret` (#328): placed against the caret of the anchor's
          *  field, followed before every frame while shown. */
         boolean caret;
+        /** Any other `anchor=` (#327): `text:field:start:end` (characters of
+         *  a rich input, a chip's) or `field:field`; "" for its parent.
+         *  Followed like the caret. */
+        String anchor = "";
         android.view.ViewTreeObserver.OnPreDrawListener caretFollow;
         View caretTree;
         /** Where it last went: {x, y, room}. */

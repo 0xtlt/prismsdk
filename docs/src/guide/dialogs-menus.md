@@ -241,6 +241,10 @@ div()
 
 tvOS (centered cards), watchOS, sheets and centered dialogs ignore it. The counter example's Forms section has a template field: type `{{` to see the list.
 
+### At a chip
+
+`.anchor_chip(field, key)` anchors a popover, or a dialog, to the chip `key` of the `rich_input` with id `field` instead, and it follows the chip as the text moves: see [a menu under a clicked chip](forms.md#a-menu-under-a-clicked-chip).
+
 ### Beside the anchor, without a dim
 
 An editor opens small choice panels (a list of options, a colour picker) beside the column that asked for them, over the edge of the page being edited, without dimming it: the user keeps seeing what they change. A dialog with a side does that and stays a modal dialog: the focus stays inside, the rest is out of reach, and Escape or a click outside closes it.

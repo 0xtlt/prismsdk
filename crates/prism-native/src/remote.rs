@@ -199,6 +199,13 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
     let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|n| n as f32);
     let id = v.get("id").and_then(Value::as_u64);
     match v.get("t")?.as_str()? {
+        // A chip of a rich input clicked (#327): with its box in the
+        // field's coordinates (`x`, `y`, `w`, `h`, points). Without them,
+        // the backend reports a plain `MenuSelect`.
+        "menu" => {
+            let (x, y, w, h) = (num("x")?, num("y")?, num("w")?, num("h")?);
+            Some(UiEvent::RunClick(id?, prism_core::Rect::new(x, y, w, h)))
+        }
         // With the keys held and the click's number in a series (`mods`,
         // `n`, #159) when the host says.
         "click" => {
@@ -217,6 +224,8 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                         count,
                         button: prism_core::PointerButton::Primary,
                         text_offset: None,
+                        span_rect: None,
+                        span_frame: None,
                     },
                 ),
                 Some(p) => UiEvent::ClickAt(id?, p),
@@ -543,7 +552,8 @@ pub fn typography(s: &Style) -> serde_json::Map<String, Value> {
 /// underline's color, `us` its style when not single (`thick`, `double`,
 /// `dotted`, `dashed`, #221), `c`/`bg` colors, `ff`
 /// family, `z` size as a multiple of the text's, `link` the id to report as
-/// `{"t":"menu","id":link}`, `href` its path, `icon` an SF Symbol name and
+/// `{"t":"menu","id":link}` (with `x`, `y`, `w`, `h`: the chip's box in the
+/// field, in points, when the host knows it, #327), `href` its path, `icon` an SF Symbol name and
 /// `glyph` its fallback glyph).
 pub fn runs_json(config: &str) -> Value {
     let runs: Vec<Value> = prism_core::decode_runs(config)

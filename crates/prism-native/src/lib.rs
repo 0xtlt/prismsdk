@@ -341,6 +341,25 @@ pub trait Widgets {
     /// (sheets and dialogs too), covering the window, letting pointer input
     /// through where they have no child. Their frames come from `set_frame`.
     fn set_layers(&mut self, _layers: &[Self::View]) {}
+    /// The field overlay `overlay` is anchored in (#327), for a config
+    /// anchor naming one ([`OverlayAnchor::Text`](prism_core::OverlayAnchor::Text):
+    /// characters of a rich input, a chip's one; or
+    /// [`OverlayAnchor::Field`](prism_core::OverlayAnchor::Field)): the
+    /// field's view and that anchor, or `None` (its parent, also once the
+    /// field is gone). Called before every layout while its config names
+    /// a field, then after it: store it, and place the overlay again when
+    /// the anchor's rectangle moved (the text wrapped, the field or the
+    /// window changed), as for the caret
+    /// ([`OverlayAnchor::Caret`](prism_core::OverlayAnchor::Caret)). Find
+    /// the rectangle at that time, in the field (its text layout,
+    /// scrolled), with the platform's placement as for a parent anchor.
+    /// Default: anchored to its parent.
+    fn set_overlay_anchor(
+        &mut self,
+        _overlay: &Self::View,
+        _anchor: Option<(Self::View, prism_core::OverlayAnchor)>,
+    ) {
+    }
     /// Where an `Overlay`'s content goes and how big it may get: `width` is
     /// the content's width (unless it sets a narrower one), `height` its
     /// maximum height (sheets fill it). Coordinates are those of the
@@ -918,6 +937,8 @@ impl<W: Widgets> NativeRenderer<W> {
             ..Default::default()
         };
         let _ = self.taffy.set_style(self.viewport, viewport_style);
+        // Overlays anchored to a chip find it before they show (#327).
+        self.follow_anchors();
         self.sync_zero_bases();
         // Tables size their columns from their cells first (#284).
         self.measure_tables();
@@ -930,6 +951,23 @@ impl<W: Widgets> NativeRenderer<W> {
         self.update_sticky();
         self.layout_layers();
         self.settling = false;
+        // ... and follow it to where this layout put it.
+        self.follow_anchors();
+    }
+
+    /// Gives overlays anchored in a field (#327) the field's view: it may
+    /// come or go.
+    fn follow_anchors(&mut self) {
+        for (id, c) in &self.overlays {
+            let Some(field) = c.anchor.field() else {
+                continue;
+            };
+            let Some(overlay) = self.nodes.get(id) else {
+                continue;
+            };
+            let field = self.nodes.get(&field).map(|f| (f.view.clone(), c.anchor));
+            self.widgets.set_overlay_anchor(&overlay.view, field);
+        }
     }
 
     /// Runs `f`, the layout of `id` in `area`, settling if the area changed
@@ -2177,6 +2215,12 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         let _ = self.taffy.mark_dirty(e.layout);
                         if e.kind == NodeKind::Overlay {
                             let c = prism_core::controls::OverlayConfig::decode(config);
+                            // No longer anchored in a field (#327).
+                            if c.anchor.field().is_none()
+                                && self.overlays.get(id).is_some_and(|o| o.anchor.field().is_some())
+                            {
+                                self.widgets.set_overlay_anchor(&e.view, None);
+                            }
                             self.overlays.insert(*id, c);
                         }
                     }

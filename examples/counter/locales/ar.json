@@ -410,6 +410,8 @@
     "note_pasted": "لُصق، كان في الحافظة {count} أنواع",
     "note_clicked": "نقر مع مفتاح على المقطع {count}",
     "note_chip": "فُتح {page}",
+    "note_chip_open": "افتح {page}",
+    "note_chip_remove": "إزالة",
     "note_text": "حدّد {words}، أو {click} {link}. انظر {page}.",
     "note_text_touch": "حدّد {words}، أو المس {page}.",
     "note_click_mac": "انقر مع ⌘ على",

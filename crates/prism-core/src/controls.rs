@@ -567,11 +567,14 @@ impl Backdrop {
     }
 }
 
-/// What a popover or a placed dialog is anchored to (#328). Placement
-/// follows the usual rules against it: its [`side`](crate::Overlay::side)
-/// (flipped without room), its [`align`](crate::Overlay::align), kept
-/// inside the window. See [`Overlay::anchor`](crate::Overlay::anchor).
+/// What a popover or a placed dialog is anchored to (#328, #327).
+/// Placement follows the usual rules against it: its
+/// [`side`](crate::Overlay::side) (flipped without room), its
+/// [`align`](crate::Overlay::align), kept inside the window. See
+/// [`Overlay::anchor`](crate::Overlay::anchor) and
+/// [`Overlay::anchor_chip`](crate::Overlay::anchor_chip).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum OverlayAnchor {
     /// The element that contains the overlay (the default).
     #[default]
@@ -583,23 +586,72 @@ pub enum OverlayAnchor {
     /// there, against the parent. It follows the caret as the user types,
     /// moves it, scrolls the field or the page, and as the field moves.
     Caret,
+    /// Characters `start..end` of the rich input `field` (#327): the box
+    /// around them in the field's text layout (a chip: its one character;
+    /// several lines: the run on the first), kept inside the field's
+    /// visible part. It follows them as the text wraps again, the field
+    /// or the page scrolls, and as the field moves.
+    /// [`Overlay::anchor_chip`](crate::Overlay::anchor_chip) sets it,
+    /// finding the chip by key on each render.
+    Text {
+        /// The field's node.
+        field: crate::NodeId,
+        /// The first character, counted like a selection (a chip is one).
+        start: usize,
+        /// The character after the last one.
+        end: usize,
+    },
+    /// The whole field `.0` (#327): where an
+    /// [`anchor_chip`](crate::Overlay::anchor_chip) overlay goes while its
+    /// chip is not in the field.
+    Field(crate::NodeId),
 }
 
 impl OverlayAnchor {
-    /// Its `anchor=` token (`None` for the default).
-    fn token(self) -> Option<&'static str> {
+    /// Its `anchor=` token (`None` for the default): `caret`,
+    /// `text:<field>:<start>:<end>` or `field:<id>`.
+    fn token(self) -> Option<String> {
         match self {
             OverlayAnchor::Parent => None,
-            OverlayAnchor::Caret => Some("caret"),
+            OverlayAnchor::Caret => Some("caret".into()),
+            OverlayAnchor::Text { field, start, end } => {
+                Some(format!("text:{field}:{start}:{end}"))
+            }
+            OverlayAnchor::Field(id) => Some(format!("field:{id}")),
         }
     }
 
     fn parse(s: &str) -> Option<Self> {
-        Some(match s {
+        let mut parts = s.split(':');
+        let kind = parts.next()?;
+        let mut num = || parts.next()?.parse::<u64>().ok();
+        let anchor = match kind {
             "parent" => OverlayAnchor::Parent,
             "caret" => OverlayAnchor::Caret,
+            "text" => {
+                let field = num()?;
+                let start = num()? as usize;
+                let end = num()? as usize;
+                OverlayAnchor::Text {
+                    field,
+                    start,
+                    end: end.max(start),
+                }
+            }
+            "field" => OverlayAnchor::Field(num()?),
             _ => return None,
-        })
+        };
+        // Nothing after it.
+        num().is_none().then_some(anchor)
+    }
+
+    /// The field it is anchored in ([`Text`](Self::Text) and
+    /// [`Field`](Self::Field)): backends find its view by this node.
+    pub fn field(self) -> Option<crate::NodeId> {
+        match self {
+            OverlayAnchor::Text { field, .. } | OverlayAnchor::Field(field) => Some(field),
+            OverlayAnchor::Parent | OverlayAnchor::Caret => None,
+        }
     }
 }
 
@@ -738,7 +790,7 @@ pub struct OverlayConfig {
     /// field's own [`keyboard_toolbar`](crate::TextInput::keyboard_toolbar)),
     /// not every field in its parent (#242).
     pub field_only: bool,
-    /// What a popover or a placed dialog is anchored to (#328). See
+    /// What a popover or a placed dialog is anchored to (#328, #327). See
     /// [`Overlay::anchor`](crate::Overlay::anchor).
     pub anchor: OverlayAnchor,
 }
@@ -747,7 +799,8 @@ impl OverlayConfig {
     /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`, `manual`,
     /// `keepfocus`, `side=…` and `align=…` (left out when they are the
     /// defaults), `placed`, `backdrop=<clear|dim|blur>`,
-    /// `size=<width>x<height>`, `bare`, `field`, `anchor=caret`. A keyboard bar is
+    /// `size=<width>x<height>`, `bare`, `field`, `anchor=…` (`caret`,
+    /// `text:<field>:<start>:<end>`, `field:<id>`). A keyboard bar is
     /// `keyboard`, with `field` when it serves only the field before it.
     pub fn encode(&self) -> String {
         let mut out = String::from(match self.kind {
@@ -797,7 +850,7 @@ impl OverlayConfig {
         }
         if let Some(a) = self.anchor.token() {
             out.push_str(" anchor=");
-            out.push_str(a);
+            out.push_str(&a);
         }
         out
     }
@@ -1006,6 +1059,39 @@ mod tests {
             "popover manual keepfocus side=trailing align=end"
         );
         assert_eq!(PopoverSide::Leading.opposite(), PopoverSide::Trailing);
+        // Anchored to a chip, or to its field once the chip is gone (#327).
+        let chip = OverlayConfig {
+            kind: OverlayKind::Popover,
+            anchor: OverlayAnchor::Text {
+                field: 12,
+                start: 6,
+                end: 7,
+            },
+            ..Default::default()
+        };
+        assert_eq!(chip.encode(), "popover anchor=text:12:6:7");
+        assert_eq!(OverlayConfig::decode(&chip.encode()), chip);
+        let field = OverlayConfig {
+            kind: OverlayKind::Dialog,
+            placed: true,
+            anchor: OverlayAnchor::Field(12),
+            ..Default::default()
+        };
+        assert_eq!(field.encode(), "dialog placed anchor=field:12");
+        assert_eq!(OverlayConfig::decode(&field.encode()), field);
+        assert_eq!(field.anchor.field(), Some(12));
+        let anchor = |s: &str| OverlayConfig::decode(&format!("popover anchor={s}")).anchor;
+        assert_eq!(anchor("text:1:2"), OverlayAnchor::Parent);
+        assert_eq!(anchor("caret:1"), OverlayAnchor::Parent);
+        assert_eq!(anchor("field:x"), OverlayAnchor::Parent);
+        assert_eq!(
+            anchor("text:1:5:2"),
+            OverlayAnchor::Text {
+                field: 1,
+                start: 5,
+                end: 5
+            }
+        );
         // Arrowed popovers point at the part of the anchor they line up with.
         assert_eq!(PopoverAlign::Start.arrow_span(300., 200., true), (0., 200.));
         assert_eq!(

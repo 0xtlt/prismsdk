@@ -62,6 +62,10 @@ pub struct Fake {
     pub measured: HashMap<NodeId, Vec<Option<f32>>>,
     /// Safe area the fake platform gives stack screens.
     pub screen_insets: Insets,
+    /// What each overlay was last told it is anchored to (#327), and how
+    /// many times.
+    pub anchors: HashMap<NodeId, Option<(NodeId, prism_core::OverlayAnchor)>>,
+    pub anchor_calls: usize,
     /// What each sticky view was last told: its scroll view and range.
     pub sticky: HashMap<NodeId, Option<(NodeId, Sticky)>>,
     /// The interaction states each view was asked to report.
@@ -377,6 +381,14 @@ impl Widgets for Fake {
         }
     }
     /// Overlays get a 300 x 400 area at (10, 20).
+    fn set_overlay_anchor(
+        &mut self,
+        overlay: &NodeId,
+        anchor: Option<(NodeId, prism_core::OverlayAnchor)>,
+    ) {
+        self.anchors.insert(*overlay, anchor);
+        self.anchor_calls += 1;
+    }
     fn overlay_viewport(&mut self, _: &NodeId, _: &NodeId) -> Viewport {
         Viewport {
             x: 10.,

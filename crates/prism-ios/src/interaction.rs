@@ -1173,6 +1173,8 @@ pub fn tap_event(g: &UIGestureRecognizer) -> Option<UiEvent> {
                 count,
                 button: prism_core::PointerButton::Primary,
                 text_offset: None,
+                span_rect: None,
+                span_frame: None,
             },
         )
     } else {

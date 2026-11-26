@@ -446,6 +446,23 @@ impl Runtime {
                     h(&ClickEvent, &mut self.app);
                 }
             }
+            UiEvent::RunClick(item, rect) => {
+                let finite = [rect.x, rect.y, rect.width, rect.height]
+                    .iter()
+                    .all(|v| v.is_finite());
+                if let Some(h) = self.reconciler.menu_handler(item) {
+                    // The field is the node the run's id is made from.
+                    let field = item >> 16;
+                    let e = ClickEvent {
+                        span_rect: finite.then_some(rect),
+                        span_frame: self.app.frames.get(&field).filter(|_| finite).map(|f| {
+                            events::Rect::new(f.x + rect.x, f.y + rect.y, rect.width, rect.height)
+                        }),
+                        ..ClickEvent
+                    };
+                    h(&e, &mut self.app);
+                }
+            }
             UiEvent::AlertAction(alert, index) => self.app.alert_action(alert, index),
             UiEvent::Scroll(id, offset, viewport) => {
                 // Kept for `cx.scroll_offset` (#193), from the views that
@@ -1336,7 +1353,7 @@ pub mod prelude {
         PointerPhase, PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog,
         keyboard_toolbar, popover, radio_group, sheet, time_picker, time_picker_opt,
     };
-    // Anchored overlays without a dim (#79), at a text field's caret (#328).
+    // Anchored overlays without a dim (#79), at a caret (#328) or a chip (#327).
     pub use crate::{Backdrop, OverlayAnchor};
     // Islands: client-side Web Components.
     pub use crate::{IslandEvent, island, web_component};

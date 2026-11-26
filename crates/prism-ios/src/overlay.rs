@@ -41,8 +41,10 @@
 //! text field in its parent (`caretRectForPosition:` of the selection's
 //! end, in the parent's coordinates, kept inside the field): the popover's
 //! `sourceRect`, or the placed card's anchor. It follows the caret
-//! (`follow_caret`) as the field's text, selection or scrolling changes
-//! and after each layout.
+//! (`follow_anchor`) as the field's text, selection or scrolling changes
+//! and after each layout. An overlay anchored to a chip (#327) does the
+//! same against the chip's glyph rectangle in its rich input's text view
+//! (`Widgets::set_overlay_anchor` gives the view), kept inside the field.
 //!
 //! A keyboard bar (#242) is never presented: its content lives in an input
 //! view (`UIInputView`, keyboard style) that the text fields it serves take
@@ -406,6 +408,9 @@ pub struct Overlay {
     pub keyboard: Retained<UIView>,
     /// A blurred backdrop under the card (#79).
     blur: std::cell::RefCell<Option<Retained<objc2_ui_kit::UIVisualEffectView>>>,
+    /// The field it is anchored in (#327), for a config anchor naming one:
+    /// its view (a rich input's text view).
+    anchor_to: std::cell::RefCell<Option<Retained<UIView>>>,
 }
 
 impl Overlay {
@@ -437,6 +442,17 @@ impl Overlay {
             content: Default::default(),
             blur: Default::default(),
             keyboard,
+            anchor_to: Default::default(),
+        }
+    }
+
+    /// The field it is anchored in (#327): its view, or `None`. Placed
+    /// again there if shown.
+    pub fn set_anchor(&self, field: Option<Retained<UIView>>) {
+        let changed = *self.anchor_to.borrow() != field;
+        *self.anchor_to.borrow_mut() = field;
+        if changed {
+            self.follow_anchor();
         }
     }
 
@@ -842,22 +858,71 @@ impl Overlay {
                     CGSize::new(w, caret.size.height),
                 )
             }
+            #[cfg(not(target_os = "tvos"))]
+            anchor @ (OverlayAnchor::Text { .. } | OverlayAnchor::Field(_)) => self
+                .field_anchor(source, anchor)
+                .unwrap_or_else(|| source.bounds()),
             _ => source.bounds(),
         }
     }
 
-    /// An overlay at the caret follows it (#328): the card moves, or the
-    /// popover's `sourceRect` (UIKit moves the popover on its next layout,
-    /// asked for now).
-    pub fn follow_caret(&self) {
+    /// The box of the anchor's characters in its field's text view (a
+    /// chip's glyph rectangle), kept inside the field's visible part, or
+    /// the whole field, in `source`'s coordinates (#327). `None` without
+    /// the field in the window.
+    #[cfg(not(target_os = "tvos"))]
+    fn field_anchor(&self, source: &UIView, anchor: OverlayAnchor) -> Option<CGRect> {
+        let view = self.anchor_to.borrow().clone()?;
+        view.window()?;
+        // A text view's bounds are its visible part (scrolled).
+        let field = view.bounds();
+        let chars = match (anchor, view.downcast_ref::<objc2_ui_kit::UITextView>()) {
+            (OverlayAnchor::Text { start, end, .. }, Some(tv)) => {
+                crate::rich::range_box(tv, start, end)
+            }
+            _ => None,
+        };
+        let r = match chars {
+            Some(r) => {
+                let f = |r: CGRect| {
+                    (
+                        r.origin.x as f32,
+                        r.origin.y as f32,
+                        r.size.width as f32,
+                        r.size.height as f32,
+                    )
+                };
+                // Scrolled out of the field: on its nearest edge.
+                let (x, y, w, h) = prism_core::controls::caret_in_field(f(r), f(field));
+                CGRect::new(
+                    CGPoint::new(f64::from(x), f64::from(y)),
+                    CGSize::new(f64::from(w), f64::from(h)),
+                )
+            }
+            None => field,
+        };
+        Some(source.convertRect_fromView(r, Some(&view)))
+    }
+
+    /// An overlay at a caret (#328) or a chip (#327) follows it: the card
+    /// moves, or the popover's `sourceRect` (UIKit moves the popover on
+    /// its next layout, asked for now).
+    pub fn follow_anchor(&self) {
         let c = self.config.get();
-        if c.anchor != OverlayAnchor::Caret || !self.presented() || self.is_keyboard() {
+        if c.anchor == OverlayAnchor::Parent || !self.presented() || self.is_keyboard() {
             return;
         }
         if self.custom() {
             self.place_card();
-            return;
+        } else {
+            self.follow_source(c);
         }
+    }
+
+    /// A shown popover's `sourceRect` on its anchor again (tvOS has none).
+    fn follow_source(&self, c: OverlayConfig) {
+        #[cfg(target_os = "tvos")]
+        let _ = c;
         #[cfg(not(target_os = "tvos"))]
         if c.kind == OverlayKind::Popover
             && let Some(pc) = self.vc.popoverPresentationController()

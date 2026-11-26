@@ -49,6 +49,42 @@ struct Chip {
     copied: String,
 }
 
+/// The box of characters `start..end` of `view` (a chip's own box for its
+/// character, else the run on the first line it covers; a caret line for
+/// an empty range), in the view's coordinates, kept inside what shows of
+/// it (#327).
+pub(crate) fn range_box(view: &gtk::TextView, start: usize, end: usize) -> Option<gdk::Rectangle> {
+    let b = view.buffer();
+    let len = b.char_count().max(0) as usize;
+    if start > len {
+        return None;
+    }
+    let at = |c: usize| b.iter_at_offset(c.min(len) as i32);
+    let a = view.iter_location(&at(start));
+    let (x, y) = view.buffer_to_window_coords(gtk::TextWindowType::Widget, a.x(), a.y());
+    let w = if end <= start {
+        1
+    } else if end > start + 1 {
+        let z = view.iter_location(&at(end - 1));
+        if z.y() == a.y() {
+            z.x() + z.width() - a.x()
+        } else {
+            view.width() - x
+        }
+    } else {
+        a.width()
+    };
+    let (vw, vh) = (view.width(), view.height());
+    let (x0, y0) = (x.clamp(0, vw), y.clamp(0, vh));
+    let (x1, y1) = ((x + w.max(1)).clamp(x0, vw), (y + a.height()).clamp(y0, vh));
+    Some(gdk::Rectangle::new(
+        x0,
+        y0,
+        (x1 - x0).max(1),
+        (y1 - y0).max(1),
+    ))
+}
+
 /// Makes text area `view` of node `id` a rich input.
 pub(crate) fn setup(id: NodeId, view: &gtk::TextView) {
     RICH.with(|r| {
@@ -286,7 +322,9 @@ fn new_chip(anchor: gtk::TextChildAnchor) -> Chip {
     click.connect_released(move |g, _, _, _| {
         if let Some(link) = l.get() {
             g.set_state(gtk::EventSequenceState::Claimed);
-            crate::imp::dispatch(UiEvent::MenuSelect(link));
+            if let Some(w) = g.widget() {
+                clicked(&w, link);
+            }
         }
     });
     widget.add_controller(click);
@@ -299,6 +337,38 @@ fn new_chip(anchor: gtk::TextChildAnchor) -> Chip {
         link,
         copied: String::new(),
     }
+}
+
+/// Chip widget `w` with link `link` clicked: reported with the chip's box
+/// in the field (its root overlay, #327).
+fn clicked(w: &gtk::Widget, link: u64) {
+    let rect = w
+        .ancestor(gtk::Overlay::static_type())
+        .and_then(|field| w.compute_bounds(&field));
+    crate::imp::dispatch(match rect {
+        Some(r) => UiEvent::RunClick(
+            link,
+            prism_core::Rect::new(r.x(), r.y(), r.width(), r.height()),
+        ),
+        None => UiEvent::MenuSelect(link),
+    });
+}
+
+/// Clicks the shown chip labelled `label` that has `on_click` (the
+/// `chip:` development hook): its window bounds, `None` without one.
+pub(crate) fn click_chip(label: &str) -> Option<gtk::graphene::Rect> {
+    let (w, link) = RICH.with(|r| {
+        r.borrow().values().find_map(|rich| {
+            rich.chips.iter().find_map(|c| {
+                let link = c.link.get()?;
+                (c.label.text() == label && c.widget.is_mapped())
+                    .then(|| (c.widget.clone().upcast::<gtk::Widget>(), link))
+            })
+        })
+    })?;
+    let bounds = w.root().and_then(|root| w.compute_bounds(&root));
+    clicked(&w, link);
+    bounds
 }
 
 /// Shows `run` in `chip`: a rounded box with its symbol and label in the

@@ -1004,7 +1004,21 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         },
         // `null`: an optional date picker was cleared (#89).
         "change" => Some(UiEvent::Change(id, change_value(v.get("v")?)?)),
-        "menu" => Some(UiEvent::MenuSelect(id)),
+        // A chip or a link of a rich input clicked with the pointer gives
+        // its box in the field (#327): `{"t":"menu","id","x","y","w","h"}`.
+        "menu" => Some(
+            match (|| {
+                Some(prism_core::Rect::new(
+                    finite_f32(v.get("x"))?,
+                    finite_f32(v.get("y"))?,
+                    finite_f32(v.get("w"))?.max(0.),
+                    finite_f32(v.get("h"))?.max(0.),
+                ))
+            })() {
+                Some(rect) => UiEvent::RunClick(id, rect),
+                None => UiEvent::MenuSelect(id),
+            },
+        ),
         // A frame the page measured (#192): `{"t":"layout","id","x","y","w","h"}`.
         "layout" => Some(UiEvent::Layout(
             id,
@@ -1104,6 +1118,8 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                         count,
                         button: prism_core::PointerButton::Primary,
                         text_offset: None,
+                        span_rect: None,
+                        span_frame: None,
                     },
                 )
             })
@@ -1128,6 +1144,8 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                     },
                 )?,
                 text_offset: None,
+                span_rect: None,
+                span_frame: None,
             },
         )),
         "pointer" => Some(UiEvent::Pointer(
@@ -1294,6 +1312,8 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                 count: v.get("n").and_then(Value::as_u64).unwrap_or(1).max(1) as u32,
                 button: prism_core::PointerButton::Primary,
                 text_offset: Some(v.get("at")?.as_u64()? as usize),
+                span_rect: None,
+                span_frame: None,
             },
         )),
         "spanclick" => Some(UiEvent::SpanClick(

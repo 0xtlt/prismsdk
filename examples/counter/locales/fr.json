@@ -386,6 +386,8 @@
     "note_pasted": "Collé, le presse-papiers avait {count} types",
     "note_clicked": "Clic avec une touche sur le segment {count}",
     "note_chip": "Ouvert : {page}",
+    "note_chip_open": "Ouvrir {page}",
+    "note_chip_remove": "Retirer",
     "note_text": "Sélectionnez {words}, ou {click} {link}. Voir {page}.",
     "note_text_touch": "Sélectionnez {words}, ou touchez {page}.",
     "note_click_mac": "⌘-cliquez sur",

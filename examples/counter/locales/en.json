@@ -386,6 +386,8 @@
     "note_pasted": "Pasted, the clipboard had {count} types",
     "note_clicked": "Modifier-clicked span {count}",
     "note_chip": "Opened {page}",
+    "note_chip_open": "Open {page}",
+    "note_chip_remove": "Remove",
     "note_text": "Select {words}, or {click} {link}. See {page}.",
     "note_text_touch": "Select {words}, or tap {page}.",
     "note_click_mac": "⌘-click",

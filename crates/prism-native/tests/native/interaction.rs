@@ -53,6 +53,70 @@ impl Render for Screen {
     }
 }
 
+thread_local! {
+    /// The chip is in the note; the menu is anchored to it.
+    static CHIP_MENU: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((true, true)) };
+}
+
+/// A note whose chip has a menu anchored to it (#327).
+struct ChipMenu;
+
+impl Render for ChipMenu {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        let (chip, anchored) = CHIP_MENU.with(|c| c.get());
+        let mut spans = vec![prism_core::span("See ")];
+        if chip {
+            spans.push(prism_core::chip("page:1", "Roadmap"));
+        }
+        let menu = popover(text("Open")).open(true);
+        let menu = if anchored {
+            menu.anchor_chip("note", "page:1")
+        } else {
+            menu
+        };
+        div()
+            .child(menu)
+            .child(prism_core::rich_input(spans).id("note").key("note"))
+    }
+}
+
+#[test]
+fn an_overlay_anchored_to_a_chip_is_given_its_field_around_every_layout() {
+    use prism_core::OverlayAnchor;
+    CHIP_MENU.with(|c| c.set((true, true)));
+    let mut h = Harness::root(|| ChipMenu);
+    h.layout(400., 600.);
+    let ov = h.w().of_kind(NodeKind::Overlay)[0];
+    let field = h.rt.node_named("note").unwrap();
+    let chip = OverlayAnchor::Text {
+        field,
+        start: 4,
+        end: 5,
+    };
+    assert_eq!(h.w().anchors[&ov], Some((field, chip)));
+    // Before and after each layout: it follows the chip.
+    let calls = h.w().anchor_calls;
+    h.layout(300., 600.);
+    assert_eq!(h.w().anchor_calls, calls + 2);
+    // The chip deleted: the whole field.
+    CHIP_MENU.with(|c| c.set((false, true)));
+    h.rt.app.refresh();
+    h.rerender();
+    h.layout(300., 600.);
+    assert_eq!(
+        h.w().anchors[&ov],
+        Some((field, OverlayAnchor::Field(field)))
+    );
+    // No longer anchored: its parent again.
+    CHIP_MENU.with(|c| c.set((false, false)));
+    h.rt.app.refresh();
+    h.rerender();
+    assert_eq!(h.w().anchors[&ov], None);
+    let calls = h.w().anchor_calls;
+    h.layout(300., 600.);
+    assert_eq!(h.w().anchor_calls, calls, "nothing to follow");
+}
+
 #[test]
 fn overlays_take_no_room_and_lay_their_content_out_alone() {
     let mut h = Harness::root(|| Screen {
