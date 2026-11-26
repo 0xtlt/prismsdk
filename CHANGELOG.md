@@ -7,6 +7,23 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.6.0 (2026-11-26)
+
+Widgets stay current without the app: `Widget::refresh` runs on each of
+the system's reloads, in the widget extension on Apple platforms and from
+an alarm on Android, and `Widget::reload` sets when (#331). Popovers and
+dialogs can open at a text field's caret, for completion lists (#328), or
+under a clicked chip of a `rich_input` (#327), whose chips take a vector
+icon, styled label runs, a ring, radius, height, max width, tool tip and
+a state (#329). Boxes take linear gradients that animate
+(`bg_linear_gradient`, #330). A push inside the app stays in the selected
+tab, so Back returns where the user came from (#332), and `rich_input`
+keeps its undo history across the app's answer (#338).
+**Breaking:** in-app pushes under another tab's root no longer switch tab;
+`TextRun`, `ClickEvent` and `WidgetSnapshot` have new fields, `UiEvent`
+a new variant, and macOS apps with widgets move their data into their
+App Group.
+
 ### Added
 
 - Linear gradient fills (#330): `.bg_linear_gradient(angle, [(color, stop), …])`

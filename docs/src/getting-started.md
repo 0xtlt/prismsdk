@@ -12,7 +12,7 @@ On crates.io Prism's crates are named `prismsdk*`; code still imports them as
 `prism` (`use prism::prelude::*`), and `prism new` writes the dependency:
 
 ```toml
-prism = { package = "prismsdk", version = "0.5" }
+prism = { package = "prismsdk", version = "0.6" }
 ```
 
 Or from a checkout of the repository (this also makes `prism new` point new
