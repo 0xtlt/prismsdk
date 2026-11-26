@@ -1323,6 +1323,15 @@ fn schedule_autoscroll() {
     });
 }
 
+/// Runs `f` as Prism's own change to widgets: their signals are not
+/// reported back.
+pub(crate) fn updating<R>(f: impl FnOnce() -> R) -> R {
+    let was = UPDATING.replace(true);
+    let out = f();
+    UPDATING.set(was);
+    out
+}
+
 fn commit(s: &mut State, patches: Vec<prism_core::Patch>) {
     UPDATING.set(true);
     if !patches.is_empty() {

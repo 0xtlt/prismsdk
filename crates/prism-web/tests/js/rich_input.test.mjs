@@ -279,6 +279,117 @@ test("undo and redo step through the field's own edits (#115)", () => {
   assert.equal(e.last().v, "abc d");
 });
 
+/** A key pressed in field `el`, as the browser sends it (window, document, field). */
+function press(el, key, mods = {}) {
+  const e = { type: "keydown", key, ...mods };
+  el.dispatchEvent(e);
+  return e;
+}
+
+test("the history survives the app's answer to an edit; new content starts it over (#338)", () => {
+  // Backspace deletes the chip; the app answers with its own runs (it
+  // normalises them): not an echo, but still the user's edit.
+  const e = editor(enc("a", CHIP, "b"));
+  e.select(2);
+  e.input("deleteContentBackward");
+  assert.equal(e.last().runs, enc("ab"));
+  e.patch({ op: "rich", id: 1, runs: enc("a", ["b", BOLD]) });
+  assert.equal(e.el.textContent, "ab");
+  // Not an Apple platform here: ⌘ is Ctrl.
+  const undo = press(e.el, "z", { ctrlKey: true });
+  assert.equal(undo.defaultPrevented, true, "the browser's own undo does not run");
+  assert.equal(e.last().runs, enc("a", CHIP, "b"), "the chip is back, and the app hears it");
+  assert.deepEqual(e.selection(), [1, 2], "the deleted chip, selected");
+  // The app's answer to the undo keeps the redo.
+  e.patch({ op: "rich", id: 1, runs: enc("a", CHIP, ["b", BOLD]) });
+  press(e.el, "Z", { ctrlKey: true, shiftKey: true });
+  assert.equal(e.last().runs, enc("a", ["b", BOLD]), "redone, as the app showed it");
+  press(e.el, "z", { ctrlKey: true });
+  assert.equal(e.last().runs, enc("a", CHIP, ["b", BOLD]));
+  press(e.el, "y", { ctrlKey: true });
+  assert.equal(e.last().runs, enc("a", ["b", BOLD]), "Ctrl+Y redoes too");
+
+  // An answer with other characters (a markdown shortcut) joins the edit.
+  const m = editor("");
+  m.select(0);
+  m.input("insertText", "#");
+  m.input("insertText", " ");
+  m.patch({ op: "rich", id: 1, runs: enc(["", BOLD]) });
+  assert.equal(m.el.textContent, "");
+  m.input("insertText", "T");
+  assert.equal(m.last().v, "T");
+  press(m.el, "z", { ctrlKey: true });
+  assert.equal(m.last().v, "", "what is typed after it is a step of its own");
+  press(m.el, "z", { ctrlKey: true });
+  assert.equal(m.last().runs, "#", "then back to before the space");
+
+  // Runs from the app with no edit in flight are new content: no step
+  // back into what was there.
+  const n = editor(enc("draft"));
+  n.select(5);
+  n.input("insertText", "!");
+  n.echo();
+  n.patch({ op: "rich", id: 1, runs: enc("another note") });
+  const before = n.sent().length;
+  press(n.el, "z", { ctrlKey: true });
+  assert.equal(n.sent().length, before, "nothing to undo");
+  assert.equal(n.el.textContent, "another note");
+  n.patch({ op: "sel", id: 1, start: 12, end: 12 });
+  n.input("insertText", "s");
+  assert.equal(n.last().v, "another notes");
+  press(n.el, "z", { ctrlKey: true });
+  assert.equal(n.last().runs, enc("another note"), "typing after it is undone alone");
+});
+
+test("one undo per ⌘Z: the app's when it consumes the keys, else the field's (#338)", () => {
+  const page = boot();
+  page.ws.open();
+  page.ws.deliver({
+    t: "reset",
+    p: [
+      { op: "create", id: 1, kind: "view" }, { op: "keys", id: 1, local: true, global: false },
+      { op: "consume", id: 1, keys: ["cmd+z", "cmd+shift+z", "cmd+y"] },
+      { op: "create", id: 2, kind: "rich_input" }, { op: "rich", id: 2, runs: enc("ab") },
+      { op: "create", id: 3, kind: "view" }, { op: "keys", id: 3, local: false, global: true },
+      { op: "children", id: 1, children: [2, 3] }, { op: "root", id: 1 },
+    ],
+  });
+  const el = page.node(2);
+  el.focus();
+  page.ws.deliver({ t: "patch", p: [{ op: "sel", id: 2, start: 2, end: 2 }] });
+  el.dispatchEvent({ type: "beforeinput", inputType: "insertText", data: "c" });
+  const inputs = () => page.ws.sent.filter((m) => m.t === "input");
+  const keys = () => page.ws.sent.filter((m) => m.t === "key");
+  assert.equal(inputs().length, 1);
+  // Consumed: the app's undo alone (its handler hears the key); the
+  // browser's is prevented, the field's never runs.
+  for (const [key, mods] of [["z", { ctrlKey: true }], ["Z", { ctrlKey: true, shiftKey: true }], ["y", { ctrlKey: true }]]) {
+    const e = press(el, key, mods);
+    assert.equal(e.defaultPrevented, true);
+    assert.equal(keys().at(-1).key, key);
+  }
+  assert.equal(inputs().length, 1, "the field's history did not run");
+  assert.equal(el.textContent, "abc");
+  // Not consumed: the field's undo runs once, the browser's is prevented;
+  // a global handler still hears the key.
+  page.ws.deliver({ t: "patch", p: [{ op: "consume", id: 1, keys: [] }] });
+  const e = press(el, "z", { ctrlKey: true });
+  assert.equal(e.defaultPrevented, true);
+  assert.equal(inputs().length, 2);
+  assert.equal(inputs().at(-1).v, "ab");
+  assert.equal(keys().at(-1).key, "z", "reported to the app");
+  // An app menu's ⌘Z: the menu item's, not the field's.
+  page.ws.deliver({ t: "shortcuts", list: [["cmd+shift+z", 9]] });
+  assert.equal(press(el, "Z", { ctrlKey: true, shiftKey: true }).defaultPrevented, true);
+  assert.deepEqual(page.ws.sent.filter((m) => m.t === "menu").at(-1), { t: "menu", id: 9 });
+  assert.equal(inputs().length, 2, "no redo in the field");
+  // Other chords with Z are not undo; neither is ⌘Z while composing.
+  assert.equal(press(el, "z", { ctrlKey: true, altKey: true }).defaultPrevented, false);
+  el.dispatchEvent({ type: "compositionstart" });
+  assert.equal(press(el, "z", { ctrlKey: true, isComposing: true }).defaultPrevented, false);
+  assert.equal(inputs().length, 2);
+});
+
 test("keys in a rich input carry its selection; on_select reports characters (#86, #115)", () => {
   const page = boot();
   page.ws.open();

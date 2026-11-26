@@ -143,6 +143,22 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ### Fixed
 
+- `rich_input` undo (#338). Web: the field's history survives the app's
+  runs that answer the user's edit (runs normalized after a chip was
+  deleted): ⌘Z brings the chip back, and the app hears it. Runs with no
+  edit in flight are new content and start the history over. ⌘Z, ⌘⇧Z and
+  Ctrl+Y are handled on `keydown`, so the browser's own undo no longer runs
+  as well, and a key the app consumes (`consume_keys(&["cmd+z", …])`) or a
+  menu shortcut never reaches the field's history. Linux: undoing the
+  deletion of a chip put back a plain character that the app's runs then
+  turned into a chip with an irreversible action, which wiped the undo and
+  redo history; the chip's anchor now comes back while the undo applies.
+  macOS: runs from the app with other characters left the text view's undo
+  steps in place, and ⌘Z then raised `NSRangeException` or garbled the
+  text; that history now starts over, as on iOS and Android. Windows: the
+  same runs start RichEdit's history over too (with their formats and chip
+  pictures). The rich input guide (Forms › Rich inputs) says how an app
+  with its own undo consumes the keys.
 - `FileStorage`: two keys that differ only after their last dot (`board.today`,
   `board.tomorrow`) no longer share one temp file, and each write has its
   own, so the app and its widget extension (#331) can write at once.

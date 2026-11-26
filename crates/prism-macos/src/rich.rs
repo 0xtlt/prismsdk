@@ -10,7 +10,9 @@
 //! run loop: when they hold the text the view shows (the echo of the
 //! typing, or the app restyling it), their attributes are applied in place,
 //! caret and undo untouched; other runs replace the text, the caret keeping
-//! its distance from the end (#73). Nothing changes during an IME
+//! its distance from the end (#73), and start its undo history over: the
+//! text view's steps would act on characters that are gone (#338). Nothing
+//! changes during an IME
 //! composition (marked text): its attributes land with the next edit.
 //! Pastes are plain text; Return calls `on_submit`, Shift+Return inserts a
 //! line break.
@@ -112,6 +114,13 @@ pub(crate) fn show(tv: &PrismTextView) {
         storage.setAttributedString(&out);
         tv.setSelectedRange(NSRange::new(caret, 0));
         tv.breakUndoCoalescing();
+        // The text view's undo steps are the text storage's: their ranges
+        // and characters are those of the text replaced, and undoing one
+        // now would raise (`NSRangeException`) or garble the app's (#338).
+        // Other fields' steps stay.
+        if let Some(undo) = tv.undoManager() {
+            unsafe { undo.removeAllActionsWithTarget(&storage) };
+        }
     }
     // What the user types next: the field's own font and color (the app's
     // runs come back with the edit and restyle it).
