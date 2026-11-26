@@ -102,7 +102,22 @@ APPEX="$APP/Contents/PlugIns/PrismWidgets.appex"
 GEN="$OUT/generated"
 mkdir -p "$GEN"
 
-cargo build -p "$PKG" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
+# Widgets that refresh without the app (Widget::refresh, #331): the widget
+# extension runs the app's own code. Its executable is the app's binary, with
+# the extension's Swift (Generated.swift, made from what the binary declares)
+# linked in by prism-apple-build. The first build reuses the previous run's
+# extension so that an unchanged app is not built twice.
+ext_env() { # the build's environment, with the extension linked in when $1 is 1
+  EXT_ENV=()
+  if [[ "$1" == 1 ]]; then
+    EXT_ENV=(PRISM_WIDGET_EXTENSION="$GEN/Generated.swift")
+    [[ "${2:-0}" == 1 ]] && EXT_ENV+=(PRISM_WIDGET_EXTENSION_CONSTVALUES="$GEN/PrismWidgets.swiftconstvalues")
+  fi
+}
+LAST_EXTENSION="$(cat "$GEN/rust-extension" 2>/dev/null || echo "0 0")"
+[[ -f "$GEN/Generated.swift" ]] || LAST_EXTENSION="0 0"
+ext_env $LAST_EXTENSION
+env ${EXT_ENV[@]+"${EXT_ENV[@]}"} cargo build -p "$PKG" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 BIN="$TARGET_DIR/$PROFILE_DIR/$PKG"
 # What the app declares (PRISM_DESCRIBE=all), asked once.
 PRISM_DESCRIBE=all "$BIN" > "$GEN/describe.json"
@@ -119,13 +134,29 @@ WIDGET_COUNT="$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[
 # a menu bar item, drawn by the app).
 WIDGETS=1
 [[ "$WIDGET_COUNT" == 0 ]] && WIDGETS=0
+RUST_EXTENSION=0 CONFIGURABLE=0
 if [[ $WIDGETS == 1 ]]; then
-  python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" macos > "$GEN/Generated.swift"
+  # Rewritten only when it changes: the bridge's build script recompiles
+  # when it does.
+  python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" macos > "$GEN/Generated.swift.new"
+  cmp -s "$GEN/Generated.swift.new" "$GEN/Generated.swift" || mv "$GEN/Generated.swift.new" "$GEN/Generated.swift"
+  rm -f "$GEN/Generated.swift.new"
   if [[ "$DIST" == appstore && -z "$WIDGETS_PROFILE" ]]; then
     echo "No Mac App Store provisioning profile for $BUNDLE_ID.widgets (set PRISM_MAC_WIDGETS_PROFILE)" >&2
     exit 1
   fi
+  RUST_EXTENSION="$(python3 -c 'import json, sys; print(int(any(w.get("refresh") for w in json.load(open(sys.argv[1])))))' "$GEN/widgets.json")"
+  # Configurable widgets (Widget::parameter): the App Intents metadata
+  # WidgetKit reads to build the « Edit widget » sheet, as in ios-run.sh.
+  CONFIGURABLE="$(python3 -c 'import json, sys; print(int(any(w.get("parameters") for w in json.load(open(sys.argv[1])))))' "$GEN/widgets.json")"
 fi
+# The extension linked in, as the app now asks (nothing to do when the first
+# build already had it and Generated.swift did not change).
+if [[ "$RUST_EXTENSION $CONFIGURABLE" != "$LAST_EXTENSION" || "$RUST_EXTENSION" == 1 ]]; then
+  ext_env "$RUST_EXTENSION" "$CONFIGURABLE"
+  env ${EXT_ENV[@]+"${EXT_ENV[@]}"} cargo build -p "$PKG" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
+fi
+echo "$RUST_EXTENSION $CONFIGURABLE" > "$GEN/rust-extension"
 
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS"
 [[ $WIDGETS == 1 ]] && mkdir -p "$APPEX/Contents/MacOS"
@@ -260,9 +291,6 @@ $(ats_plist)
   </dict></array>" > "$APP/Contents/Info.plist"
 
 if [[ $WIDGETS == 1 ]]; then
-# Configurable widgets (Widget::parameter): the App Intents metadata WidgetKit
-# reads to build the « Edit widget » sheet, as in ios-run.sh.
-CONFIGURABLE="$(python3 -c 'import json, sys; print(int(any(w.get("parameters") for w in json.load(open(sys.argv[1])))))' "$GEN/widgets.json")"
 INTENTS=()
 EXT_SOURCES=("$PLATFORM"/apple/Shared/*.swift "$PLATFORM"/apple/Extension/*.swift "$GEN/Generated.swift")
 rm -rf "$APPEX/Contents/Resources/Metadata.appintents"
@@ -274,11 +302,17 @@ if [[ "$CONFIGURABLE" == 1 ]]; then
   INTENTS=(-wmo -emit-const-values-path "$GEN/PrismWidgets.swiftconstvalues"
     -Xfrontend -const-gather-protocols-file -Xfrontend "$GEN/intents-protocols.json")
 fi
-xcrun --sdk macosx swiftc -target arm64-apple-macos14.0 -swift-version 5 -O \
-  -parse-as-library -application-extension -module-name PrismWidgets \
-  -Xlinker -e -Xlinker _NSExtensionMain \
-  -o "$APPEX/Contents/MacOS/PrismWidgets" ${INTENTS[@]+"${INTENTS[@]}"} \
-  "${EXT_SOURCES[@]}"
+if [[ "$RUST_EXTENSION" == 1 ]]; then
+  # The app's binary, which has the extension linked in; its constant
+  # values come from that build.
+  cp "$BIN" "$APPEX/Contents/MacOS/PrismWidgets"
+else
+  xcrun --sdk macosx swiftc -target arm64-apple-macos14.0 -swift-version 5 -O \
+    -parse-as-library -application-extension -module-name PrismWidgets \
+    -Xlinker -e -Xlinker _NSExtensionMain \
+    -o "$APPEX/Contents/MacOS/PrismWidgets" ${INTENTS[@]+"${INTENTS[@]}"} \
+    "${EXT_SOURCES[@]}"
+fi
 if [[ "$CONFIGURABLE" == 1 ]]; then
   printf '%s\n' "${EXT_SOURCES[@]}" > "$GEN/intents-sources.txt"
   echo "$GEN/PrismWidgets.swiftconstvalues" > "$GEN/intents-constvalues.txt"
@@ -310,7 +344,7 @@ python3 "$(dirname "$0")/apple-privacy.py" manifest macos 0 "${PRIVACY_BUNDLES[@
 # the app id their profile grants.
 [[ "$DIST" == appstore ]] && security cms -D -i "$PROFILE" > "$GEN/profile.plist"
 [[ "$DIST" == appstore && $WIDGETS == 1 ]] && security cms -D -i "$WIDGETS_PROFILE" > "$GEN/widgets.profile.plist"
-DIST="$DIST" GROUP="$GROUP" GEN="$GEN" ICLOUD="${PRISM_ICLOUD:-}" PUSH_ENV="${PUSH_ENT:+$PRISM_PUSH}" WIDGETS="$WIDGETS" python3 <<'PY'
+DIST="$DIST" GROUP="$GROUP" GEN="$GEN" ICLOUD="${PRISM_ICLOUD:-}" PUSH_ENV="${PUSH_ENT:+$PRISM_PUSH}" WIDGETS="$WIDGETS" RUST_EXTENSION="$RUST_EXTENSION" python3 <<'PY'
 import os, plistlib
 dist, group, gen = os.environ["DIST"], os.environ["GROUP"], os.environ["GEN"]
 by_permission = {
@@ -337,6 +371,10 @@ def granted(p, e):
 widgets = os.environ["WIDGETS"] == "1"
 app = {"com.apple.security.application-groups": [group]} if widgets else {}
 appex = {"com.apple.security.app-sandbox": True, "com.apple.security.application-groups": [group]}
+# Refresh hooks (`Widget::refresh`, #331) fetch from the sandboxed
+# extension: it needs outgoing connections.
+if os.environ.get("RUST_EXTENSION") == "1":
+    appex["com.apple.security.network.client"] = True
 if dist:
     for name in asked:
         for key in by_permission.get(name, []):

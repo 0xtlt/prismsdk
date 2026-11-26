@@ -8,6 +8,11 @@ becomes a StaticConfiguration rendered by the generic PrismWidgetView; on iOS
 the Live Activity configuration (lock screen + Dynamic Island) is added too.
 visionOS has neither lock-screen families nor Live Activities (no ActivityKit).
 
+A widget with a refresh hook (`Widget::refresh`) links this file into the
+app's own binary instead (`-D PRISM_RUST_EXTENSION`, prism-apple-build): the
+bundle's `main` is renamed and the app's Rust `main` starts it through
+NSExtensionMain.
+
 A widget with parameters (`Widget::parameter`) becomes an
 AppIntentConfiguration instead (iOS 17, macOS 14): a WidgetConfigurationIntent
 with one @Parameter per parameter, each an AppEntity whose EntityQuery lists
@@ -128,6 +133,11 @@ for w in widgets:
         "}",
         "",
     ]
+# The bundle is the extension's entry point. Linked into the app's binary
+# (PRISM_RUST_EXTENSION, widgets with a refresh hook), its `main` is renamed
+# when compiled (prism-apple-build): the app's Rust `main` starts, sees it
+# runs as the extension and calls NSExtensionMain, which finds the bundle
+# through the `@main` entry Swift records in the binary.
 out += ["@main", "struct PrismWidgetBundle: WidgetBundle {", "    var body: some Widget {"]
 out += [f"        {n}()" for n in names]
 if platform == "ios":

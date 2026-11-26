@@ -3929,6 +3929,11 @@ impl Widgets for UiKit {
 
 /// Starts UIKit. Never returns.
 pub fn run(config: AppConfig, init: AppInit) {
+    // The app's binary in its widget extension (`Widget::refresh`, #331).
+    #[cfg(any(target_os = "ios", target_os = "visionos"))]
+    if prism_native::apple::widget_extension::is_app_extension() {
+        return crate::widget_extension::run(config, init);
+    }
     let mtm = MainThreadMarker::new().expect("prism-ios: run() must be called on the main thread");
     let _ = APP.set((config, init));
     // Register the classes UIKit instantiates by name (Info.plist, UIApplicationMain).
@@ -3977,7 +3982,7 @@ fn schedule_timer(at: Option<std::time::Instant>) {
 
 /// App data: the App Group container when the app has one (widgets can read
 /// it), else Application Support.
-fn data_dir() -> std::path::PathBuf {
+pub(crate) fn data_dir() -> std::path::PathBuf {
     let bundle = objc2_foundation::NSBundle::mainBundle();
     let group = bundle
         .objectForInfoDictionaryKey(&NSString::from_str("PrismAppGroup"))
@@ -4042,7 +4047,7 @@ fn image_sources(
 
 /// Locale, Dynamic Type and Reduce Motion (`PRISM_TEXT_SCALE` overrides the
 /// text size, e.g. for screenshots).
-fn ios_environment() -> prism_core::Environment {
+pub(crate) fn ios_environment() -> prism_core::Environment {
     let scale = objc2_ui_kit::UIFontMetrics::defaultMetrics().scaledValueForValue(17.) / 17.;
     prism_core::Environment {
         locale: prism_native::apple::system_locale(),

@@ -245,8 +245,9 @@ fn drawings_ahead_become_timeline_entries() {
         timeline.contains("let ahead = drawings.count > 1 || more"),
         "{timeline}"
     );
+    // Without a reload policy (#331), as before.
     assert!(
-        timeline.contains("policy: ahead ? .atEnd : .never"),
+        timeline.contains(r#"policy: prismReloadPolicy(doc?["reload"], ahead: ahead, now: now)"#),
         "{timeline}"
     );
 
@@ -270,4 +271,54 @@ fn drawings_ahead_become_timeline_entries() {
         !kit.contains("PrismEntry(date: .now, doc: prismLoadWidget"),
         "{kit}"
     );
+}
+
+/// #331: a widget with a refresh hook. The bundle stays the `@main` entry
+/// (NSExtensionMain finds it, from the app's `main` too: the library is
+/// compiled with its `main` renamed); the providers run the hook before
+/// building a timeline; the snapshot's `"reload"` is the timeline's policy.
+#[test]
+fn widgets_refresh_without_the_app() {
+    let Some(swift) = generate(
+        r#"[{"kind":"board","name":"Board","description":"","families":["systemSmall"],"refresh":true}]"#,
+        "ios",
+    ) else {
+        return;
+    };
+    assert!(swift.contains("@main\nstruct PrismWidgetBundle: WidgetBundle {"));
+    assert!(!swift.contains("PRISM_RUST_EXTENSION"), "{swift}");
+    let lib =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs")).unwrap();
+    assert!(lib.contains(r#".args(["-Xfrontend", "-entry-point-function-name", "-Xfrontend"])"#));
+    assert!(lib.contains(r#".args(["-application-extension", "-D", "PRISM_RUST_EXTENSION"])"#));
+
+    let apple = Path::new(env!("CARGO_MANIFEST_DIR")).join("apple");
+    let kit = std::fs::read_to_string(apple.join("Extension/PrismWidgetKit.swift")).unwrap();
+    assert!(
+        kit.contains("prismRefresh(kind) { completion(prismTimeline(prismLoadWidget(kind))) }")
+    );
+    assert!(kit.contains(
+        "await prismRefresh(Intent.prismKind)\n        doc = prismLoadWidget(Intent.prismKind)"
+    ));
+    // Only widgets with a hook wait for Rust; the others are built at once.
+    assert!(kit.contains(r#"if let doc, doc["refresh"] as? Bool != true {"#));
+    assert!(kit.contains(r#"@_silgen_name("prism_widget_refresh")"#));
+    assert!(kit.contains(r#"@_cdecl("prism_widget_refresh_done")"#));
+    let policy = kit
+        .split("func prismReloadPolicy(")
+        .nth(1)
+        .and_then(|s| s.split("\n}\n").next())
+        .expect("prismReloadPolicy");
+    for case in [
+        r#"case let s as String where s == "never": return .never"#,
+        r#"case let s as String where s == "end": return .atEnd"#,
+        "case let n as NSNumber: return .after(now.addingTimeInterval(max(n.doubleValue, 0)))",
+        "default: return ahead ? .atEnd : .never",
+    ] {
+        assert!(policy.contains(case), "{policy}");
+    }
+    // The extension writes its drawings without reloading the timeline it
+    // is building.
+    let bridge = std::fs::read_to_string(apple.join("Bridge/PrismBridge.swift")).unwrap();
+    assert!(bridge.contains(r#"@_cdecl("prism_widgets_save")"#));
 }

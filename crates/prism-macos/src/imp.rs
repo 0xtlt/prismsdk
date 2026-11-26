@@ -5629,6 +5629,10 @@ impl Widgets for AppKit {
 
 /// Opens a window and runs the AppKit event loop. Must be called on the main thread.
 pub fn run(config: AppConfig, init: AppInit) {
+    // The app's binary in its widget extension (`Widget::refresh`, #331).
+    if prism_native::apple::widget_extension::is_app_extension() {
+        return crate::widget_extension::run(config, init);
+    }
     let mtm =
         MainThreadMarker::new().expect("prism-macos: run() must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
@@ -5687,18 +5691,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         .set_widget_configurations_source(prism_native::apple::widget_configurations);
     // Frame callbacks come from the display link (#311).
     runtime.set_native_frames(true);
-    // Widget buttons open the app on links that only its widgets can sign,
-    // each usable once; the key and the ledger of used links stay between
-    // runs in a folder of their own, out of the app's storage.
     if capabilities.widgets {
-        let data = data_dir(&config.title);
-        // Where an earlier version kept the key, among the app's stored keys.
-        let _ = std::fs::remove_file(data.join("widget-link-key"));
-        let dir = data.join(crate::widget_key::DIR);
-        runtime.app.set_widget_key(
-            crate::widget_key::load(&dir),
-            Box::new(prism_core::FileStorage::new(&dir)),
-        );
+        crate::widget_key::install(&mut runtime, &data_dir(&config.title));
     }
     let renderer = NativeRenderer::new(AppKit {
         mtm,
@@ -6787,12 +6781,102 @@ fn schedule_timer(at: Option<std::time::Instant>) {
     });
 }
 
-/// `~/Library/Application Support/<bundle id>` (or `prism.<title>` when run
-/// unbundled with `cargo run`). `PRISM_DATA_DIR` overrides it.
-fn data_dir(title: &str) -> std::path::PathBuf {
+/// Where the app keeps its data: `~/Library/Application Support/<bundle id>`
+/// (or `prism.<title>` when run unbundled with `cargo run`), or, for an app
+/// with widgets, `prism-data` in its App Group, as on iOS: its widget
+/// extension reads and writes the same storage when it refreshes the
+/// widgets without the app (`Widget::refresh`, #331). The data an earlier
+/// version kept in Application Support moves there ([`move_data`]).
+/// `PRISM_DATA_DIR` overrides it.
+pub(crate) fn data_dir(title: &str) -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("PRISM_DATA_DIR") {
         return dir.into();
     }
+    let own = own_data_dir(title);
+    let Some(shared) = group_data_dir() else {
+        return own;
+    };
+    if own.exists() && !move_data(&own, &shared) {
+        // Not moved (another volume…): the app keeps its data where it was.
+        return own;
+    }
+    shared
+}
+
+/// The widget extension's data directory: the App Group's `prism-data`,
+/// the app's. The extension never moves the app's data (its sandbox can't
+/// reach Application Support): the app does when it next runs, even when
+/// the extension wrote there first. `PRISM_DATA_DIR` overrides it.
+pub(crate) fn extension_data_dir(title: &str) -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("PRISM_DATA_DIR") {
+        return dir.into();
+    }
+    group_data_dir().unwrap_or_else(|| own_data_dir(title))
+}
+
+/// `prism-data` in the App Group named by the bundle's `PrismAppGroup`.
+fn group_data_dir() -> Option<std::path::PathBuf> {
+    let group = objc2_foundation::NSBundle::mainBundle()
+        .objectForInfoDictionaryKey(&NSString::from_str("PrismAppGroup"))
+        .and_then(|g| g.downcast::<NSString>().ok())
+        .and_then(|g| {
+            objc2_foundation::NSFileManager::defaultManager()
+                .containerURLForSecurityApplicationGroupIdentifier(&g)
+        })
+        .and_then(|url| url.path())?;
+    Some(std::path::PathBuf::from(group.to_string()).join("prism-data"))
+}
+
+/// Moves the app's data from `own` into `shared`, then removes `own`.
+/// `shared` may exist already: the widget extension can run after an
+/// update before the app does, and write there first (its widget-link key,
+/// what a refresh hook stored). The app's entries win over the extension's
+/// (they are what the user had), except the widget-link folder: the
+/// extension signs its drawings with the key it made and keeps it while it
+/// runs, and the app redraws every widget with that key at launch, so the
+/// app's old key goes. The extension's other entries stay. An entry that
+/// can't be moved stays in `own`, tried again at the next launch. False
+/// when nothing could be moved (`shared` is on another volume…).
+fn move_data(own: &std::path::Path, shared: &std::path::Path) -> bool {
+    if !shared.exists() {
+        if let Some(parent) = shared.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        return std::fs::rename(own, shared).is_ok();
+    }
+    let Ok(entries) = std::fs::read_dir(own) else {
+        return false;
+    };
+    let (mut moved, mut left) = (0, 0);
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let to = shared.join(&name);
+        let exists = to.symlink_metadata().is_ok();
+        if exists && name == crate::widget_key::DIR {
+            let _ = std::fs::remove_dir_all(entry.path());
+            continue;
+        }
+        if exists {
+            if to.is_dir() && !to.is_symlink() {
+                let _ = std::fs::remove_dir_all(&to);
+            } else {
+                let _ = std::fs::remove_file(&to);
+            }
+        }
+        if std::fs::rename(entry.path(), &to).is_ok() {
+            moved += 1;
+        } else {
+            left += 1;
+        }
+    }
+    if left == 0 {
+        let _ = std::fs::remove_dir(own);
+    }
+    moved > 0 || left == 0
+}
+
+/// The app's own data directory, in Application Support.
+fn own_data_dir(title: &str) -> std::path::PathBuf {
     let id = objc2_foundation::NSBundle::mainBundle()
         .bundleIdentifier()
         .map(|s| s.to_string())
@@ -6857,7 +6941,7 @@ fn image_sources(
 
 /// Locale and Reduce Motion (`PRISM_TEXT_SCALE` scales text, macOS has no
 /// Dynamic Type).
-fn mac_environment() -> prism_core::Environment {
+pub(crate) fn mac_environment() -> prism_core::Environment {
     let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
     prism_core::Environment {
         locale: prism_native::apple::system_locale(),
@@ -7243,5 +7327,72 @@ mod focus_tests {
         assert!(!focused_by_mouse(Some(T::LeftMouseDown), true));
         assert!(!focused_by_mouse(Some(T::KeyDown), false));
         assert!(!focused_by_mouse(None, false));
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::move_data;
+    use crate::temp_dir::TempDir;
+    use std::fs;
+
+    /// #331: the app's data moves into the App Group, whole when the group
+    /// has none yet.
+    #[test]
+    fn the_apps_data_moves_into_the_app_group() {
+        let root = TempDir::new("data-move");
+        let (own, shared) = (root.join("own"), root.join("group/prism-data"));
+        fs::create_dir_all(own.join("widget-links")).unwrap();
+        fs::write(own.join("notes"), "mine").unwrap();
+        fs::write(own.join("widget-links/widget-link-key"), "key").unwrap();
+        assert!(move_data(&own, &shared));
+        assert!(!own.exists());
+        assert_eq!(fs::read_to_string(shared.join("notes")).unwrap(), "mine");
+        assert_eq!(
+            fs::read_to_string(shared.join("widget-links/widget-link-key")).unwrap(),
+            "key"
+        );
+    }
+
+    /// #331: the widget extension ran first after an update and wrote to
+    /// the group: the app's data still moves, its entries win (but for the
+    /// widget-link key), and the extension's others stay.
+    #[test]
+    fn the_apps_data_moves_after_the_extension_wrote_first() {
+        let root = TempDir::new("data-merge");
+        let (own, shared) = (root.join("own"), root.join("group/prism-data"));
+        fs::create_dir_all(own.join("widget-links")).unwrap();
+        fs::write(own.join("notes"), "mine").unwrap();
+        fs::write(own.join("widget-links/widget-link-key"), "old key").unwrap();
+        fs::create_dir_all(shared.join("widget-links")).unwrap();
+        fs::write(shared.join("widget-links/widget-link-key"), "new key").unwrap();
+        fs::write(shared.join("departures"), "fetched").unwrap();
+        assert!(move_data(&own, &shared));
+        assert!(!own.exists());
+        assert_eq!(fs::read_to_string(shared.join("notes")).unwrap(), "mine");
+        // The extension's key stays: it signed the links it drew with it.
+        assert_eq!(
+            fs::read_to_string(shared.join("widget-links/widget-link-key")).unwrap(),
+            "new key"
+        );
+        assert_eq!(
+            fs::read_to_string(shared.join("departures")).unwrap(),
+            "fetched"
+        );
+    }
+
+    /// #331: a folder of the app where the group has a file of that name
+    /// still moves (the app's entry wins).
+    #[test]
+    fn a_folder_replaces_a_file_of_the_same_name() {
+        let root = TempDir::new("data-kind");
+        let (own, shared) = (root.join("own"), root.join("group/prism-data"));
+        fs::create_dir_all(own.join("cache")).unwrap();
+        fs::write(own.join("cache/a"), "mine").unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("cache"), "a file").unwrap();
+        assert!(move_data(&own, &shared));
+        assert!(!own.exists());
+        assert_eq!(fs::read_to_string(shared.join("cache/a")).unwrap(), "mine");
     }
 }

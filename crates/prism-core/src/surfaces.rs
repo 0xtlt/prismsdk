@@ -815,6 +815,41 @@ impl WidgetFamily {
 type WidgetRender = Rc<dyn Fn(&mut App, WidgetFamily, &WidgetConfig) -> Element>;
 type WidgetOptions = Rc<dyn Fn(&mut App) -> Vec<WidgetOption>>;
 type WidgetAhead = Rc<dyn Fn(&mut App, &WidgetConfig) -> Vec<SystemTime>>;
+type WidgetRefresh = Rc<
+    dyn Fn(
+        crate::AsyncApp,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>,
+>;
+
+/// When the system asks a widget for new drawings on its own, without the
+/// app ([`Widget::reload`]): WidgetKit's timeline reload policy, an alarm on
+/// Android. Each time, the widget's [`refresh`](Widget::refresh) hook runs
+/// (when it has one), then the widget is drawn again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WidgetReload {
+    /// Only when the app reloads its widgets ([`App::reload_widgets`]).
+    /// WidgetKit's `.never`.
+    Never,
+    /// When the last drawing ahead ([`Widget::ahead`]) comes, or soon after
+    /// the reload for a widget drawn for now only (the system picks when).
+    /// WidgetKit's `.atEnd`.
+    AtEnd,
+    /// This long after each drawing (the system may wait longer: it spaces
+    /// reloads out to fit its daily budget). WidgetKit's `.after(date)`.
+    After(Duration),
+}
+
+impl WidgetReload {
+    /// The snapshot's `"reload"` value: `"never"`, `"end"` or the delay in
+    /// seconds.
+    fn to_json(self) -> String {
+        match self {
+            WidgetReload::Never => r#""never""#.into(),
+            WidgetReload::AtEnd => r#""end""#.into(),
+            WidgetReload::After(d) => format!("{}", (d.as_secs_f64() * 1000.).round() / 1000.),
+        }
+    }
+}
 
 /// A home-screen / desktop widget, rendered from app state.
 #[derive(Clone)]
@@ -832,8 +867,15 @@ pub struct Widget {
     /// What the user picks for each instance in the system's « Edit widget »
     /// sheet ([`Widget::parameter`]); none for a static widget.
     pub parameters: Vec<WidgetParameter>,
+    /// How long the [`refresh`](Self::refresh) hook may run before it is
+    /// given up (default [`REFRESH_TIMEOUT`](Self::REFRESH_TIMEOUT)).
+    pub refresh_timeout: Duration,
+    /// When the system asks for new drawings ([`Widget::reload`]); `None`
+    /// for the default.
+    pub reload: Option<WidgetReload>,
     render: WidgetRender,
     ahead: Option<WidgetAhead>,
+    refresh: Option<WidgetRefresh>,
 }
 
 impl Widget {
@@ -846,6 +888,15 @@ impl Widget {
     /// ([`Widget::ahead`]): the soonest are kept.
     pub const MAX_AHEAD: usize = 16;
 
+    /// How long a [`refresh`](Self::refresh) hook may run by default.
+    /// WidgetKit gives its extension a few seconds for a timeline, and
+    /// kills it when it takes much longer.
+    pub const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// How often a widget with a [`refresh`](Self::refresh) hook asks for
+    /// new drawings when it sets no [`reload`](Self::reload) policy.
+    pub const DEFAULT_RELOAD: Duration = Duration::from_secs(15 * 60);
+
     /// `kind` is a stable identifier (`"todos"`), `name` is shown in the gallery.
     pub fn new(kind: impl Into<String>, name: impl Into<String>) -> Self {
         Widget {
@@ -855,8 +906,11 @@ impl Widget {
             families: vec![WidgetFamily::Small, WidgetFamily::Medium],
             link: None,
             parameters: Vec::new(),
+            refresh_timeout: Self::REFRESH_TIMEOUT,
+            reload: None,
             render: Rc::new(|_, _, _| Element::Empty),
             ahead: None,
+            refresh: None,
         }
     }
 
@@ -944,6 +998,110 @@ impl Widget {
             f(app, config).into_iter().collect()
         }));
         self
+    }
+
+    /// Fetches fresh data for the widget when the system asks for new
+    /// drawings on its own, without the app: WidgetKit's timeline reloads
+    /// (see [`reload`](Self::reload)) on iOS, iPadOS, macOS and visionOS,
+    /// an alarm on Android. The hook runs in the app's code without its
+    /// window, in the widget extension's process on Apple platforms: it
+    /// can fetch over HTTP (`prism::http`), read and write the app's
+    /// storage (shared with the extension through the App Group) and
+    /// update entities. When it returns `Ok`, the widget is drawn again
+    /// with [`render`](Self::render) and [`ahead`](Self::ahead) from what
+    /// it changed.
+    ///
+    /// An `Err`, or a hook still running after
+    /// [`refresh_timeout`](Self::refresh_timeout), leaves the previous
+    /// drawings on screen (the error is logged), and the system asks again
+    /// at the next reload.
+    ///
+    /// On Apple platforms the hook runs in the extension, a process of its
+    /// own, even while the app is open: keep what both must see in storage.
+    /// There, a runtime started from the app's `init` draws only the
+    /// widgets whose hook succeeded, so the drawings the app wrote stay for
+    /// the others. On Android it runs in the app's process: in the open
+    /// app's runtime (which then draws every widget), or in one without a
+    /// screen.
+    ///
+    /// ```
+    /// # use prism_core::prelude::*;
+    /// # use prism_core::Widget;
+    /// # use std::time::Duration;
+    /// # struct Board { lines: Vec<String> }
+    /// # async fn fetch_board() -> Result<Vec<String>, String> { Ok(Vec::new()) }
+    /// # fn build(cx: &mut App) {
+    /// let board = cx.new_entity(|_| Board { lines: Vec::new() });
+    /// cx.register_widget(
+    ///     Widget::new("board", "Departures")
+    ///         .render(move |cx, _| text(board.read(cx).lines.join("\n")))
+    ///         .refresh(move |cx| async move {
+    ///             let lines = fetch_board().await?;
+    ///             cx.update_entity(&board, |b, _| b.lines = lines);
+    ///             Ok::<_, String>(())
+    ///         })
+    ///         .reload_after(Duration::from_secs(30 * 60)),
+    /// );
+    /// # }
+    /// ```
+    pub fn refresh<F, E>(mut self, hook: impl Fn(crate::AsyncApp) -> F + 'static) -> Self
+    where
+        F: std::future::Future<Output = Result<(), E>> + 'static,
+        E: std::fmt::Display + 'static,
+    {
+        self.refresh = Some(Rc::new(move |cx| {
+            let fut = hook(cx);
+            Box::pin(async move { fut.await.map_err(|e| e.to_string()) })
+        }));
+        self
+    }
+
+    /// How long the [`refresh`](Self::refresh) hook may run (default
+    /// [`REFRESH_TIMEOUT`](Self::REFRESH_TIMEOUT), 10 s). Past it, the hook
+    /// is dropped and the previous drawings stay. Keep it well under the
+    /// system's own limit: WidgetKit ends an extension that takes too long
+    /// to answer, Android a broadcast after about ten seconds.
+    pub fn refresh_timeout(mut self, timeout: Duration) -> Self {
+        self.refresh_timeout = timeout;
+        self
+    }
+
+    /// When the system asks for new drawings on its own, running the
+    /// [`refresh`](Self::refresh) hook first.
+    ///
+    /// Without a policy, a widget with a refresh hook asks
+    /// [`DEFAULT_RELOAD`](Self::DEFAULT_RELOAD) (15 minutes) after each
+    /// drawing; one without a hook asks when its last drawing ahead comes
+    /// ([`WidgetReload::AtEnd`]) and never when it has none (the app
+    /// redraws it).
+    pub fn reload(mut self, policy: WidgetReload) -> Self {
+        self.reload = Some(policy);
+        self
+    }
+
+    /// Asks for new drawings `delay` after each one: [`reload`](Self::reload)
+    /// with [`WidgetReload::After`]. The system may wait longer, to fit its
+    /// budget (WidgetKit: a few dozen reloads a day for a widget the user
+    /// looks at).
+    pub fn reload_after(self, delay: Duration) -> Self {
+        self.reload(WidgetReload::After(delay))
+    }
+
+    /// Whether the widget has a [`refresh`](Self::refresh) hook.
+    pub fn has_refresh(&self) -> bool {
+        self.refresh.is_some()
+    }
+
+    /// The reload policy written to the snapshot: the widget's, else
+    /// [`DEFAULT_RELOAD`](Self::DEFAULT_RELOAD) for a widget with a refresh
+    /// hook, else none (the extension's own default: `.atEnd` with
+    /// drawings ahead, `.never` without).
+    pub fn reload_policy(&self) -> Option<WidgetReload> {
+        self.reload.or_else(|| {
+            self.refresh
+                .as_ref()
+                .map(|_| WidgetReload::After(Self::DEFAULT_RELOAD))
+        })
     }
 
     /// Whether the widget has parameters (the edit sheet offers them).
@@ -1041,6 +1199,8 @@ impl Widget {
         WidgetSnapshot {
             kind: self.kind.clone(),
             link: self.link.clone(),
+            reload: self.reload_policy(),
+            refresh: self.has_refresh(),
             families,
             parameters: options
                 .into_iter()
@@ -1110,12 +1270,13 @@ impl Widget {
             })
             .collect();
         format!(
-            r#"{{"kind":{},"name":{},"description":{},"families":[{}],"parameters":[{}]}}"#,
+            r#"{{"kind":{},"name":{},"description":{},"families":[{}],"parameters":[{}],"refresh":{}}}"#,
             json_str(&self.kind),
             json_str(&self.name),
             json_str(&self.description),
             families.join(","),
-            parameters.join(",")
+            parameters.join(","),
+            self.has_refresh()
         )
     }
 }
@@ -1296,6 +1457,12 @@ pub struct WidgetSnapshot {
     pub kind: String,
     /// Deep link opened when the widget background is tapped.
     pub link: Option<String>,
+    /// When the system asks for new drawings ([`Widget::reload_policy`]);
+    /// `None` for the extension's default.
+    pub reload: Option<WidgetReload>,
+    /// Whether the widget has a [`refresh`](Widget::refresh) hook: the
+    /// system runs it before drawing the widget again.
+    pub refresh: bool,
     /// Each family with its [`SNode`] JSON (the default configuration's, for
     /// a configurable widget).
     pub families: Vec<(WidgetFamily, String)>,
@@ -1324,9 +1491,11 @@ pub struct WidgetEntry {
 impl WidgetSnapshot {
     /// JSON for the widget extension: kind, link, update time and families;
     /// the drawings ahead (`"ahead":[{"at":…,"families":…}]`, only when there
-    /// are some); for a configurable widget, its parameters (with their
-    /// options) and the other configurations rendered, each with its own
-    /// drawings ahead.
+    /// are some); the reload policy (`"reload"`: `"never"`, `"end"` or a
+    /// delay in seconds, only when set) and `"refresh":true` for a widget
+    /// with a refresh hook; for a configurable widget, its parameters (with
+    /// their options) and the other configurations rendered, each with its
+    /// own drawings ahead.
     pub fn to_json(&self) -> String {
         fn families(families: &[(WidgetFamily, String)]) -> String {
             let fams: Vec<String> = families
@@ -1361,6 +1530,12 @@ impl WidgetSnapshot {
             families(&self.families),
             ahead(&self.default)
         );
+        if let Some(reload) = self.reload {
+            let _ = write!(out, r#","reload":{}"#, reload.to_json());
+        }
+        if self.refresh {
+            out.push_str(r#","refresh":true"#);
+        }
         if !self.parameters.is_empty() {
             let params: Vec<String> = self
                 .parameters
@@ -2059,6 +2234,27 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Refresh requests for a widget closer together than this share one run
+/// of its hook (WidgetKit asks once per instance on screen).
+pub const REFRESH_COALESCE: Duration = Duration::from_secs(5);
+
+/// `fut`'s output, or `None` once `timeout` has passed (`fut` is dropped).
+async fn with_timeout<F: std::future::Future>(
+    cx: &crate::AsyncApp,
+    timeout: Duration,
+    fut: F,
+) -> Option<F::Output> {
+    let mut fut = std::pin::pin!(fut);
+    let mut sleep = std::pin::pin!(cx.sleep(timeout));
+    std::future::poll_fn(|task| {
+        if let std::task::Poll::Ready(v) = fut.as_mut().poll(task) {
+            return std::task::Poll::Ready(Some(v));
+        }
+        sleep.as_mut().poll(task).map(|()| None)
+    })
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // App API
 // ---------------------------------------------------------------------------
@@ -2081,6 +2277,16 @@ pub(crate) struct Surfaces {
     pub snapshot_depth: u32,
     /// The instant a widget is being drawn for ([`App::now`]).
     pub drawing_at: Option<SystemTime>,
+    /// Widgets are drawn only after their refresh hook succeeded
+    /// ([`App::set_widgets_refresh_only`]).
+    pub widgets_refresh_only: bool,
+    /// The kinds whose refresh hook just succeeded, drawn at the next
+    /// [`App::take_requests`] in refresh-only mode.
+    pub widgets_refreshed: Vec<String>,
+    /// The refreshes running, as (kind, task id).
+    pub widget_refreshes: Vec<(String, u64)>,
+    /// When each kind's last refresh ended.
+    pub widget_refreshed_at: Vec<(String, std::time::Instant)>,
     // --- Bundling: what the app declares (`PRISM_DESCRIBE`) ---
     /// [`App::enable_live_activities`] was called.
     pub live_activities: bool,
@@ -2361,12 +2567,33 @@ impl App {
 
     /// Pending platform work; widgets are re-rendered here, once per event.
     pub(crate) fn take_requests(&mut self) -> Vec<PlatformRequest> {
-        if std::mem::take(&mut self.surfaces.widgets_dirty) && !self.surfaces.widgets.is_empty() {
-            // A new drawing: its links replace the previous drawing's.
+        let dirty = std::mem::take(&mut self.surfaces.widgets_dirty);
+        let widgets: Vec<Widget> = if self.surfaces.widgets_refresh_only {
+            // Only what a refresh hook just brought: every other widget
+            // keeps the app's drawing.
+            let kinds = std::mem::take(&mut self.surfaces.widgets_refreshed);
+            self.surfaces
+                .widgets
+                .iter()
+                .filter(|w| kinds.contains(&w.kind))
+                .cloned()
+                .collect()
+        } else if dirty {
+            self.surfaces.widgets.clone()
+        } else {
+            Vec::new()
+        };
+        if !widgets.is_empty() {
+            // A new drawing: its links replace the previous drawing's (for
+            // the widgets it draws, when it draws only those refreshed).
             if let Some(links) = &mut self.surfaces.widget_links {
-                links.begin_drawing(SystemTime::now());
+                if self.surfaces.widgets_refresh_only {
+                    let kinds = widgets.iter().map(|w| w.kind.clone()).collect();
+                    links.begin_partial_drawing(SystemTime::now(), kinds);
+                } else {
+                    links.begin_drawing(SystemTime::now());
+                }
             }
-            let widgets = self.surfaces.widgets.clone();
             let mut seen = Vec::new();
             let snaps = widgets
                 .iter()
@@ -2381,7 +2608,11 @@ impl App {
                     snap
                 })
                 .collect();
-            self.surfaces.widget_configurations_seen = seen;
+            let drawn: Vec<&str> = widgets.iter().map(|w| w.kind.as_str()).collect();
+            self.surfaces
+                .widget_configurations_seen
+                .retain(|(k, _)| !drawn.contains(&k.as_str()));
+            self.surfaces.widget_configurations_seen.extend(seen);
             self.surfaces
                 .requests
                 .push(PlatformRequest::ReloadWidgets(snaps));
@@ -2394,6 +2625,90 @@ impl App {
         // After the widgets: their drawing may ask what the user owns.
         self.store_watch_request();
         std::mem::take(&mut self.surfaces.requests)
+    }
+
+    /// For backends that run the app's widget code without the app (a
+    /// widget extension, a runtime started only to refresh a widget): from
+    /// now on, a widget is drawn only when its [`refresh`](Widget::refresh)
+    /// hook succeeded, whatever [`reload_widgets`](Self::reload_widgets) the
+    /// app's code asks for. Such a runtime starts from the app's `init`, not
+    /// from the state the app had when it drew its widgets: drawing every
+    /// widget from it would replace good drawings with a fresh start's.
+    pub fn set_widgets_refresh_only(&mut self, on: bool) {
+        self.surfaces.widgets_refresh_only = on;
+    }
+
+    /// Starts the [`refresh`](Widget::refresh) hook of widget `kind`, unless
+    /// one is running (its task is returned) or ended less than
+    /// [`REFRESH_COALESCE`] ago (several instances of a widget ask at once).
+    /// `None` when there is nothing to wait for: no such widget, no hook, a
+    /// refresh just done.
+    pub(crate) fn start_widget_refresh(&mut self, kind: &str) -> Option<u64> {
+        let widget = self.surfaces.widgets.iter().find(|w| w.kind == kind)?;
+        let hook = widget.refresh.clone()?;
+        let timeout = widget.refresh_timeout;
+        if let Some((_, task)) = self
+            .surfaces
+            .widget_refreshes
+            .iter()
+            .find(|(k, _)| k == kind)
+        {
+            return Some(*task);
+        }
+        let recent = self
+            .surfaces
+            .widget_refreshed_at
+            .iter()
+            .any(|(k, at)| k == kind && at.elapsed() < REFRESH_COALESCE);
+        if recent {
+            return None;
+        }
+        let kind = kind.to_owned();
+        let task = {
+            let kind = kind.clone();
+            self.spawn(move |cx| async move {
+                let outcome = with_timeout(&cx, timeout, hook(cx.clone())).await;
+                cx.update(|app| app.widget_refresh_ended(&kind, outcome, timeout));
+            })
+            .finish_in_background()
+            .id()
+        };
+        // A hook that returned at once already ended.
+        if self.executor.is_running(task) {
+            self.surfaces.widget_refreshes.push((kind, task));
+        }
+        Some(task)
+    }
+
+    /// A refresh hook returned (`Some`) or ran out of time (`None`).
+    fn widget_refresh_ended(
+        &mut self,
+        kind: &str,
+        outcome: Option<Result<(), String>>,
+        timeout: Duration,
+    ) {
+        self.surfaces.widget_refreshes.retain(|(k, _)| k != kind);
+        self.surfaces.widget_refreshed_at.retain(|(k, _)| k != kind);
+        self.surfaces
+            .widget_refreshed_at
+            .push((kind.to_owned(), std::time::Instant::now()));
+        match outcome {
+            Some(Ok(())) => {
+                if self.surfaces.widgets_refresh_only {
+                    if !self.surfaces.widgets_refreshed.iter().any(|k| k == kind) {
+                        self.surfaces.widgets_refreshed.push(kind.to_owned());
+                    }
+                } else {
+                    self.surfaces.widgets_dirty = true;
+                }
+            }
+            Some(Err(e)) => {
+                eprintln!("prism: widget {kind:?} refresh failed, its drawings stay: {e}")
+            }
+            None => eprintln!(
+                "prism: widget {kind:?} refresh still running after {timeout:?}, given up: its drawings stay"
+            ),
+        }
     }
 
     /// JSON description of registered widgets (for generating extensions).

@@ -68,7 +68,13 @@ stops at launch with `Library not loaded: @rpath/libswift_Concurrency.dylib`.
 (`<bundle id>.widgets`) and the App Group, only for apps that register a
 widget or declare Live Activities (`cx.enable_live_activities()`, or a
 push-to-start handler `cx.on_activity_push_token`). The others are built
-without them and keep their data in the app's own container.
+without them and keep their data in the app's own container. When a widget
+has a refresh hook (`Widget::refresh`, see
+[Refreshing a widget without the app](../guide/system-surfaces.md#refreshing-a-widget-without-the-app)),
+the extension's executable is a copy of the app's binary, built with the
+extension's Swift linked in: it runs the hook on WidgetKit's timeline
+reloads, with the app's storage (the App Group). The keychain
+(`secure_storage`) is not shared: the extension has its own access group.
 
 **Simulator entitlements.** Simulator builds are signed ad hoc, without a
 provisioning profile. The simulator reads their entitlements from sections
@@ -78,7 +84,9 @@ of each binary (`__TEXT,__entitlements` and `__ents_der`). `prism` writes the
 keychain's default access group, which `secure_storage` needs, with or
 without widgets. The widget extension gets `<bundle id>.widgets`. The ad hoc
 signature leaves it out, like `aps-environment`, because the simulator does
-not launch an ad hoc signature that claims it.
+not launch an ad hoc signature that claims it. An extension that runs the
+app's binary (refresh hooks) carries the app's sections, so on the simulator
+it has the app's `application-identifier`; the App Group is the same.
 
 **Capability notes.** On a device or store build, `prism` checks the app's
 own provisioning profile for the capabilities the app asks for (iCloud, Sign

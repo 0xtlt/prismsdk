@@ -85,6 +85,22 @@ bumps the minor version). Every crate of the workspace shares one version.
   as on the other platforms.
 - The counter example's rich note opens a menu under a clicked chip
   (open, remove).
+- Widgets refresh without the app (#331): `Widget::refresh(|cx| async { … })`
+  fetches fresh data (HTTP with `prism::http`, the app's storage) each time
+  the system asks for new drawings, then the widget is drawn again with
+  `render` and `ahead`, while the app stays closed. `Widget::reload(policy)`
+  and `reload_after(delay)` say when the system asks (`WidgetReload::After`,
+  `AtEnd`, `Never`; 15 minutes by default for a widget with a hook);
+  `refresh_timeout` bounds the hook (10 s by default). A hook that fails or
+  times out leaves the previous drawings. On iOS, iPadOS, visionOS and
+  macOS the app's binary becomes the WidgetKit extension's executable
+  (`prism run`, `build` and `publish` link the extension's Swift into it)
+  and runs the hook on WidgetKit's timeline reloads (measured: 17 to 20 MB
+  on the iOS simulator, under the extension's ~30 MB); on Android an
+  inexact alarm runs it in the app's process, without a screen when the app
+  is closed. `Runtime::refresh_widget` and `App::set_widgets_refresh_only`
+  are the backends' side. The Counter example has a "Departures" widget
+  when built with a feed (`COUNTER_DEPARTURES_URL`).
 
 ### Changed
 
@@ -114,9 +130,22 @@ bumps the minor version). Every crate of the workspace shares one version.
   `ClickEvent::default()`), `UiEvent` the `RunClick` variant (backends
   matching it exhaustively add the arm), and `VNode` a `chip_anchor`
   field (#327).
+- **Breaking:** `WidgetSnapshot` has `reload` (the widget's reload policy,
+  written to the snapshot as `"reload"`) and `refresh` (whether it has a
+  hook) (#331).
+- macOS apps with widgets keep their data in their App Group
+  (`~/Library/Group Containers/<group>/prism-data`), as on iOS, so the
+  widget extension shares it; data in `~/Library/Application Support/<bundle
+  id>` moves there on the first run (#331).
+- macOS widget-button links stay valid for the widgets a refresh did not
+  draw again: the link ledger records which widgets each drawing covers
+  (#331).
 
 ### Fixed
 
+- `FileStorage`: two keys that differ only after their last dot (`board.today`,
+  `board.tomorrow`) no longer share one temp file, and each write has its
+  own, so the app and its widget extension (#331) can write at once.
 - iOS, tvOS, visionOS: a diagonal linear gradient in a box that is not
   square follows CSS's angle, as on macOS (#330): `CAGradientLayer` spaces
   colors in unit coordinates, so the CSS line is converted rather than

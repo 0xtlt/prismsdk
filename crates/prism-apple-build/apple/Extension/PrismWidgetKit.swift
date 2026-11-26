@@ -33,6 +33,59 @@ func prismLoadWidget(_ kind: String) -> PNode? {
     return prismParse(json)
 }
 
+// MARK: Refresh without the app (#331)
+
+#if PRISM_RUST_EXTENSION
+/// Implemented in Rust (prism-ios / prism-macos): runs the refresh hook of
+/// widget `kind` (`Widget::refresh`) in the app's code, linked into this
+/// extension, writes its new drawings to the App Group, then calls
+/// `prism_widget_refresh_done(token)`. Main thread.
+@_silgen_name("prism_widget_refresh")
+func prismRustWidgetRefresh(_ kind: UnsafePointer<CChar>, _ token: UInt64)
+
+/// The timelines waiting for a refresh, by token. Main thread.
+private var prismRefreshWaiting: [UInt64: () -> Void] = [:]
+private var prismRefreshNext: UInt64 = 0
+
+/// Called by Rust when the refresh of `token` ended (done, failed or timed
+/// out: the drawings in the App Group are the ones to show either way).
+@_cdecl("prism_widget_refresh_done")
+public func prismWidgetRefreshDone(_ token: UInt64) {
+    prismRefreshWaiting.removeValue(forKey: token)?()
+}
+#endif
+
+/// Runs the refresh hook of `kind` when the app's code is in this
+/// extension and the widget has one (`"refresh"` in its snapshot), then
+/// calls `done`; at once otherwise. The hook has its own timeout
+/// (`Widget::refresh_timeout`), so `done` always comes.
+func prismRefresh(_ kind: String, _ done: @escaping () -> Void) {
+    #if PRISM_RUST_EXTENSION
+    // Before the app's first drawing there is no snapshot yet: the hook
+    // runs too, and draws the widget for the first time.
+    let doc = prismLoadWidget(kind)
+    if let doc, doc["refresh"] as? Bool != true {
+        done()
+        return
+    }
+    DispatchQueue.main.async {
+        prismRefreshNext += 1
+        let token = prismRefreshNext
+        prismRefreshWaiting[token] = done
+        kind.withCString { prismRustWidgetRefresh($0, token) }
+    }
+    #else
+    done()
+    #endif
+}
+
+/// `prismRefresh`, awaited.
+func prismRefresh(_ kind: String) async {
+    await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
+        prismRefresh(kind) { finished.resume() }
+    }
+}
+
 // MARK: Configurable widgets
 
 /// A configurable kind's intent (generated): its kind and the option picked
@@ -137,7 +190,7 @@ struct PrismIntentProvider<Intent: PrismConfigurationIntent>: AppIntentTimelineP
         return prismEntryNow(prismConfigured(doc, prismChosen(doc, configuration.prismValues)))
     }
     func timeline(for configuration: Intent, in context: Context) async -> Timeline<PrismEntry> {
-        let doc = prismLoadWidget(Intent.prismKind)
+        var doc = prismLoadWidget(Intent.prismKind)
         let chosen = prismChosen(doc, configuration.prismValues)
         // Every instance on screen, so the app keeps rendering what is used.
         var shown = [chosen]
@@ -152,7 +205,10 @@ struct PrismIntentProvider<Intent: PrismConfigurationIntent>: AppIntentTimelineP
             }
         }
         if doc != nil { prismRecordConfigurations(Intent.prismKind, shown) }
-        return prismTimeline(prismConfigured(doc, chosen))
+        // The refresh hook draws every configuration recorded above.
+        await prismRefresh(Intent.prismKind)
+        doc = prismLoadWidget(Intent.prismKind)
+        return prismTimeline(prismConfigured(doc, prismChosen(doc, configuration.prismValues)))
     }
 }
 
@@ -163,7 +219,8 @@ struct PrismProvider: TimelineProvider {
         completion(placeholder(in: context))
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<PrismEntry>) -> Void) {
-        completion(prismTimeline(prismLoadWidget(kind)))
+        let kind = kind
+        prismRefresh(kind) { completion(prismTimeline(prismLoadWidget(kind))) }
     }
 }
 
@@ -175,10 +232,13 @@ let prismMaxEntries = 64
 /// The timeline of a snapshot document (#281): its drawing now, each drawing
 /// ahead (`"ahead"`, `Widget::ahead`) from its instant, and the same drawing
 /// again when a timer with an `after` text ends, so the text replaces 0:00.
-/// WidgetKit switches between them without the app. `.atEnd` while drawings
-/// are left after the last entry (WidgetKit then asks again and the last one
-/// stays), `.never` otherwise: the app reloads timelines whenever its state
-/// changes.
+/// WidgetKit switches between them without the app. The policy is the
+/// widget's (`"reload"`, #331: `Widget::reload`): `"never"`, `"end"`, or a
+/// delay in seconds (`.after`, from now: a timeline the extension rebuilds
+/// after a failed refresh asks again a delay later). Without one, `.atEnd`
+/// while drawings are left after the last entry (WidgetKit then asks again
+/// and the last one stays), `.never` otherwise: the app reloads timelines
+/// whenever its state changes.
 func prismTimeline(_ doc: PNode?, now: Date = .now) -> Timeline<PrismEntry> {
     let drawings = prismDrawings(doc, now: now)
     var entries: [PrismEntry] = []
@@ -192,7 +252,18 @@ func prismTimeline(_ doc: PNode?, now: Date = .now) -> Timeline<PrismEntry> {
     let more = entries.count > prismMaxEntries
     entries = Array(entries.prefix(prismMaxEntries))
     let ahead = drawings.count > 1 || more
-    return Timeline(entries: entries, policy: ahead ? .atEnd : .never)
+    return Timeline(entries: entries, policy: prismReloadPolicy(doc?["reload"], ahead: ahead, now: now))
+}
+
+/// A snapshot's `"reload"` as WidgetKit's policy (`ahead`: drawings are
+/// left after the last entry, for the default).
+func prismReloadPolicy(_ reload: Any?, ahead: Bool, now: Date) -> TimelineReloadPolicy {
+    switch reload {
+    case let s as String where s == "never": return .never
+    case let s as String where s == "end": return .atEnd
+    case let n as NSNumber: return .after(now.addingTimeInterval(max(n.doubleValue, 0)))
+    default: return ahead ? .atEnd : .never
+    }
 }
 
 /// The drawing shown now (the system's placeholder and snapshot).

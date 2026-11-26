@@ -187,6 +187,11 @@ pub fn widget_configurations(kind: &str) -> Vec<prism_core::WidgetConfig> {
     prism_core::WidgetConfig::list_from_json(&json)
 }
 
+/// The app's widget code in its widget extension (#331): see the module.
+#[cfg(all(feature = "apple-bridge", not(target_os = "watchos")))]
+#[path = "apple_widget_extension.rs"]
+pub mod widget_extension;
+
 /// Remote push (APNs) through the Swift bridge.
 #[cfg(feature = "apple-bridge")]
 #[path = "apple_push.rs"]

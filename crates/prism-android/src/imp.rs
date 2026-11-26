@@ -631,6 +631,64 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeWidgetAction(
     check_jobs();
 }
 
+/// A widget's refresh alarm went off (`Widget::refresh`, #331;
+/// PrismWidget.Refresh, a broadcast that keeps the process alive until
+/// `task` finishes): runs the widget's refresh hook in the open app's
+/// runtime, or in one without a screen when the app is closed. A hook that
+/// succeeds draws the widget again (`ReloadWidgets`); one that fails or
+/// times out leaves its drawing. `task` is reported done through
+/// `PrismHost.jobFinished`, like a background job.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_nativeWidgetRefresh(
+    env: *mut JNIEnv,
+    _class: jclass,
+    task: jstring,
+    kind: jstring,
+    info: jstring,
+) {
+    jni::init_host(env);
+    let task = unsafe { jni::rust_string(env, task) };
+    let kind = unsafe { jni::rust_string(env, kind) };
+    let mut open = false;
+    let mut started = None;
+    with_state(|s| {
+        open = true;
+        started = s.runtime.refresh_widget(&kind);
+        let patches = s.runtime.poll();
+        commit(s, &patches);
+    });
+    if !open {
+        let Some((_, init)) = APP.get() else {
+            jni::job_finished(&task, false);
+            return;
+        };
+        let info: Value =
+            serde_json::from_str(&unsafe { jni::rust_string(env, info) }).unwrap_or_default();
+        HEADLESS.with(|h| {
+            let mut h = h.borrow_mut();
+            let headless = h.get_or_insert_with(|| {
+                let services = crate::services::AndroidServices::new(&info);
+                let runtime = make_runtime(init, &info, &services, None, None);
+                Headless { runtime, services }
+            });
+            started = headless.runtime.refresh_widget(&kind);
+        });
+        poll_headless();
+    }
+    match started {
+        Some(handle) => JOBS.with(|j| {
+            j.borrow_mut().push(Job {
+                handle,
+                task,
+                headless: !open,
+            })
+        }),
+        // No hook, or one that just ran: nothing to wait for.
+        None => jni::job_finished(&task, true),
+    }
+    check_jobs();
+}
+
 /// The car (Car App Library): connected, an item selected, Back. In the
 /// open app's runtime, or one without a screen (the car can start the app).
 #[unsafe(no_mangle)]

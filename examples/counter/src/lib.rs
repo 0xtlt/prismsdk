@@ -16,6 +16,7 @@ mod about;
 mod background;
 mod car;
 mod decor;
+mod departures;
 mod device;
 mod focus;
 mod forms;
@@ -88,6 +89,7 @@ pub fn run() {
         ui::set_theme(cx, theme);
         let store = cx.new_entity(|cx| Store::load(cx));
         widgets::register(cx, store);
+        departures::register(cx);
         car::register(cx, store);
         menus::install(cx, store);
         let focus = focus::install(cx, store);

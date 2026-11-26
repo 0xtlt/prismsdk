@@ -1636,8 +1636,8 @@ fn widget_parameters_are_described_for_the_bundler() {
         app.describe_widgets(),
         concat!(
             r#"[{"kind":"reading","name":"Reading","description":"","families":["systemSmall"],"#,
-            r#""parameters":[{"id":"place","title":"Place"},{"id":"metric","title":"Measure"}]},"#,
-            r#"{"kind":"plain","name":"Plain","description":"","families":["systemSmall","systemMedium"],"parameters":[]}]"#
+            r#""parameters":[{"id":"place","title":"Place"},{"id":"metric","title":"Measure"}],"refresh":false},"#,
+            r#"{"kind":"plain","name":"Plain","description":"","families":["systemSmall","systemMedium"],"parameters":[],"refresh":false}]"#
         )
     );
 }

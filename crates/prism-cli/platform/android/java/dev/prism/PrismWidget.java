@@ -26,7 +26,10 @@ import java.util.Map;
  * (`ReloadWidgets`); they are kept here, so the launcher can redraw them while
  * the app is closed. A snapshot drawn ahead (`Widget::ahead`, #281) shows the
  * latest drawing whose instant has come, and an alarm draws the widget again
- * at the next one, or when a timer with an `after` text ends.
+ * at the next one, or when a timer with an `after` text ends. A widget with a
+ * refresh hook (`Widget::refresh`, #331) has a second alarm, at its reload
+ * policy's time (`"reload"`): it runs the hook ({@link Refresh}), in the app's
+ * process, without opening the app.
  */
 public class PrismWidget extends AppWidgetProvider {
     static final String PREFS = "prism.widgets";
@@ -45,12 +48,17 @@ public class PrismWidget extends AppWidgetProvider {
         return "dev.prism.widgets.Widget_" + kind.replaceAll("[^A-Za-z0-9_]", "_");
     }
 
-    /** From the app: `[{kind, link, families: {systemSmall: node, …}, ahead: [{at, families}]}]`. */
+    /** From the app: `[{kind, link, families: {systemSmall: node, …}, ahead: [{at, families}], reload, refresh}]`. */
     static void reload(Context c, JSONArray snapshots) {
         SharedPreferences.Editor prefs = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
+        long now = System.currentTimeMillis();
         for (int i = 0; i < snapshots.length(); i++) {
             JSONObject snap = snapshots.optJSONObject(i);
-            if (snap != null) prefs.putString(className(snap.optString("kind")), snap.toString());
+            if (snap == null) continue;
+            String name = className(snap.optString("kind"));
+            prefs.putString(name, snap.toString());
+            // A fresh drawing: the next refresh counts from now.
+            prefs.putLong(name + REFRESH_AT, refreshAt(snap, now));
         }
         prefs.apply();
         AppWidgetManager mgr = AppWidgetManager.getInstance(c);
@@ -63,6 +71,7 @@ public class PrismWidget extends AppWidgetProvider {
                 mgr.updateAppWidget(id, views(c, snap, mgr.getAppWidgetOptions(id)));
             }
             schedule(c, provider, snap, ids);
+            scheduleRefresh(c, snap.optString("kind"), ids.length > 0 ? refreshAt(snap, now) : 0);
         }
     }
 
@@ -71,7 +80,56 @@ public class PrismWidget extends AppWidgetProvider {
         JSONObject snap = saved(c);
         for (int id : ids) mgr.updateAppWidget(id, views(c, snap, mgr.getAppWidgetOptions(id)));
         ComponentName provider = new ComponentName(c, getClass());
-        schedule(c, provider, snap, mgr.getAppWidgetIds(provider));
+        int[] all = mgr.getAppWidgetIds(provider);
+        schedule(c, provider, snap, all);
+        if (snap == null || !snap.optBoolean("refresh") || all.length == 0) return;
+        // A widget just placed, the device restarted (alarms are lost), or a
+        // refresh overdue: refresh now; otherwise keep the refresh alarm.
+        String kind = snap.optString("kind");
+        long at = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(getClass().getName() + REFRESH_AT, 0);
+        boolean placed = ids.length < all.length || !Refresh.armed(c, kind);
+        if (at <= System.currentTimeMillis() || placed) {
+            c.sendBroadcast(new android.content.Intent(c, Refresh.class).putExtra("kind", kind));
+        } else {
+            scheduleRefresh(c, kind, at);
+        }
+    }
+
+    /** The preferences key, after the class name, of when the next refresh is due (ms). */
+    static final String REFRESH_AT = ".refreshAt";
+    /**
+     * When the refresh hook of `snap`'s widget runs next, from `now` (ms); 0
+     * for never ({@link PrismRefreshPolicy}).
+     */
+    static long refreshAt(JSONObject snap, long now) {
+        if (snap == null) return 0;
+        JSONArray ahead = snap.optJSONArray("ahead");
+        JSONObject last = ahead == null || ahead.length() == 0 ? null : ahead.optJSONObject(ahead.length() - 1);
+        double lastAhead = last == null ? Double.NaN : last.optDouble("at", Double.NaN);
+        return PrismRefreshPolicy.refreshAt(snap.optBoolean("refresh"), snap.opt("reload"), lastAhead, now);
+    }
+
+    /** The last instance of this widget was removed: its refresh alarm goes. */
+    @Override
+    public void onDisabled(Context c) {
+        super.onDisabled(c);
+        JSONObject snap = saved(c);
+        if (snap != null && snap.optBoolean("refresh")) stopRefreshing(c, snap.optString("kind"));
+    }
+
+    /** Widget `kind` is on no home screen: cancels its refresh alarm. */
+    static void stopRefreshing(Context c, String kind) {
+        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(className(kind) + REFRESH_AT).apply();
+        scheduleRefresh(c, kind, 0);
+    }
+
+    /** Runs widget `kind`'s refresh hook at `at` (ms; inexact, like the drawing alarm), or never (0). */
+    static void scheduleRefresh(Context c, String kind, long at) {
+        AlarmManager alarms = c.getSystemService(AlarmManager.class);
+        if (alarms == null) return;
+        PendingIntent pending = Refresh.intent(c, kind, PendingIntent.FLAG_UPDATE_CURRENT);
+        if (at == 0) alarms.cancel(pending);
+        else alarms.set(AlarmManager.RTC, at, pending);
     }
 
     /** The families shown at `now` (ms): the latest drawing ahead whose instant has come, else the ones written. */
@@ -272,6 +330,69 @@ public class PrismWidget extends AppWidgetProvider {
         }
 
         /** From Rust (through PrismHost.jobFinished): the action's job is done. */
+        static boolean finished(String task) {
+            PendingResult r = running.remove(task);
+            if (r == null) return false;
+            r.finish();
+            return true;
+        }
+    }
+
+    /**
+     * A widget's refresh (`Widget::refresh`, #331): its alarm broadcasts here,
+     * in the app's process, without opening the app. The hook runs (without a
+     * screen when the app is closed) and the broadcast stays alive (goAsync)
+     * until it ends; one that succeeds redraws the widget ({@link #reload}, which
+     * sets the next refresh), one that fails or times out leaves its drawing.
+     * Declared in the manifest when the app has widgets.
+     */
+    public static final class Refresh extends android.content.BroadcastReceiver {
+        static final String PREFIX = "prism.widget-refresh:";
+        static final Map<String, PendingResult> running = new HashMap<>();
+        static long next;
+
+        /** The broadcast refreshing widget `kind` (one per kind). */
+        static PendingIntent intent(Context c, String kind, int flags) {
+            android.content.Intent i = new android.content.Intent(c, Refresh.class)
+                    .putExtra("kind", kind)
+                    .setData(android.net.Uri.parse("prism-refresh:" + android.net.Uri.encode(kind)));
+            return PendingIntent.getBroadcast(c, ("refresh\n" + kind).hashCode(), i, flags | PendingIntent.FLAG_IMMUTABLE);
+        }
+
+        /** Whether widget `kind`'s refresh alarm is set. */
+        static boolean armed(Context c, String kind) {
+            return intent(c, kind, PendingIntent.FLAG_NO_CREATE) != null;
+        }
+
+        @Override
+        public void onReceive(Context c, android.content.Intent i) {
+            String kind = i.getStringExtra("kind");
+            if (kind == null) return;
+            // The next try, should this one fail (a success draws the widget
+            // again, which sets it anew).
+            String name = className(kind);
+            SharedPreferences prefs = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            // Removed from every home screen: no more refreshes.
+            if (AppWidgetManager.getInstance(c).getAppWidgetIds(new ComponentName(c, name)).length == 0) {
+                stopRefreshing(c, kind);
+                return;
+            }
+            JSONObject snap = null;
+            try {
+                String json = prefs.getString(name, null);
+                snap = json == null ? null : new JSONObject(json);
+            } catch (org.json.JSONException ignored) {
+            }
+            long at = refreshAt(snap, System.currentTimeMillis());
+            prefs.edit().putLong(name + REFRESH_AT, at).apply();
+            scheduleRefresh(c, kind, at);
+            String task = PREFIX + (++next);
+            running.put(task, goAsync());
+            PrismHost.load(c);
+            PrismHost.nativeWidgetRefresh(task, kind, PrismHost.baseInfo(c).toString());
+        }
+
+        /** From Rust (through PrismHost.jobFinished): the refresh ended. */
         static boolean finished(String task) {
             PendingResult r = running.remove(task);
             if (r == null) return false;

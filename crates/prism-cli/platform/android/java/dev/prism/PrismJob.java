@@ -74,6 +74,8 @@ public final class PrismJob extends JobService {
     static void finished(String task, boolean ok) {
         // A widget button's broadcast, not a job.
         if (PrismWidget.Action.finished(task)) return;
+        // A widget's refresh (#331).
+        if (PrismWidget.Refresh.finished(task)) return;
         JobParameters p = running.remove(task);
         if (p != null && service != null) service.jobFinished(p, !ok);
     }

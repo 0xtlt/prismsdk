@@ -56,6 +56,20 @@ fn file_storage_removes_and_ignores_temporary_files() {
 }
 
 #[test]
+fn keys_that_differ_after_a_dot_have_their_own_temp_files() {
+    // `a.b` and `a.c` used to share `a.tmp~`; the app and its widget
+    // extension (#331) can also write one key at once.
+    let dir = TempDir::new("dots");
+    let mut s = FileStorage::new(&*dir);
+    s.set("board.today", "1");
+    s.set("board.tomorrow", "2");
+    assert_eq!(s.get("board.today").as_deref(), Some("1"));
+    assert_eq!(s.get("board.tomorrow").as_deref(), Some("2"));
+    // No temp file is left behind.
+    assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 2);
+}
+
+#[test]
 fn file_storage_lists_stray_files_without_crashing() {
     let dir = TempDir::new("stray");
     let s = FileStorage::new(&*dir);
