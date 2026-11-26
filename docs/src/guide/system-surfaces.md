@@ -11,7 +11,9 @@ cx.register_widget(
         .render(move |cx, family| text(format!("{} open", store.read(cx).open()))),
 );
 // A `.bg(..)` on the widget's root fills the whole widget (iOS and macOS:
-// its container background), not just the area inside the system's margins.
+// its container background), not just the area inside the system's margins;
+// so does a gradient over it (`.bg_linear_gradient(..)`, #330; Android draws
+// gradients as a stretched bitmap, see Decorations › Gradients).
 // Sizes work as in the app: a `nowrap` text hugs its content (cut where its
 // parent ends) and `min_w` / `min_h` keep a pill at least that size (#321;
 // on Android, a box's `min_h` applies to texts only).

@@ -2152,3 +2152,18 @@ test("an ended timer shows its after text, in the page and a live activity (#281
   const island = page.document.getElementById("prism-island");
   assert.deepEqual(island.querySelectorAll("[data-end]").map((e) => e.textContent), ["Gone", "0:00"]);
 });
+
+test("a live activity draws its gradients over the background (#330)", () => {
+  const page = live([create(1, "view"), root(1)]);
+  page.ws.deliver({ t: "activity", id: "1", c: {
+    cl: { k: "v", bg: "#000000FF", gr: { k: "l", a: 90, s: [[["#FF0000FF", "#00FF00FF"], 0], ["#0000FF80", 0.75]] } },
+    ct: { k: "v", gr: { k: "c", a: 45, s: [["#FFFFFFFF", 0], ["#000000FF", 1]] } },
+  } });
+  const island = page.document.getElementById("prism-island");
+  const boxes = island.querySelectorAll("div").filter((d) => d.style.backgroundImage);
+  assert.deepEqual(boxes.map((d) => d.style.backgroundImage), [
+    "linear-gradient(90deg, light-dark(#FF0000FF, #00FF00FF) 0%, #0000FF80 75%)",
+    "conic-gradient(from 45deg, #FFFFFFFF 0%, #000000FF 100%)",
+  ]);
+  assert.equal(boxes[0].style.background, "#000000FF");
+});

@@ -479,7 +479,10 @@
     "frosted": "Barre givrée",
     "search": "Rechercher",
     "clear": "Effacer",
-    "focus_hint": "Activez le champ : la carte s’entoure, le bouton Effacer apparaît."
+    "focus_hint": "Activez le champ : la carte s’entoure, le bouton Effacer apparaît.",
+    "fade_hint": "Faites défiler la liste : sa fin se fond dans la carte (un dégradé linéaire par-dessus). Touchez le bouton pour changer le remplissage.",
+    "fade_item": "Élément {n}",
+    "fade_swap": "Changer le remplissage"
   },
   "interact": {
     "heading": "Interaction",

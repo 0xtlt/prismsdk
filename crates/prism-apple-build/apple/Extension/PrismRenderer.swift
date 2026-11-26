@@ -292,8 +292,14 @@ private func prismModifiers(_ base: AnyView, _ n: PNode) -> AnyView {
     let at = { (bit: Int) -> Double in rc & bit != 0 ? radius : 0 }
     let box = UnevenRoundedRectangle(topLeadingRadius: at(1), bottomLeadingRadius: at(8),
                                      bottomTrailingRadius: at(4), topTrailingRadius: at(2), style: .continuous)
-    if let bg = prismColor(n["bg"]) {
-        v = AnyView(v.background(box.fill(bg)))
+    let bg = prismColor(n["bg"])
+    let gradient = n["gr"] as? [String: Any]
+    if bg != nil || gradient != nil {
+        // The gradient over the color (#330), both in the rounded box.
+        v = AnyView(v.background(ZStack {
+            if let bg { box.fill(bg) }
+            if let gradient { PrismGradientFill(spec: gradient, box: box) }
+        }))
     }
     if let bw = num(n["bw"]), bw > 0 {
         let c = prismColor(n["bc"]) ?? .secondary
@@ -318,6 +324,55 @@ private func prismModifiers(_ base: AnyView, _ n: PNode) -> AnyView {
         v = AnyView(Link(destination: url) { v })
     }
     return v
+}
+
+/// A snapshot gradient (`gr`: `k` kind `l`/`r`/`c`, `a` degrees, `s` stops
+/// `[[color, position]]`, prism-core `write_gradient`) filling `box`, with
+/// CSS's geometry at the size SwiftUI gives it.
+struct PrismGradientFill: View {
+    let spec: [String: Any]
+    let box: UnevenRoundedRectangle
+
+    var body: some View {
+        GeometryReader { geo in fill(geo.size) }
+    }
+
+    /// The stops; at least two (one is a solid fill).
+    var gradient: Gradient {
+        var stops = (spec["s"] as? [[Any]] ?? []).compactMap { s -> Gradient.Stop? in
+            guard s.count == 2, let c = prismColor(s[0]), let at = num(s[1]) else { return nil }
+            return Gradient.Stop(color: c, location: at)
+        }
+        if stops.count == 1 { stops.append(Gradient.Stop(color: stops[0].color, location: 1)) }
+        return Gradient(stops: stops)
+    }
+
+    @ViewBuilder
+    private func fill(_ size: CGSize) -> some View {
+        let angle = num(spec["a"]) ?? 0
+        switch spec["k"] as? String {
+        case "r":
+            // CSS: an ellipse the box's shape reaching the corners (0.5 is
+            // the inscribed ellipse).
+            box.fill(EllipticalGradient(gradient: gradient, center: .center, startRadiusFraction: 0,
+                                        endRadiusFraction: 0.5 * 2.squareRoot()))
+        case "c":
+            // CSS `conic-gradient(from <angle>)`: 0 is up, clockwise; SwiftUI's
+            // angles start to the right and turn clockwise too.
+            box.fill(AngularGradient(gradient: gradient, center: .center, startAngle: .degrees(angle - 90),
+                                     endAngle: .degrees(angle + 270)))
+        default:
+            // The CSS gradient line (prism-core `Gradient::geometry`): `0`
+            // to the top, `90` to the right, the corners reaching the ends.
+            let a = angle * .pi / 180
+            let (dx, dy) = (sin(a), -cos(a))
+            let w = max(size.width, 1), h = max(size.height, 1)
+            let half = (w * abs(dx) + h * abs(dy)) / 2
+            let start = UnitPoint(x: (w / 2 - dx * half) / w, y: (h / 2 - dy * half) / h)
+            let end = UnitPoint(x: (w / 2 + dx * half) / w, y: (h / 2 + dy * half) / h)
+            box.fill(LinearGradient(gradient: gradient, startPoint: start, endPoint: end))
+        }
+    }
 }
 
 private func prismHasAction(_ n: PNode) -> Bool {

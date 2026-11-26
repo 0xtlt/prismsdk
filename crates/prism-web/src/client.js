@@ -6618,6 +6618,13 @@
   // --- Static snapshots (Live Activities on the web) --------------------------
   // Mirrors the SwiftUI renderer used by widgets and the Dynamic Island.
   const color = (c) => (Array.isArray(c) ? `light-dark(${c[0]}, ${c[1]})` : c);
+  // A snapshot gradient (`gr`: kind `k`, angle `a`, stops `s`, #330) as CSS.
+  function snodeGradient(g) {
+    const stops = (g.s || []).map(([c, at]) => `${color(c)} ${at * 100}%`).join(", ");
+    if (g.k === "r") return `radial-gradient(${stops})`;
+    if (g.k === "c") return `conic-gradient(from ${g.a || 0}deg, ${stops})`;
+    return `linear-gradient(${g.a || 0}deg, ${stops})`;
+  }
   function snode(n) {
     const tag = { t: "span", i: "span", m: "span", p: "progress" }[n.k] || "div";
     const el = document.createElement(tag);
@@ -6643,6 +6650,7 @@
     if (n.ai) st.alignItems = { s: "flex-start", c: "center", e: "flex-end" }[n.ai];
     if (n.jc) st.justifyContent = { c: "center", e: "flex-end", b: "space-between", a: "space-around", v: "space-evenly" }[n.jc];
     if (n.bg) st.background = color(n.bg);
+    if (n.gr) st.backgroundImage = snodeGradient(n.gr);
     if (n.fg) { st.color = color(n.fg); st.accentColor = color(n.fg); }
     if (n.bw) st.border = `${n.bw}px solid ${color(n.bc || "currentColor")}`;
     if (n.r) st.borderRadius = n.r + "px";

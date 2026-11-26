@@ -3,7 +3,7 @@
 
 use prism_core::prelude::*;
 use prism_core::{
-    BorderStyle, GradientKind, Interaction, Interactions, Patch, Style, StyleContext, rgba,
+    BorderStyle, Fill, GradientKind, Interaction, Interactions, Patch, Style, StyleContext, rgba,
 };
 
 use prism_testing::{Harness, mount};
@@ -183,6 +183,176 @@ fn states_resolve_per_state_and_combine_in_a_fixed_order() {
     // Zoom scales what each state gives too.
     let z = resolved(Style::default().hover(|s| s.border(1.))).scaled(2.);
     assert_eq!(z.states.resolved().next().unwrap().1.border_width, 2.);
+}
+
+#[test]
+fn linear_gradients_take_css_angles_and_placed_stops() {
+    // #330: `.bg_linear_gradient(angle, [(color, stop), …])`.
+    let clear = rgba(0xFFFFFF, 0.);
+    let s = Style::default().bg_linear_gradient(180., [(clear, 0.), (rgb(0xFFFFFF), 0.8)]);
+    let g = s.gradient.clone().expect("a gradient");
+    assert_eq!(g.kind, GradientKind::Linear { angle: 180. });
+    assert_eq!(
+        g.stops.iter().map(|s| (s.color, s.at)).collect::<Vec<_>>(),
+        [(clear, 0.), (rgb(0xFFFFFF), 0.8)]
+    );
+    assert_eq!(
+        g,
+        Gradient::linear_stops(180., [(clear, 0.), (rgb(0xFFFFFF), 0.8)])
+    );
+    assert_eq!(
+        g.to_css(),
+        "linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,1) 80%)"
+    );
+
+    // CSS's angles: 0 to the top, 90 to the right, 180 to the bottom, 270
+    // to the left (`geometry`: from the first color to the last).
+    let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
+    let line = |angle: f32| Gradient::linear(angle, [Color::BLACK, Color::WHITE]);
+    assert!(close(line(0.).geometry(100., 50.), [50., 50., 50., 0.]));
+    assert!(close(line(90.).geometry(100., 50.), [0., 25., 100., 25.]));
+    assert!(close(line(180.).geometry(100., 50.), [50., 0., 50., 50.]));
+    assert!(close(line(270.).geometry(100., 50.), [100., 25., 0., 25.]));
+
+    // Stops placed like CSS: clamped, never going back (a hard edge), a NaN
+    // where the one before is; one stop is a solid fill, none no gradient.
+    let placed = Gradient::linear_stops(
+        90.,
+        [
+            (rgb(1), -0.5),
+            (rgb(2), 0.6),
+            (rgb(3), 0.4),
+            (rgb(4), f32::NAN),
+            (rgb(5), 2.),
+        ],
+    )
+    .normalized()
+    .unwrap();
+    assert_eq!(
+        placed.stops.iter().map(|s| s.at).collect::<Vec<_>>(),
+        [0., 0.6, 0.6, 0.6, 1.]
+    );
+    let one = Style::default().bg_linear_gradient(90., [(rgb(7), 0.3)]);
+    assert_eq!(
+        one.gradient
+            .unwrap()
+            .stops
+            .iter()
+            .map(|s| (s.color, s.at))
+            .collect::<Vec<_>>(),
+        [(rgb(7), 0.), (rgb(7), 1.)]
+    );
+    let none = Style::default()
+        .bg_gradient(Gradient::linear(90., [rgb(0), rgb(1)]))
+        .bg_linear_gradient(90., []);
+    assert_eq!(none.gradient, None);
+
+    // Core Animation's unit line: the CSS line in a square box, rotated in
+    // a wide one so the stretched isobars stay perpendicular to it.
+    let diag = line(135.);
+    assert!(close(diag.unit_points(100., 100.), [0., 0., 1., 1.]));
+    let [x0, y0, x1, y1] = diag.unit_points(200., 100.);
+    let (ux, uy) = (x1 - x0, y1 - y0);
+    // An isobar of CSS's line, in points, is along (-1, 1) for 135°: in
+    // unit space (-1/200, 1/100), perpendicular to the unit line.
+    assert!((ux * (-1. / 200.) + uy * (1. / 100.)).abs() < 1e-6);
+    // Axis-aligned lines are the same in both spaces.
+    assert!(close(
+        line(180.).unit_points(200., 100.),
+        [0.5, 0., 0.5, 1.]
+    ));
+}
+
+#[test]
+fn fills_replace_the_whole_background() {
+    let g = Gradient::linear(90., [rgb(0xFF0000), rgb(0x0000FF)]);
+    // `bg` and `bg_gradient` layer: the gradient over the color.
+    let layered = Style::default().bg(rgb(0)).bg_gradient(g.clone());
+    assert_eq!(layered.background, Some(rgb(0)));
+    assert!(layered.gradient.is_some());
+    // `bg_fill` replaces both, either way.
+    let solid = layered.clone().bg_fill(rgb(0x00FF00));
+    assert_eq!(
+        (solid.background, solid.gradient.clone()),
+        (Some(rgb(0x00FF00)), None)
+    );
+    let back = solid.bg_fill(g.clone());
+    assert_eq!((back.background, back.gradient), (None, Some(g.clone())));
+    assert_eq!(Fill::from(rgb(1)), Fill::Solid(rgb(1)));
+
+    // In a state: a gradient button turns solid on hover, and back.
+    let s = resolved(
+        Style::default()
+            .bg_gradient(g.clone())
+            .hover(|s| s.bg_fill(rgb(0x00FF00))),
+    );
+    let hover = s.interacted(Interaction::Hover.into());
+    assert_eq!(
+        (hover.background, hover.gradient),
+        (Some(rgb(0x00FF00)), None)
+    );
+    assert_eq!(s.interacted(Interactions::NONE).gradient, Some(g.clone()));
+
+    // Transitions animate between gradients of the same kind and length.
+    let other = Gradient::linear(0., [rgb(0), rgb(1)]);
+    assert!(g.interpolates_with(&other));
+    assert!(!g.interpolates_with(&Gradient::radial([rgb(0), rgb(1)])));
+    assert!(!g.interpolates_with(&Gradient::linear(90., [rgb(0), rgb(1), rgb(2)])));
+}
+
+struct Fade {
+    solid: bool,
+    angle: f32,
+}
+
+impl Render for Fade {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        let d = div().size(40.).rounded(8.);
+        if self.solid {
+            d.bg(rgb(0x00FF00))
+        } else {
+            d.bg_linear_gradient(self.angle, [(rgb(0xFF0000), 0.), (rgb(0x0000FF), 1.)])
+        }
+    }
+}
+
+#[test]
+fn gradients_patch_to_solid_backgrounds_and_back() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Fade {
+            solid: false,
+            angle: 180.,
+        });
+        mount(cx, root);
+    });
+    let style_of = |patches: &[Patch]| {
+        patches
+            .iter()
+            .find_map(|p| match p {
+                Patch::SetStyle { style, .. } => Some(style.clone()),
+                _ => None,
+            })
+            .expect("a style patch")
+    };
+    // A new angle: a style patch with it.
+    let s = style_of(h.update::<Fade>(|f| f.angle = 90.));
+    assert_eq!(
+        s.gradient.unwrap().kind,
+        GradientKind::Linear { angle: 90. }
+    );
+    // Solid: the gradient goes.
+    let s = style_of(h.update::<Fade>(|f| f.solid = true));
+    assert_eq!((s.background, s.gradient), (Some(rgb(0x00FF00)), None));
+    // And back: the gradient returns, the color goes.
+    let s = style_of(h.update::<Fade>(|f| f.solid = false));
+    assert_eq!(s.background, None);
+    assert_eq!(s.gradient.unwrap().stops.len(), 2);
+    // The same gradient again: nothing to patch.
+    let patches = h.update::<Fade>(|f| f.angle = 90.).to_vec();
+    assert!(
+        !patches.iter().any(|p| matches!(p, Patch::SetStyle { .. })),
+        "{patches:?}"
+    );
 }
 
 struct Rows {
