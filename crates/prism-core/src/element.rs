@@ -2536,17 +2536,22 @@ pub fn picture_data(bytes: impl AsRef<[u8]>, mime: &str) -> Picture {
     picture(format!("data:{};base64,{}", mime.trim(), base64(bytes)))
 }
 
-/// An SVG document (a server-made QR code, an icon), drawn natively as
-/// vector paths on every backend, widgets included (see
-/// [`crate::svg`](mod@crate::svg) for what is supported). It is as wide as
-/// the SVG's `width` (or `viewBox`) and keeps its proportions: change the
-/// width (`.w(px(64.))`) and the height follows. Decorative unless given
+/// An SVG document (a server-made QR code, an icon, a design or diagram
+/// export), drawn natively as vectors on every backend: shapes, gradients,
+/// text, images, clips, masks, shadows (see [`crate::svg`](mod@crate::svg)
+/// for what is supported, and [`crate::svg::parse`] to know what a
+/// document has that is not drawn: a debug build prints it once per
+/// document). Widgets draw its shapes. It is as wide as the SVG's `width`
+/// (or `viewBox`) and keeps its proportions: change the width
+/// (`.w(px(64.))`) and the height follows. Decorative unless given
 /// [`Picture::alt`]. Unreadable markup draws nothing.
 pub fn svg(markup: impl AsRef<str>) -> Picture {
     let mut n = VNode::new(NodeKind::Shape);
     n.a11y.hidden = true;
     match crate::svg::parse(markup.as_ref()) {
         Some(s) => {
+            #[cfg(debug_assertions)]
+            report_skipped(markup.as_ref(), &s.skipped);
             n.text = s.drawing.encode();
             n.style.width = crate::style::Length::Px(s.width);
             if s.width > 0. && s.height > 0. {
@@ -2556,6 +2561,25 @@ pub fn svg(markup: impl AsRef<str>) -> Picture {
         None => n.text = "i0,0\n".into(),
     }
     Picture(n)
+}
+
+/// Says once per document what [`svg`] does not draw of it (debug builds).
+#[cfg(debug_assertions)]
+fn report_skipped(markup: &str, skipped: &[String]) {
+    use std::hash::{Hash, Hasher};
+    static SEEN: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+    if skipped.is_empty() {
+        return;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    markup.hash(&mut hasher);
+    let id = hasher.finish();
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.contains(&id) || seen.len() >= 256 {
+        return;
+    }
+    seen.push(id);
+    eprintln!("prism: svg(): not drawn: {}", skipped.join(", "));
 }
 
 /// Standard base64 with padding (`data:` URLs).

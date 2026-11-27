@@ -524,10 +524,11 @@ impl SNode {
             // text color, else the label color (renderers read hex colors).
             let label = Color::adaptive(Color::BLACK, Color::WHITE);
             let resolved;
-            let content = if content.contains('~') {
+            let content = if content.contains('~') || !plain_drawing(content) {
                 let text = s.text_color.map_or(label, |c| c.resolve_current(label));
                 resolved = crate::shape::Drawing::decode(content)
                     .with_current_color(text)
+                    .plain()
                     .encode();
                 &resolved
             } else {
@@ -655,11 +656,29 @@ fn write_typography(o: &mut String, s: &crate::style::Style) {
     }
 }
 
+/// Whether a drawing's text form has only what the renderers of surfaces
+/// draw: paths in flat colors (no gradient, text, image or group).
+fn plain_drawing(text: &str) -> bool {
+    text.lines().all(|line| match line.split_once('|') {
+        Some((paint, _)) => !paint.split_whitespace().any(|t| t.starts_with(['F', 'S'])),
+        None => line.is_empty() || line.starts_with(['i', 'n']),
+    })
+}
+
 /// A drawing's text form ([`Drawing::encode`](crate::shape::Drawing)) in
 /// fewer bytes: numbers rounded to `decimals` without leading zeros
 /// (`0.25` → `.25`), opaque colors without their alpha (`#5B5BD6FF` →
 /// `#5B5BD6`). Every reader accepts both forms.
 pub fn compact_drawing(text: &str, decimals: usize) -> String {
+    // Gradients, text, images and groups are not drawn there: the paths
+    // in flat colors, each group's opacity in them.
+    let plain;
+    let text = if plain_drawing(text) {
+        text
+    } else {
+        plain = crate::shape::Drawing::decode(text).plain().encode();
+        &plain
+    };
     let scale = 10f32.powi(decimals as i32);
     let short = |t: &str| -> String {
         let Ok(v) = t.parse::<f32>() else {

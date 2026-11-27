@@ -3971,6 +3971,7 @@ fn car_templates_stack_select_and_back() {
                                     crate::Path::arc(0.5, 0.5, 0.5, 0., 180.)
                                         .stroke(rgb(0xFF0000), 4.),
                                 ],
+                                ..Default::default()
                             })
                             .on_select(|cx| {
                                 cx.car_push(|_| CarTemplate::pane("Details").row("Speed", "Fast"));

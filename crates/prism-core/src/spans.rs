@@ -1056,8 +1056,8 @@ impl ChipIcon {
     pub fn shape(paths: impl IntoIterator<Item = Path>) -> ChipIcon {
         ChipIcon::Vector {
             drawing: Drawing {
-                inset: (0., 0.),
                 paths: paths.into_iter().collect(),
+                ..Drawing::default()
             },
             ratio: 1.,
         }

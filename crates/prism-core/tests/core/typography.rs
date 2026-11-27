@@ -123,6 +123,7 @@ fn runs_round_trip_through_their_encoding() {
             chip_drawing: Some(prism_core::Drawing {
                 inset: (0., 0.),
                 paths: vec![Path::circle(0.5, 0.5, 0.25).fill(rgb(0x334455))],
+                ..Default::default()
             }),
             chip_icon_ratio: Some(1.5),
             tooltip: Some("Road map, the whole name".into()),
