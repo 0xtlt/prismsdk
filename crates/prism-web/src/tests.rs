@@ -4603,6 +4603,7 @@ fn a_styled_chip_has_a_first_paint() {
         chip_drawing: Some(Drawing {
             inset: (0., 0.),
             paths: vec![Path::circle(0.5, 0.5, 0.4).stroke(Color::current(), 1.5)],
+            ..Default::default()
         }),
         tooltip: Some("Ada \"L\"".into()),
         chip_ring: Some((1.5, rgb(0x0a84ff))),
@@ -5158,6 +5159,7 @@ fn ssr_shape_of_a_fixed_size_is_drawn_in_pixels_like_the_client() {
                 prism_core::rgb(0xffffff),
             )),
         ],
+        ..Default::default()
     };
     let page = shape_page(fixed(24., 24.), &icon);
     let root = &page.root;
@@ -5192,6 +5194,7 @@ fn ssr_shape_of_a_flexible_size_scales_or_waits_for_the_client() {
     let line = Drawing {
         inset: (0., 0.),
         paths: vec![Path::line([(0., 1.), (0.5, 0.25), (1., 0.5)]).stroke(Color::current(), 1.5)],
+        ..Default::default()
     };
     let wide = Style {
         width: Length::Fraction(1.),
@@ -5222,10 +5225,12 @@ fn ssr_shape_of_a_flexible_size_scales_or_waits_for_the_client() {
     let ring = Drawing {
         inset: (0., 0.),
         paths: vec![Path::circle(0.5, 0.5, 0.5).stroke(Color::current(), 1.)],
+        ..Default::default()
     };
     let inset = Drawing {
         inset: (4., 4.),
         ..line.clone()
+        ..Default::default()
     };
     for d in [&ring, &inset] {
         let page = shape_page(wide.clone(), d);

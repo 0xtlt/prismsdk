@@ -104,6 +104,15 @@ pub trait Widgets {
     /// turned into curves; colors may adapt to dark mode). Called when the
     /// drawing or the shape's size changes.
     fn set_drawing(&mut self, _view: &Self::View, _paths: &[prism_core::Path]) {}
+    /// What a shape draws when it is more than paths (an SVG document's
+    /// text, images, and groups with an opacity, a clip, a mask or
+    /// shadows), in points for its current size: paths as
+    /// [`set_drawing`](Self::set_drawing) gets them, text and images with
+    /// their transform to points. A backend that does not draw them gets
+    /// the paths alone (`prism_core::shape::flatten`).
+    fn set_drawing_items(&mut self, view: &Self::View, items: &[prism_core::shape::Item]) {
+        self.set_drawing(view, &prism_core::shape::flatten(items));
+    }
     /// What a 3D scene shows: the update (the whole scene the first time,
     /// then what changed) and its JSON (hosts in other languages read the
     /// JSON; see `prism_core::scene3d::wire`). Apply it to the scene's
@@ -847,14 +856,24 @@ impl<W: Widgets> NativeRenderer<W> {
             .style
             .text_color
             .map_or_else(label_color, |c| c.resolve_current(label_color()));
-        let mut paths = d.with_current_color(text).resolve(w, h, self.zoom);
+        let mut items = d.with_current_color(text).resolve_items(w, h, self.zoom);
         if self.env.direction == Direction::Rtl {
             // Like the layout around it: charts read right to left.
-            for p in &mut paths {
-                p.mirror_x(w);
+            for i in &mut items {
+                i.mirror_x(w);
             }
         }
-        self.widgets.set_drawing(&e.view, &paths);
+        // Paths alone (a chart, an icon), or everything an SVG document
+        // may have.
+        if items
+            .iter()
+            .all(|i| matches!(i, prism_core::shape::Item::Path(_)))
+        {
+            self.widgets
+                .set_drawing(&e.view, &prism_core::shape::flatten(&items));
+        } else {
+            self.widgets.set_drawing_items(&e.view, &items);
+        }
     }
 
     /// Shows `view` at its enter pose and animates it to its style.
@@ -2687,6 +2706,9 @@ mod tests {
         frames: HashMap<NodeId, (f32, f32, f32, f32)>,
         content: HashMap<NodeId, (f32, f32)>,
         drawings: HashMap<NodeId, Vec<prism_core::Path>>,
+        /// What a backend that draws text, images and groups gets
+        /// (`None`: this one draws paths only).
+        items: Option<HashMap<NodeId, Vec<prism_core::shape::Item>>>,
     }
 
     impl Widgets for Fake {
@@ -2714,6 +2736,14 @@ mod tests {
         }
         fn set_drawing(&mut self, v: &NodeId, paths: &[prism_core::Path]) {
             self.drawings.insert(*v, paths.to_vec());
+        }
+        fn set_drawing_items(&mut self, v: &NodeId, items: &[prism_core::shape::Item]) {
+            match &mut self.items {
+                Some(all) => {
+                    all.insert(*v, items.to_vec());
+                }
+                None => self.set_drawing(v, &prism_core::shape::flatten(items)),
+            }
         }
         fn screen_viewport(&mut self, stack: &NodeId, _: &NodeId) -> Viewport {
             let (_, _, w, h) = self.frames[stack];
@@ -3045,6 +3075,72 @@ mod tests {
         renderer.apply(&rt.poll());
         renderer.layout(400., 300., Insets::default());
         assert_eq!(fill(&renderer), Some(red));
+    }
+
+    struct Card;
+    impl Render for Card {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            // 100 × 50 points, shown twice as large.
+            div().child(
+                prism_core::svg(
+                    r##"<svg width="100" height="50" viewBox="0 0 100 50">
+                      <g opacity="0.5">
+                        <rect width="60" height="50" fill="#f00" stroke="#000" stroke-width="2"/>
+                        <rect x="40" width="60" height="50" fill="currentColor"/>
+                      </g>
+                      <text x="50" y="25" font-size="10" text-anchor="middle" fill="currentColor">Hi</text>
+                    </svg>"##,
+                )
+                .w(prism_core::px(200.)),
+            )
+        }
+    }
+
+    #[test]
+    fn an_svg_document_reaches_the_backend_whole_or_as_paths() {
+        use prism_core::shape::Item;
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Card);
+            cx.set_root(r);
+        });
+        // #342: a backend that draws them gets the group and the text, in
+        // points at the size shown, `currentColor` resolved.
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake {
+            items: Some(HashMap::new()),
+            ..Fake::default()
+        });
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        assert_eq!(renderer.widgets.frames[&2].2, 200.);
+        assert_eq!(renderer.widgets.frames[&2].3, 100.);
+        let items = &renderer.widgets.items.as_ref().unwrap()[&2];
+        let [Item::Group(g), Item::Text(t)] = &items[..] else {
+            panic!("{items:?}")
+        };
+        assert_eq!((g.opacity, g.items.len()), (0.5, 2));
+        let Item::Path(first) = &g.items[0] else {
+            panic!()
+        };
+        let prism_core::Segment::Line(x, y) = first.segments[2] else {
+            panic!()
+        };
+        assert!((x - 120.).abs() < 0.01 && (y - 100.).abs() < 0.01);
+        // Strokes follow the document's size (2 units, shown twice as large).
+        assert_eq!(first.width, 4.);
+        assert_eq!((t.x, t.y, t.runs[0].size), (100., 50., 20.));
+        assert_eq!(t.runs[0].fill, label_color());
+        assert!(renderer.widgets.drawings.is_empty());
+        // One that draws paths gets them alone, the group's opacity in
+        // each.
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        let paths = &renderer.widgets.drawings[&2];
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].fill, Some(prism_core::rgba(0xff0000, 0.5)));
+        assert_eq!(paths[1].fill.map(|c| c.a), Some(label_color().a * 0.5));
     }
 
     #[test]
