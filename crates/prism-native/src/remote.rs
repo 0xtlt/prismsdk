@@ -19,7 +19,7 @@
 //! | `env` | `lang`, `rtl`, `back`, `close`, `clear` (no `id`) |
 //! | `exit` | `parent`, `to`: `{o, tf}` the view animates to (a picture of it), before it is removed |
 //! | `repeat` | `from`, `to`: `{o, tf}` (`to` null stops), back and forth forever |
-//! | `draw` | `paths`: `[{d, fill, stroke, w, round, dash}]` in points, `d` flat (`0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close), `fg` / `sg` a gradient for the fill / stroke (`{k, c, m, sp, o, cl}`); or `items` when the drawing has more than paths (an SVG document's text, images, groups): `[{t: "p" path, "x" text, "i" image, "g" group, …}]` (see `drawing_items`) |
+//! | `draw` | `paths`: `[{d, fill, stroke, w, round, dash}]` in points, `d` flat (`0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close), `fg` / `sg` a gradient for the fill / stroke (`{k, c, m, sp, o, cl}`); or, for a host that draws them (`with_drawing_items`), `items` when the drawing has more than paths (an SVG document's text, images, groups): `[{t: "p" path, "x" text, "i" image, "g" group, …}]` (see `drawing_items`) |
 //!
 //! | `pointer` | `mask`: pointer events to report (1 hover, 2 move, 4 drag) |
 //! | `keys` | `local`, `global`: report key presses (focus in the node / anywhere) |
@@ -151,6 +151,9 @@ pub struct RemoteWidgets {
     root: Option<NodeId>,
     /// Whether the host edits rich text (#115, [`with_rich_inputs`](Self::with_rich_inputs)).
     rich: bool,
+    /// Whether the host draws text, images and groups
+    /// ([`with_drawing_items`](Self::with_drawing_items)).
+    items: bool,
 }
 
 impl RemoteWidgets {
@@ -171,6 +174,7 @@ impl RemoteWidgets {
             measure,
             root: None,
             rich: false,
+            items: false,
         }
     }
 
@@ -180,6 +184,14 @@ impl RemoteWidgets {
     /// text area.
     pub fn with_rich_inputs(mut self) -> Self {
         self.rich = true;
+        self
+    }
+
+    /// The host draws an SVG document's text, images and groups (#342): a
+    /// drawing that has them comes as `items` in its `draw` op. Otherwise
+    /// it comes as the paths alone, like any other drawing.
+    pub fn with_drawing_items(mut self) -> Self {
+        self.items = true;
         self
     }
 }
@@ -1391,6 +1403,9 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_drawing_items(&mut self, id: &NodeId, items: &[prism_core::shape::Item]) {
+        if !self.items {
+            return self.set_drawing(id, &prism_core::shape::flatten(items));
+        }
         self.ops
             .push(json!({ "op": "draw", "id": id, "items": drawing_items(items) }));
     }

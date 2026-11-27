@@ -301,6 +301,54 @@ fn drawing_ops() {
     );
 }
 
+/// A drawing with more than paths (an SVG document, #342) reaches a host
+/// that draws them as `items`, and any other host as its paths.
+#[test]
+fn a_document_s_items_reach_the_hosts_that_draw_them() {
+    use prism_core::shape::{Group, Item, Text, TextRun};
+    let items = [Item::Group(Group {
+        opacity: 0.5,
+        items: vec![
+            Item::Path(Path::rect(0., 0., 10., 10.).fill(rgb(0xff0000))),
+            Item::Text(Text {
+                x: 2.,
+                y: 8.,
+                runs: vec![TextRun {
+                    text: "Hi".into(),
+                    size: 6.,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        ],
+        ..Default::default()
+    })];
+
+    let mut plain = RemoteWidgets::new(measure);
+    plain.set_drawing_items(&4, &items);
+    let op = last(&plain);
+    assert!(op.get("items").is_none());
+    assert_eq!(op["paths"].as_array().map(Vec::len), Some(1));
+    assert_eq!(op["paths"][0]["fill"][3], json!(0.5), "the group's opacity");
+
+    let mut whole = RemoteWidgets::new(measure).with_drawing_items();
+    whole.set_drawing_items(&4, &items);
+    let op = last(&whole);
+    assert!(op.get("paths").is_none());
+    let group = &op["items"][0];
+    assert_eq!((&group["t"], &group["o"]), (&json!("g"), &json!(0.5)));
+    assert_eq!(group["clip"], Value::Null);
+    assert_eq!(group["i"][0]["t"], json!("p"));
+    let text = &group["i"][1];
+    assert_eq!(
+        (&text["t"], &text["a"], &text["b"]),
+        (&json!("x"), &json!(0), &json!(0))
+    );
+    assert_eq!(text["m"], json!([1., 0., 0., 1., 0., 0.]));
+    assert_eq!(text["r"][0]["s"], json!("Hi"));
+    assert_eq!(text["r"][0]["z"], json!(6.));
+}
+
 #[test]
 fn chrome_ops() {
     let mut w = RemoteWidgets::new(measure);

@@ -520,6 +520,19 @@ pub struct Text {
     pub runs: Vec<TextRun>,
 }
 
+impl Default for Text {
+    fn default() -> Self {
+        Text {
+            transform: IDENTITY,
+            x: 0.,
+            y: 0.,
+            anchor: Anchor::Start,
+            baseline: Baseline::Alphabetic,
+            runs: Vec::new(),
+        }
+    }
+}
+
 /// How an [`Image`] fills its rectangle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Fit {
@@ -555,6 +568,22 @@ pub struct Image {
     pub align: (f32, f32),
     /// Opacity, `0.0..=1.0`.
     pub opacity: f32,
+}
+
+impl Default for Image {
+    fn default() -> Self {
+        Image {
+            transform: IDENTITY,
+            x: 0.,
+            y: 0.,
+            w: 0.,
+            h: 0.,
+            src: String::new(),
+            fit: Fit::Meet,
+            align: (0.5, 0.5),
+            opacity: 1.,
+        }
+    }
 }
 
 /// What a [`Group`] is drawn through: only the inside of this outline shows.
