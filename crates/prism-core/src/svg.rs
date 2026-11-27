@@ -1277,6 +1277,9 @@ struct Effects {
     blur: f32,
     /// A blurred copy under the element (a glow), points.
     glow: Option<f32>,
+    /// The filter's region (`x, y, width, height` in the element's
+    /// coordinates): nothing of it shows outside.
+    region: Option<[f64; 4]>,
 }
 
 /// The lines of a `<text>` being read.
@@ -1499,10 +1502,24 @@ impl<'a> Walker<'a> {
             ..Group::default()
         };
         let mut glow = None;
+        let mut region = None;
         if let Some(v) = props.get("filter").filter(set) {
-            match self.filter(v, state) {
+            match self.filter(v, index, state) {
                 Some(fx) => {
                     (g.shadows, g.blur, glow) = (fx.shadows, fx.blur, fx.glow);
+                    region = fx.region.map(|[x, y, w, h]| Clip {
+                        segments: self.segments(
+                            &[
+                                Seg::Move(x, y),
+                                Seg::Line(x + w, y),
+                                Seg::Line(x + w, y + h),
+                                Seg::Line(x, y + h),
+                                Seg::Close,
+                            ],
+                            state.transform,
+                        ),
+                        even_odd: false,
+                    });
                 }
                 None => self.skip(named("filter", v)),
             }
@@ -1515,13 +1532,7 @@ impl<'a> Walker<'a> {
                 None => self.skip(named("clipPath", v)),
             }
         }
-        if let Some(v) = props.get("mask").filter(set) {
-            match self.mask(v, index, state) {
-                Some(m) => g.mask = Some(m),
-                None => self.skip(named("mask", v)),
-            }
-        }
-        if let Some(blur) = glow {
+        if let Some(blur) = glow.take() {
             // The element blurred, under itself.
             items.insert(
                 0,
@@ -1531,6 +1542,26 @@ impl<'a> Walker<'a> {
                     ..Group::default()
                 }),
             );
+        }
+        match (region, &g.clip) {
+            // Cut to the filter's region, then to the clip path.
+            (Some(region), Some(_)) => {
+                items = vec![Item::Group(Group {
+                    clip: Some(region),
+                    shadows: std::mem::take(&mut g.shadows),
+                    blur: std::mem::take(&mut g.blur),
+                    items,
+                    ..Group::default()
+                })];
+            }
+            (Some(region), None) => g.clip = Some(region),
+            (None, _) => {}
+        }
+        if let Some(v) = props.get("mask").filter(set) {
+            match self.mask(v, index, state) {
+                Some(m) => g.mask = Some(m),
+                None => self.skip(named("mask", v)),
+            }
         }
         let plain = g.clip.is_none() && g.mask.is_none() && g.shadows.is_empty() && g.blur == 0.;
         if plain && (g.opacity >= 1. || (items.len() == 1 && fade(&mut items[0], g.opacity))) {
@@ -1897,7 +1928,7 @@ impl<'a> Walker<'a> {
     }
 
     /// What `filter` draws, when it is shadows, a blur or a glow.
-    fn filter(&mut self, value: &str, state: &State) -> Option<Effects> {
+    fn filter(&mut self, value: &str, index: usize, state: &State) -> Option<Effects> {
         let scale = state.transform_scale() * self.unit;
         let m = state.transform;
         let unit = self.unit;
@@ -1964,9 +1995,32 @@ impl<'a> Walker<'a> {
         }
         let doc = self.doc;
         let node = doc.target(v).filter(|i| doc.nodes[*i].name == "filter")?;
-        if doc.props(node).get("primitiveUnits") == Some("objectBoundingBox") {
+        let own = doc.props(node);
+        if own.get("primitiveUnits") == Some("objectBoundingBox") {
             return None;
         }
+        // Its region: a tenth around the element's box unless it says.
+        fx.region = if own.get("filterUnits") == Some("userSpaceOnUse") {
+            match (
+                own.get("x").and_then(|v| lengths.x(v)),
+                own.get("y").and_then(|v| lengths.y(v)),
+                own.get("width").and_then(|v| lengths.x(v)),
+                own.get("height").and_then(|v| lengths.y(v)),
+            ) {
+                (Some(x), Some(y), Some(w), Some(h)) => Some([x, y, w, h]),
+                _ => None,
+            }
+        } else {
+            let part = |key: &str, default: f64| own.get(key).and_then(fraction).unwrap_or(default);
+            self.bbox(index, &lengths, 0).map(|[x, y, w, h]| {
+                [
+                    x + part("x", -0.1) * w,
+                    y + part("y", -0.1) * h,
+                    part("width", 1.2) * w,
+                    part("height", 1.2) * h,
+                ]
+            })
+        };
         let number = |p: &Props, key: &str, default: f64| {
             p.get(key)
                 .map(number_list)
@@ -3292,12 +3346,21 @@ mod tests {
                 }
             ]
         );
+        // Nothing of a filter shows outside its region: a tenth around
+        // the shape's box unless the filter says.
         let g = group(&all[3]);
         assert_eq!((g.blur, g.shadows.len()), (5., 0));
+        let region = &g.clip.as_ref().unwrap().segments;
+        assert_eq!(region[0], Segment::Move(-0.01, -0.01));
+        assert_eq!(region[2], Segment::Line(0.11, 0.11));
         // A glow: the shape blurred, under itself.
-        assert_eq!(group(&all[4]).blur, 4.);
-        assert!(matches!(all[5], Item::Path(_)));
-        let g = group(&all[6]);
+        let g = group(&all[4]);
+        assert!(g.clip.is_some());
+        assert_eq!(group(&g.items[0]).blur, 4.);
+        assert!(matches!(g.items[1], Item::Path(_)));
+        // CSS functions have no region.
+        let g = group(&all[5]);
+        assert!(g.clip.is_none());
         assert_eq!(g.blur, 2.);
         assert_eq!(
             g.shadows,
@@ -3309,7 +3372,8 @@ mod tests {
             }]
         );
         // What is not a shadow or a blur: the shape as it is, and said so.
-        assert!(matches!(all[7], Item::Path(_)));
+        assert!(matches!(all[6], Item::Path(_)));
+        assert_eq!(all.len(), 7);
         assert_eq!(s.skipped, vec![r#"<filter id="noise">"#]);
     }
 
@@ -3506,6 +3570,11 @@ mod tests {
             panic!("{:?}", s.drawing.items)
         };
         let shadow = group(shadow);
+        // The filter's region: a fifth around the card's box.
+        assert_eq!(
+            shadow.clip.as_ref().unwrap().segments[0],
+            Segment::Move(-0.2, -0.2)
+        );
         assert_eq!(
             shadow.shadows,
             vec![Shadow {

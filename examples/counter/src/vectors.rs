@@ -91,7 +91,7 @@ pub const EFFECTS: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="320
       <feGaussianBlur stdDeviation="5" result="blur"/>
       <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-    <filter id="soft"><feGaussianBlur stdDeviation="3"/></filter>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter>
     <filter id="elevation" x="-30%" y="-30%" width="160%" height="180%" filterUnits="objectBoundingBox" color-interpolation-filters="sRGB">
       <feFlood flood-opacity="0" result="BackgroundImageFix"/>
       <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
