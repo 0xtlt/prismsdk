@@ -170,7 +170,9 @@
     "islands": "Îlots : du code qui tourne dans le navigateur",
     "islands_subtitle": "Un graphique WASM et une horloge JavaScript (web)",
     "media": "Web et vidéo",
-    "media_subtitle": "Une page web et un film dans l’app"
+    "media_subtitle": "Une page web et un film dans l’app",
+    "vectors": "Documents SVG",
+    "vectors_subtitle": "Dégradés, texte, images, masques et ombres en vectoriel"
   },
   "menu": {
     "file": "Fichier",
@@ -591,6 +593,16 @@
       "cone": "cône",
       "ring": "anneau"
     }
+  },
+  "vectors": {
+    "title": "Documents SVG",
+    "note": "Ce qu’exportent les outils de design et de diagrammes, dessiné nativement : chaque document à sa taille, puis deux fois plus petit.",
+    "card": "Un export de design",
+    "card_alt": "Une carte avec un dégradé, une ombre, une image rognée et le mot Hello",
+    "diagram": "Un diagramme",
+    "diagram_alt": "Trois boîtes nommées Parse, Draw et Ship, reliées par un trait pointillé",
+    "effects": "Masques, dégradés et filtres",
+    "effects_alt": "Un paysage qui s’estompe, une boule ombrée, un anneau, une carte en relief, une étoile lumineuse"
   },
   "table": {
     "title": "Horaires",

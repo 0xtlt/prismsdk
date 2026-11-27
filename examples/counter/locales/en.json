@@ -170,7 +170,9 @@
     "islands": "Islands: code that runs in the browser",
     "islands_subtitle": "A WASM chart and a JavaScript clock (web)",
     "media": "Web and video",
-    "media_subtitle": "A web page and a film inside the app"
+    "media_subtitle": "A web page and a film inside the app",
+    "vectors": "SVG documents",
+    "vectors_subtitle": "Gradients, text, images, masks and shadows as vectors"
   },
   "menu": {
     "file": "File",
@@ -591,6 +593,16 @@
       "cone": "cone",
       "ring": "ring"
     }
+  },
+  "vectors": {
+    "title": "SVG documents",
+    "note": "What design and diagram tools export, drawn natively: each document at its own size, then half as large.",
+    "card": "A design export",
+    "card_alt": "A card with a gradient, a shadow, a cropped image and the word Hello",
+    "diagram": "A diagram",
+    "diagram_alt": "Three boxes named Parse, Draw and Ship, linked by a dashed line",
+    "effects": "Masks, gradients and filters",
+    "effects_alt": "A landscape fading out, a shaded ball, a ring, a raised card, a glowing star"
   },
   "table": {
     "title": "Timetable",
