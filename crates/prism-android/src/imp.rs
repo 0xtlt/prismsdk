@@ -216,7 +216,12 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeReady(
     );
     // Frame callbacks come from Choreographer (#311).
     runtime.set_native_frames(true);
-    let mut renderer = NativeRenderer::new(RemoteWidgets::new(measure).with_rich_inputs());
+    // The Java host draws SVG documents whole (`PrismDrawing`, #342).
+    let mut renderer = NativeRenderer::new(
+        RemoteWidgets::new(measure)
+            .with_rich_inputs()
+            .with_drawing_items(),
+    );
     renderer.set_zoom(density);
     STATE.with(|st| {
         *st.borrow_mut() = Some(State {

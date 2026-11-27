@@ -69,7 +69,7 @@ shape()
     .label("Trend: up")                                         // decorative unless labelled
 ```
 
-`Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`, `.even_odd` (holes where subpaths overlap). SVG markup becomes a drawing with `svg(markup)` (see [Images](images-lists-gestures.md)).
+`Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`, `.even_odd` (holes where subpaths overlap). A path is also painted with a gradient: `.fill_gradient(shape::Gradient::linear((0., 0.), (1., 0.), [(0., from), (1., to)]))`, `.stroke_gradient(gradient, width)`, `shape::Gradient::radial(center, r, stops)`, in fractions of the frame, with `.spread(shape::Spread::Reflect | Repeat)`; where gradients are not drawn (widgets, Live Activities, car screens, the watch, a chip's icon) the path has the gradient's middle color. SVG markup becomes a drawing with `svg(markup)` (see [Images](images-lists-gestures.md)).
 
 ## Charts in widgets, Live Activities and car screens
 

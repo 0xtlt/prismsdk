@@ -240,6 +240,7 @@ mod tests {
             let shape = prism_core::Drawing {
                 inset: (0., 0.),
                 paths: q.paths(),
+                ..Default::default()
             };
             let paths = prism_core::Drawing::decode(&shape.encode()).paths;
             let mut rects = Vec::new();

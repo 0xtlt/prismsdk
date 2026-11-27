@@ -4,6 +4,7 @@
 //! kept alongside: which page a stack or tab bar shows, label search for
 //! the smoke hooks, window origins for drags.
 
+use prism_core::shape::Item;
 use prism_core::{
     Accessibility, Appearance, IdMap, IdSet, Interactions, NodeId, NodeKind, RenderEnvironment,
     Style,
@@ -190,17 +191,76 @@ impl Win {
             {
                 self.bars.insert(id);
             }
-            if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id))
-                && n.kind == NodeKind::Shape
-            {
-                let _ = controls::set_paths(&v.content, &n.paths, &self.palette_for(id));
-            }
+            self.draw_shape(id);
             if let (Some(n), Some(Content::Rich(r))) =
                 (self.scene.get(id), self.views.get(&id).map(|v| &v.content))
                 && let Err(e) = r.retheme(&n.style, &self.palette_for(id), self.scale())
             {
                 log!("rich input {id}: {e}");
             }
+        }
+    }
+
+    /// Draws a shape again (its drawing, its size, the theme or the
+    /// window's scale changed): flat paths as XAML `Path`s, anything more
+    /// (gradients, text, images, groups) as a picture (`vector.rs`).
+    pub fn draw_shape(&mut self, id: NodeId) {
+        let pal = self.palette_for(id);
+        let scale = self.scale();
+        let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) else {
+            return;
+        };
+        let Content::Shape(canvas) = &v.content else {
+            return;
+        };
+        let drawn = if crate::effects::is_flat(&n.drawing) {
+            let paths = n.drawing.iter().filter_map(|i| match i {
+                Item::Path(p) => Some(p),
+                _ => None,
+            });
+            controls::set_paths(canvas, paths, &pal)
+        } else {
+            let cx = crate::vector::Scene {
+                pal: &pal,
+                images: &mut self.images,
+                wic: &self.wic,
+                hwnd: self.hwnd,
+                scale,
+            };
+            crate::vector::draw(&n.drawing, (n.frame.w, n.frame.h), cx)
+                .and_then(|picture| crate::vector::show(canvas, picture.as_ref()))
+        };
+        if let Err(e) = drawn {
+            log!("drawing of node {id}: {e}");
+        }
+    }
+
+    /// Every shape drawn as a picture again: its pixels are the screen's,
+    /// and the window's scale changed.
+    pub fn redraw_pictures(&mut self) {
+        self.redraw_shapes(|drawing| !crate::effects::is_flat(drawing));
+    }
+
+    /// The shapes that draw one of the images `loaded` again: it is
+    /// decoded now.
+    pub fn redraw_shapes_with(&mut self, loaded: &[String]) {
+        self.redraw_shapes(|drawing| {
+            let mut sources = Vec::new();
+            crate::vector::sources(drawing, &mut sources);
+            sources.iter().any(|s| loaded.iter().any(|l| l == s))
+        });
+    }
+
+    fn redraw_shapes(&mut self, which: impl Fn(&[Item]) -> bool) {
+        let ids: Vec<NodeId> = self
+            .scene
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == NodeKind::Shape && which(&n.drawing))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.draw_shape(id);
         }
     }
 
@@ -1035,13 +1095,16 @@ impl Widgets for Win {
 
     fn set_drawing(&mut self, view: &NodeId, paths: &[prism_core::Path]) {
         if let Some(n) = self.scene.get_mut(*view) {
-            n.paths = paths.to_vec();
+            n.drawing = paths.iter().cloned().map(Item::Path).collect();
         }
-        if let Some(v) = self.views.get(view)
-            && let Err(e) = controls::set_paths(&v.content, paths, &self.palette_for(*view))
-        {
-            log!("drawing of node {view}: {e}");
+        self.draw_shape(*view);
+    }
+
+    fn set_drawing_items(&mut self, view: &NodeId, items: &[Item]) {
+        if let Some(n) = self.scene.get_mut(*view) {
+            n.drawing = items.to_vec();
         }
+        self.draw_shape(*view);
     }
 
     fn set_config(&mut self, view: &NodeId, kind: NodeKind, config: &str) {

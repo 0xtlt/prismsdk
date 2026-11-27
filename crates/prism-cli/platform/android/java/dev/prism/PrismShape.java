@@ -13,25 +13,32 @@ import org.json.JSONObject;
 /**
  * A Prism shape (prism-core `shape`): paths in pixels, resolved by Rust for
  * the view's current size. `d` is flat: `0 x y` move, `1 x y` line,
- * `2 x1 y1 x2 y2 x y` curve, `3` close. Colors follow light/dark mode when
+ * `2 x1 y1 x2 y2 x y` curve, `3` close. An SVG document also has text,
+ * images and groups (`items`, #342). Colors follow light/dark mode when
  * drawn.
  */
 final class PrismShape extends View {
-    private JSONArray paths = new JSONArray();
-    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private PrismDrawing drawing = PrismDrawing.EMPTY;
 
     PrismShape(Context context) {
         super(context);
     }
 
-    void setPaths(JSONArray p) {
-        paths = p == null ? new JSONArray() : p;
+    /** A `draw` op's `paths`. */
+    void setPaths(JSONArray paths) {
+        drawing = PrismDrawing.ofPaths(paths);
+        invalidate();
+    }
+
+    /** A `draw` op's `items`: what a drawing with more than paths draws. */
+    void setItems(JSONArray items) {
+        drawing = PrismDrawing.ofItems(items);
         invalidate();
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
-        draw(canvas, paths, paint, 1, 0, 0, 1, 0);
+        drawing.draw(canvas, getWidth(), getHeight());
     }
 
     /**
@@ -81,7 +88,8 @@ final class PrismShape extends View {
         return (color & 0x00ffffff) | (a << 24);
     }
 
-    private static Path path(JSONArray d, float scale, float dx, float dy) {
+    /** The outline `d`, scaled by `scale` and moved by (`dx`, `dy`). */
+    static Path path(JSONArray d, float scale, float dx, float dy) {
         Path p = new Path();
         if (d == null) return p;
         int i = 0;

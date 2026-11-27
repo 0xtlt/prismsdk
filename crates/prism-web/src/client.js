@@ -1292,51 +1292,194 @@
     return dark ? `light-dark(${light}, ${dark})` : light;
   };
 
+  // What a drawing's definitions (gradients, clips, masks, filters) are
+  // named after: one number for each element that draws one.
+  let shapeSeq = 0;
+
   function drawShape(el) {
-    const w = el.clientWidth, h = el.clientHeight;
+    const doc = el._doc && el._doc.text === el._drawing ? el._doc : (el._doc = shapeParse(el._drawing));
+    // An SVG document (a size of its own, no insets, #342) is drawn at its
+    // size and stretched to the box, strokes and text with it: once.
+    const own = doc.size && !doc.ix && !doc.iy && doc.size[0] > 0 && doc.size[1] > 0 ? doc.size : null;
+    const w = own ? own[0] : el.clientWidth, h = own ? own[1] : el.clientHeight;
     // A box without a size (in a `display: none` ancestor, not laid out
     // yet) has nothing to draw at: a 0×0 viewBox would stay blank (#319).
     // What it shows stays; the observer draws it at the next size it gets.
     if (!w || !h) return;
     // The server's first paint may have drawn it already (#285).
     let svg = el._svg || (el._svg = el.querySelector(":scope > svg"));
-    if (svg) svg.removeAttribute("preserveAspectRatio");
     if (!svg) {
       svg = el._svg = document.createElementNS(svgNS, "svg");
       svg.setAttribute("aria-hidden", "true");
       el.append(svg);
     }
+    if (own && svg._drawn === doc) return;
+    svg._drawn = doc;
+    if (own) svg.setAttribute("preserveAspectRatio", "none");
+    else svg.removeAttribute("preserveAspectRatio");
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-    svg.replaceChildren(...shapePaths(el._drawing, w, h, 1, (e, css) => Object.assign(e.style, css)));
+    const uid = el._shapeId || (el._shapeId = "pc" + (++shapeSeq));
+    svg.replaceChildren(...shapeNodes(doc, w, h, 1, (e, css) => Object.assign(e.style, css), uid));
   }
+
   /**
-   * The `<path>`s of drawing `text` (`Drawing::encode`) in a `w` × `h`
-   * box, insets `k` units a point; `paint(path, css)` gives each its paint.
+   * Drawing `text` (`Drawing::encode`) read: its insets, its size if it
+   * has one, and what it draws: paths (`k: "p"`), lines of text (`"x"`),
+   * images (`"i"`) and groups (`"g"`, with their mask's items).
    */
-  function shapePaths(text, w, h, k, paint) {
-    let ix = 0, iy = 0;
-    const paths = [];
-    for (const line of (text || "").split("\n")) {
-      if (line[0] === "i") { [ix, iy] = line.slice(1).split(",").map(Number); continue; }
-      const bar = line.indexOf("|");
-      if (bar < 0) continue;
-      const p = { fill: null, stroke: null, w: 1, round: false, dash: null, t: line.slice(bar + 1).trim().split(/\s+/) };
-      for (const tok of line.slice(0, bar).trim().split(/\s+/)) {
+  function shapeParse(text) {
+    const doc = { text, ix: 0, iy: 0, size: null, items: [] };
+    const nums = (s) => s.split(",").map(Number);
+    const tokens = (s) => s.trim().split(/\s+/).filter(Boolean);
+    const gradient = (v) => {
+      const [shape, m, spread, stops] = v.split(":");
+      return {
+        radial: shape[0] === "r", c: nums(shape.slice(1)), m: m ? nums(m) : null, spread,
+        stops: (stops || "").split(";").filter(Boolean).map((s) => {
+          const i = s.indexOf(",");
+          return [+s.slice(0, i), s.slice(i + 1)];
+        }),
+      };
+    };
+    const path = (paint, segs) => {
+      const p = { k: "p", fill: null, stroke: null, w: 1, round: false, dash: null, t: tokens(segs) };
+      for (const tok of tokens(paint)) {
         const v = tok.slice(1);
         if (tok[0] === "f") p.fill = v;
         else if (tok[0] === "s") p.stroke = v;
+        else if (tok[0] === "F") p.fg = gradient(v);
+        else if (tok[0] === "S") p.sg = gradient(v);
         else if (tok[0] === "w") p.w = +v;
         else if (tok[0] === "r") p.round = true;
-        else if (tok[0] === "d") p.dash = v.replace(",", " ");
+        else if (tok[0] === "d") p.dash = nums(v);
         else if (tok[0] === "e") p.evenOdd = true;
       }
-      paths.push(p);
+      return p;
+    };
+    // `head;rest`: the tokens before the first `;`, and what follows it.
+    const halves = (s) => {
+      const i = s.indexOf(";");
+      return i < 0 ? [tokens(s), null] : [tokens(s.slice(0, i)), s.slice(i + 1)];
+    };
+    const line = (rest) => {
+      const [head, runs] = halves(rest);
+      const t = { k: "x", m: null, x: 0, y: 0, a: "", b: "", runs: [] };
+      for (const tok of head) {
+        const v = tok.slice(1);
+        if (tok[0] === "m") t.m = nums(v);
+        else if (tok[0] === "p") [t.x, t.y] = nums(v);
+        else if (tok[0] === "a") t.a = v;
+        else if (tok[0] === "b") t.b = v;
+      }
+      for (const run of (runs || "").split("\u001e")) {
+        const [text, ...fields] = run.split("\u001f");
+        const r = { text, f: "s", z: 16, c: "#000000", w: 400, i: false, k: 0, dx: 0, dy: 0 };
+        for (const f of fields) {
+          const v = f.slice(1);
+          if (f[0] === "F") r.f = v;
+          else if (f[0] === "z") r.z = +v;
+          else if (f[0] === "c") r.c = v;
+          else if (f[0] === "w") r.w = +v;
+          else if (f[0] === "i") r.i = true;
+          else if (f[0] === "k") r.k = +v;
+          else if (f[0] === "x") r.dx = +v;
+          else if (f[0] === "y") r.dy = +v;
+        }
+        t.runs.push(r);
+      }
+      return t;
+    };
+    const image = (rest) => {
+      const [head, src] = halves(rest);
+      const i = { k: "i", m: null, r: [0, 0, 0, 0], fit: "", a: [0.5, 0.5], o: 1, src: src || "" };
+      for (const tok of head) {
+        const v = tok.slice(1);
+        if (tok[0] === "m") i.m = nums(v);
+        else if (tok[0] === "r") i.r = nums(v);
+        else if (tok[0] === "f") i.fit = v;
+        else if (tok[0] === "a") i.a = nums(v);
+        else if (tok[0] === "o") i.o = +v;
+      }
+      return i;
+    };
+    const group = (rest) => {
+      const [head, clip] = halves(rest);
+      const g = { k: "g", o: 1, b: 0, sh: [], clip: null, mask: null, items: [] };
+      let evenOdd = false;
+      for (const tok of head) {
+        const v = tok.slice(1);
+        if (tok[0] === "o") g.o = +v;
+        else if (tok[0] === "b") g.b = +v;
+        else if (tok[0] === "e") evenOdd = true;
+        else if (tok[0] === "h") {
+          const s = v.split(",");
+          if (s.length >= 4) g.sh.push([+s[0], +s[1], +s[2], s.slice(3).join(",")]);
+        }
+      }
+      if (clip != null) g.clip = { t: tokens(clip), evenOdd };
+      return g;
+    };
+    // The groups being read, innermost last.
+    const open = [];
+    const add = (item) => (open.length ? open[open.length - 1].items : doc.items).push(item);
+    for (const l of (text || "").split("\n")) {
+      const c = l[0], rest = l.slice(1), g = open[open.length - 1];
+      if (c === "i") [doc.ix, doc.iy] = nums(rest);
+      else if (c === "n") doc.size = nums(rest);
+      else if (c === "g") open.push(group(rest));
+      else if (c === "m") {
+        // Its mask's items come first, up to `M`.
+        if (g) { g.before = g.items; g.items = []; g.mask = { luminance: rest.trim() !== "a", items: [] }; }
+      } else if (c === "M") {
+        if (g && g.before) { g.mask.items = g.items; g.items = g.before; g.before = null; }
+      } else if (c === "G") {
+        if (open.length) add(open.pop());
+      } else if (c === "t") add(line(rest));
+      else if (c === "p") add(image(rest));
+      else {
+        const bar = l.indexOf("|");
+        if (bar >= 0) add(path(l.slice(0, bar), l.slice(bar + 1)));
+      }
     }
-    ix *= k; iy *= k;
+    // A group left open (cut text): what it has is drawn.
+    while (open.length) add(open.pop());
+    return doc;
+  }
+
+  /**
+   * The SVG elements of drawing `doc` (`shapeParse`) in a `w` × `h` box,
+   * insets `k` units a point: its definitions in a `<defs>` (their ids
+   * start with `uid`), then what it draws. `paint(element, css)` gives an
+   * element its paint; what names a definition is an attribute. A drawing
+   * with a size has its strokes, dashes, shadows and blurs follow the box.
+   * As `shape_svg` (html.rs) and `document_svg` (drawing.rs) write it.
+   */
+  function shapeNodes(doc, w, h, k, paint, uid) {
+    const ix = doc.ix * k, iy = doc.iy * k;
     const iw = Math.max(0, w - 2 * ix), ih = Math.max(0, h - 2 * iy), side = Math.min(iw, ih);
+    const sized = doc.size && doc.size[0] > 0 && doc.size[1] > 0;
+    const scale = sized ? Math.min(iw / doc.size[0], ih / doc.size[1]) : 1;
     const X = (x) => ix + x * iw, Y = (y) => iy + y * ih;
-    return paths.map((p) => {
-      const d = [], t = p.t;
+    // A text's, image's or gradient's own coordinates to the box's.
+    const matrix = (m) => {
+      const [a, b, c, d, e, f] = m || [1, 0, 0, 1, 0, 0];
+      return `matrix(${[a * iw, b * ih, c * iw, d * ih, e * iw + ix, f * ih + iy].join(" ")})`;
+    };
+    const node = (tag, attrs) => {
+      const e = document.createElementNS(svgNS, tag);
+      for (const name in attrs) if (attrs[name] != null) e.setAttribute(name, attrs[name]);
+      return e;
+    };
+    const defs = [];
+    let seq = 0;
+    const define = (e) => {
+      const id = `${uid}_${++seq}`;
+      e.setAttribute("id", id);
+      defs.push(e);
+      return `url(#${id})`;
+    };
+    const data = (t) => {
+      const d = [];
       let open = false;
       for (let i = 0; i < t.length;) {
         const c = t[i++];
@@ -1368,15 +1511,146 @@
           open = false;
         } else break;
       }
-      const e = document.createElementNS(svgNS, "path");
-      e.setAttribute("d", d.join(""));
-      const css = { fill: shapeColor(p.fill), stroke: shapeColor(p.stroke), strokeWidth: p.w };
-      if (p.round) { css.strokeLinecap = "round"; css.strokeLinejoin = "round"; }
-      if (p.dash) css.strokeDasharray = p.dash;
-      if (p.evenOdd) css.fillRule = "evenodd";
-      paint(e, css);
-      return e;
-    });
+      return d.join("");
+    };
+    // A gradient's definition, or nothing without stops (nothing painted).
+    const gradient = (g) => {
+      if (!g.stops.length) return null;
+      const c = g.c;
+      const e = g.radial
+        ? node("radialGradient", { cx: c[0], cy: c[1], r: c[2], fx: c[3], fy: c[4] })
+        : node("linearGradient", { x1: c[0], y1: c[1], x2: c[2], y2: c[3] });
+      e.setAttribute("gradientUnits", "userSpaceOnUse");
+      e.setAttribute("gradientTransform", matrix(g.m));
+      if (g.spread === "f") e.setAttribute("spreadMethod", "reflect");
+      if (g.spread === "t") e.setAttribute("spreadMethod", "repeat");
+      for (const [offset, color] of g.stops) {
+        const stop = node("stop", { offset });
+        paint(stop, { stopColor: shapeColor(color) });
+        e.append(stop);
+      }
+      return define(e);
+    };
+    const families = { s: fam.system, m: fam.mono, r: fam.serif, o: fam.rounded };
+    const family = (f) => families[f] || `"${f.slice(1).replace(/["\\<>]/g, "")}",${SYSTEM_FONT}`;
+    // The group blurred, then its shadows under it (the first at the
+    // bottom): each is the group's outline blurred, moved and filled.
+    const filter = (g) => {
+      const blur = g.b * scale;
+      // What a blur shows beyond its source: three standard deviations.
+      const reach = 3 * blur + Math.max(0, ...g.sh.map((s) => (Math.max(Math.abs(s[0]), Math.abs(s[1])) + 3 * s[2]) * scale));
+      const f = node("filter", {
+        filterUnits: "userSpaceOnUse", x: -reach, y: -reach, width: w + 2 * reach, height: h + 2 * reach,
+        "color-interpolation-filters": "sRGB",
+      });
+      let source = "SourceGraphic";
+      if (blur > 0) {
+        f.append(node("feGaussianBlur", { in: source, stdDeviation: blur, result: "c" }));
+        source = "c";
+      }
+      if (g.sh.length) {
+        const merge = node("feMerge", {});
+        g.sh.forEach((s, k) => {
+          let from = source;
+          if (s[2] > 0) {
+            f.append(node("feGaussianBlur", { in: source, stdDeviation: s[2] * scale }));
+            from = null;
+          }
+          const flood = node("feFlood", {});
+          paint(flood, { floodColor: shapeColor(s[3]) });
+          f.append(
+            node("feOffset", { in: from, dx: s[0] * scale, dy: s[1] * scale, result: "o" + k }), flood,
+            node("feComposite", { in2: "o" + k, operator: "in", result: "s" + k }),
+          );
+          merge.append(node("feMergeNode", { in: "s" + k }));
+        });
+        merge.append(node("feMergeNode", { in: source }));
+        f.append(merge);
+      }
+      return define(f);
+    };
+    const all = (items) => items.map(one).filter(Boolean);
+    const one = (it) => {
+      if (it.k === "p") {
+        const e = node("path", { d: data(it.t) });
+        const css = { strokeWidth: it.w * scale };
+        const fill = it.fg && gradient(it.fg), stroke = it.sg && gradient(it.sg);
+        if (fill) e.setAttribute("fill", fill);
+        else css.fill = it.fg ? "none" : shapeColor(it.fill);
+        if (stroke) e.setAttribute("stroke", stroke);
+        else css.stroke = it.sg ? "none" : shapeColor(it.stroke);
+        if (it.round) { css.strokeLinecap = "round"; css.strokeLinejoin = "round"; }
+        if (it.dash) css.strokeDasharray = it.dash.map((v) => v * scale).join(" ");
+        if (it.evenOdd) css.fillRule = "evenodd";
+        paint(e, css);
+        return e;
+      }
+      if (it.k === "x") {
+        // One line: a `<text>` of `<tspan>`s, in a `<g>` with its
+        // transform (CSS turns the `<text>` around in right-to-left pages).
+        if (!it.runs.length) return null;
+        const t = node("text", {
+          x: it.x, y: it.y, "text-anchor": { m: "middle", e: "end" }[it.a],
+          "dominant-baseline": { m: "middle", c: "central", h: "hanging" }[it.b],
+        });
+        // Spaces are the ones the drawing has (also `white-space: pre`,
+        // prism.css).
+        t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+        // A `<tspan>`'s `dy` moves what follows too: each run gets the
+        // difference with the one before.
+        let below = 0;
+        for (const r of it.runs) {
+          const span = node("tspan", { dx: r.dx || null, dy: r.dy !== below ? r.dy - below : null });
+          below = r.dy;
+          span.textContent = r.text;
+          const css = { fontFamily: family(r.f), fontSize: r.z + "px", fill: shapeColor(r.c) };
+          if (r.w !== 400) css.fontWeight = r.w;
+          if (r.i) css.fontStyle = "italic";
+          if (r.k) css.letterSpacing = r.k + "px";
+          paint(span, css);
+          t.append(span);
+        }
+        const g = node("g", { transform: matrix(it.m) });
+        g.append(t);
+        return g;
+      }
+      if (it.k === "i") {
+        // A bitmap from a `data:` URL (nothing else is fetched for a drawing).
+        if (!/^data:image\//.test(it.src)) return null;
+        const at = (a) => (a < 0.25 ? "Min" : a > 0.75 ? "Max" : "Mid");
+        const fit = it.fit === "n" ? "none" : `x${at(it.a[0])}Y${at(it.a[1])}${it.fit === "s" ? " slice" : ""}`;
+        const [x, y, width, height] = it.r;
+        const g = node("g", { transform: matrix(it.m) });
+        g.append(node("image", { x, y, width, height, preserveAspectRatio: fit, href: it.src, opacity: it.o !== 1 ? it.o : null }));
+        return g;
+      }
+      // A group: its filter (blur, shadows), clip, mask and opacity, which
+      // SVG applies in that order.
+      const g = node("g", {});
+      if (it.b > 0 || it.sh.length) g.setAttribute("filter", filter(it));
+      if (it.clip) {
+        const clip = node("clipPath", { clipPathUnits: "userSpaceOnUse" });
+        clip.append(node("path", { d: data(it.clip.t), "clip-rule": it.clip.evenOdd ? "evenodd" : null }));
+        g.setAttribute("clip-path", define(clip));
+      }
+      if (it.mask) {
+        // What the mask draws, over the box and half of it around.
+        const mask = node("mask", {
+          maskUnits: "userSpaceOnUse", x: -w / 2, y: -h / 2, width: 2 * w, height: 2 * h,
+          "mask-type": it.mask.luminance ? "luminance" : "alpha",
+        });
+        mask.append(...all(it.mask.items));
+        g.setAttribute("mask", define(mask));
+      }
+      if (it.o !== 1) g.setAttribute("opacity", it.o);
+      g.append(...all(it.items));
+      return g;
+    };
+    const nodes = all(doc.items);
+    if (!defs.length) return nodes;
+    const holder = node("defs", {});
+    holder.append(...defs);
+    return [holder, ...nodes];
   }
 
   // Rich text (prism-core spans.rs): runs separated by U+001E, fields by
@@ -1449,11 +1723,13 @@
       svg.setAttribute("aria-hidden", "true");
       svg.setAttribute("viewBox", `0 0 ${100 * ratio} 100`);
       css(svg, `width:${ratio}em`);
-      svg.append(...shapePaths(a.v, 100 * ratio, 100, 100 / 16, (e, p) => {
-        p.vectorEffect = "non-scaling-stroke";
+      const doc = shapeParse(a.v);
+      svg.append(...shapeNodes(doc, 100 * ratio, 100, 100 / 16, (e, p) => {
+        // A drawing with a size has its strokes follow the icon's.
+        if (!doc.size) p.vectorEffect = "non-scaling-stroke";
         const style = Object.entries(p).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}:${v}`).join(";");
         css(e, style);
-      }));
+      }, "pc" + (++shapeSeq)));
       node.appendChild(svg);
     } else if (a.m) {
       const g = document.createElement("span");

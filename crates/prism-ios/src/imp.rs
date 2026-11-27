@@ -453,11 +453,13 @@ pub(crate) fn overlay_closed(id: NodeId, reason: prism_core::DismissReason) {
 
 thread_local! {
     /// What each shape draws, in points, by node id.
-    static SHAPES: RefCell<HashMap<NodeId, Vec<prism_core::Path>>> = RefCell::new(HashMap::new());
+    static SHAPES: RefCell<HashMap<NodeId, Vec<prism_core::shape::Item>>> =
+        RefCell::new(HashMap::new());
 }
 
 define_class!(
-    /// Draws a shape's paths. Colors resolve while drawing, and UIKit redraws
+    /// Draws a shape's paths, and the text, images and groups of an SVG
+    /// document (#342). Colors resolve while drawing, and UIKit redraws
     /// views when the appearance changes, so dark mode follows by itself.
     #[unsafe(super(UIView, UIResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -467,9 +469,16 @@ define_class!(
     impl ShapeView {
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: CGRect) {
+            use objc2_ui_kit::UITraitEnvironment;
             SHAPES.with(|s| {
-                if let Some(paths) = s.borrow().get(&(self.tag() as NodeId)) {
-                    draw_paths(paths);
+                if let Some(items) = s.borrow().get(&(self.tag() as NodeId))
+                    && let Some(ctx) = objc2_ui_kit::UIGraphicsGetCurrentContext()
+                {
+                    let ctx = &*ctx as *const objc2_core_graphics::CGContext;
+                    let dark = unsafe { self.traitCollection().userInterfaceStyle() }
+                        == UIUserInterfaceStyle::Dark;
+                    let size = self.bounds().size;
+                    crate::vector::draw(ctx as *mut _, items, size.width, size.height, dark);
                 }
             });
         }
@@ -501,7 +510,8 @@ fn new_scroll(mtm: MainThreadMarker) -> Retained<UIScrollView> {
     s
 }
 
-/// Fills, then strokes, each path with UIKit Bézier paths.
+/// Fills, then strokes, each path with UIKit Bézier paths (a chip's icon).
+#[cfg(any(target_os = "ios", target_os = "visionos"))]
 pub(crate) fn draw_paths(paths: &[prism_core::Path]) {
     use objc2_ui_kit::UIBezierPath;
     use prism_core::Segment as S;
@@ -2782,7 +2792,16 @@ impl Widgets for UiKit {
     }
 
     fn set_drawing(&mut self, view: &View, paths: &[prism_core::Path]) {
-        SHAPES.with(|s| s.borrow_mut().insert(view.id(), paths.to_vec()));
+        let items: Vec<_> = paths
+            .iter()
+            .cloned()
+            .map(prism_core::shape::Item::Path)
+            .collect();
+        self.set_drawing_items(view, &items);
+    }
+
+    fn set_drawing_items(&mut self, view: &View, items: &[prism_core::shape::Item]) {
+        SHAPES.with(|s| s.borrow_mut().insert(view.id(), items.to_vec()));
         view.ui().setNeedsDisplay();
     }
 

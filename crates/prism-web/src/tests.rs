@@ -4603,6 +4603,7 @@ fn a_styled_chip_has_a_first_paint() {
         chip_drawing: Some(Drawing {
             inset: (0., 0.),
             paths: vec![Path::circle(0.5, 0.5, 0.4).stroke(Color::current(), 1.5)],
+            ..Default::default()
         }),
         tooltip: Some("Ada \"L\"".into()),
         chip_ring: Some((1.5, rgb(0x0a84ff))),
@@ -5158,6 +5159,7 @@ fn ssr_shape_of_a_fixed_size_is_drawn_in_pixels_like_the_client() {
                 prism_core::rgb(0xffffff),
             )),
         ],
+        ..Default::default()
     };
     let page = shape_page(fixed(24., 24.), &icon);
     let root = &page.root;
@@ -5192,6 +5194,7 @@ fn ssr_shape_of_a_flexible_size_scales_or_waits_for_the_client() {
     let line = Drawing {
         inset: (0., 0.),
         paths: vec![Path::line([(0., 1.), (0.5, 0.25), (1., 0.5)]).stroke(Color::current(), 1.5)],
+        ..Default::default()
     };
     let wide = Style {
         width: Length::Fraction(1.),
@@ -5222,6 +5225,7 @@ fn ssr_shape_of_a_flexible_size_scales_or_waits_for_the_client() {
     let ring = Drawing {
         inset: (0., 0.),
         paths: vec![Path::circle(0.5, 0.5, 0.5).stroke(Color::current(), 1.)],
+        ..Default::default()
     };
     let inset = Drawing {
         inset: (4., 4.),
@@ -5244,6 +5248,115 @@ fn ssr_shape_of_a_flexible_size_scales_or_waits_for_the_client() {
         shape_page(bordered, &ring)
             .root
             .ends_with(r#"class="prism-shape"></div>"#)
+    );
+}
+
+/// #342: an SVG document is an `<svg>` at its own size, stretched to its
+/// box: gradients, clips, masks and filters are definitions named after the
+/// node, text is `<text>`, an image `<image>`, a group `<g>`.
+#[test]
+fn ssr_svg_document_is_drawn_whole_at_its_own_size() {
+    let doc = prism_core::svg::parse(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">
+          <defs>
+            <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/>
+            </linearGradient>
+            <clipPath id="c"><circle cx="50" cy="50" r="40"/></clipPath>
+            <mask id="m"><rect width="200" height="100" fill="#fff"/></mask>
+            <filter id="f"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.5"/></filter>
+          </defs>
+          <g opacity="0.5" clip-path="url(#c)" mask="url(#m)" filter="url(#f)">
+            <rect width="200" height="100" fill="url(#g)" stroke="#000" stroke-width="2"/>
+            <rect x="10" y="10" width="20" height="20" fill="#0f0"/>
+          </g>
+          <text x="100" y="60" text-anchor="middle" font-size="20" font-weight="bold">Hi <tspan fill="red" dy="4">there</tspan></text>
+          <image x="0" y="0" width="20" height="10" preserveAspectRatio="xMinYMax slice" href="data:image/png;base64,AAAA"/>
+        </svg>"##,
+    )
+    .unwrap();
+    assert!(doc.skipped.is_empty(), "{:?}", doc.skipped);
+    // Whatever the box: no size is needed to draw it.
+    let page = shape_page(Style::default(), &doc.drawing);
+    let (root, css) = (&page.root, &page.css);
+    for part in [
+        r#"<svg aria-hidden="true" viewBox="0 0 200 100" preserveAspectRatio="none"><defs>"#,
+        r#"<linearGradient id="pv1_"#,
+        r#"gradientUnits="userSpaceOnUse""#,
+        r#" fill="url(#pv1_"#,
+        r#"<clipPath id="pv1_"#,
+        r#" clip-path="url(#pv1_"#,
+        r#"mask-type="luminance""#,
+        r#" mask="url(#pv1_"#,
+        r#"color-interpolation-filters="sRGB""#,
+        r#"<feOffset dx="0" dy="2" result="o0">"#,
+        r#" filter="url(#pv1_"#,
+        r#" opacity="0.5""#,
+        r#"<text x="100" y="60" text-anchor="middle" xml:space="preserve"><tspan"#,
+        ">Hi </tspan>",
+        r#"<tspan dy="4""#,
+        ">there</tspan></text>",
+        r#"<image x="0" y="0" width="20" height="10" preserveAspectRatio="xMinYMax slice" href="data:image/png;base64,AAAA"></image>"#,
+    ] {
+        assert!(root.contains(part), "{part}: {root}");
+    }
+    // The filter comes first, then the clip, the mask and the opacity: the
+    // order SVG applies them in, whatever the order of the attributes.
+    for part in [
+        "stop-color:",
+        "flood-color:",
+        "stroke-width:2;",
+        "font-size:20px;",
+        "font-weight:700;",
+    ] {
+        assert!(css.contains(part), "{part}: {css}");
+    }
+    // Strokes follow the size it is shown at.
+    assert!(!css.contains("vector-effect"), "{css}");
+
+    // Every definition has its own name, and each is used.
+    let ids: Vec<&str> = root
+        .split(r#" id=""#)
+        .skip(1)
+        .filter_map(|s| s.split('"').next())
+        .collect();
+    // The gradient, the clip, the mask, the filter and the filter's region.
+    assert_eq!(ids.len(), 5, "{ids:?}");
+    for id in &ids {
+        assert_eq!(ids.iter().filter(|i| i == &id).count(), 1, "{ids:?}");
+        assert!(root.contains(&format!("url(#{id})")), "{id}");
+    }
+
+    // A gradient on a plain path (`Path::fill_gradient`) waits for a size,
+    // or is drawn in the box's pixels.
+    use prism_core::shape::{Drawing, Gradient, Path};
+    let stops = [(0., rgb(0xff0000)), (1., rgb(0x0000ff))];
+    let bar = Drawing {
+        paths: vec![Path::rect(0., 0., 1., 1.).fill_gradient(Gradient::linear(
+            (0., 0.),
+            (1., 0.),
+            stops,
+        ))],
+        ..Default::default()
+    };
+    assert!(
+        shape_page(Style::default(), &bar)
+            .root
+            .ends_with(r#"class="prism-shape"></div>"#)
+    );
+    let page = shape_page(fixed(80., 20.), &bar);
+    assert!(
+        page.root.contains(
+            r#"<svg aria-hidden="true" viewBox="0 0 80 20"><defs><linearGradient id="pv1_1" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1" y2="0" gradientTransform="matrix(80 0 0 20 0 0)">"#
+        ),
+        "{}",
+        page.root
+    );
+    assert!(
+        page.root
+            .contains(r#"<path d="M0 0L80 0L80 20L0 20Z" fill="url(#pv1_1)""#),
+        "{}",
+        page.root
     );
 }
 

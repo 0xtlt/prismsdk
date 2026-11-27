@@ -49,6 +49,8 @@ mod services;
 mod table;
 #[cfg(target_os = "tvos")]
 mod tv;
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
+mod vector;
 #[cfg(any(target_os = "ios", target_os = "visionos"))]
 mod widget_extension;
 

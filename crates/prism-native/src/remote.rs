@@ -19,7 +19,7 @@
 //! | `env` | `lang`, `rtl`, `back`, `close`, `clear` (no `id`) |
 //! | `exit` | `parent`, `to`: `{o, tf}` the view animates to (a picture of it), before it is removed |
 //! | `repeat` | `from`, `to`: `{o, tf}` (`to` null stops), back and forth forever |
-//! | `draw` | `paths`: `[{d, fill, stroke, w, round, dash}]` in points, `d` flat (`0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close) |
+//! | `draw` | `paths`: `[{d, fill, stroke, w, round, dash}]` in points, `d` flat (`0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close), `fg` / `sg` a gradient for the fill / stroke (`{k, c, m, sp, o, cl}`); or, for a host that draws them (`with_drawing_items`), `items` when the drawing has more than paths (an SVG document's text, images, groups): `[{t: "p" path, "x" text, "i" image, "g" group, …}]` (see `drawing_items`) |
 //!
 //! | `pointer` | `mask`: pointer events to report (1 hover, 2 move, 4 drag) |
 //! | `keys` | `local`, `global`: report key presses (focus in the node / anywhere) |
@@ -151,6 +151,9 @@ pub struct RemoteWidgets {
     root: Option<NodeId>,
     /// Whether the host edits rich text (#115, [`with_rich_inputs`](Self::with_rich_inputs)).
     rich: bool,
+    /// Whether the host draws text, images and groups
+    /// ([`with_drawing_items`](Self::with_drawing_items)).
+    items: bool,
 }
 
 impl RemoteWidgets {
@@ -171,6 +174,7 @@ impl RemoteWidgets {
             measure,
             root: None,
             rich: false,
+            items: false,
         }
     }
 
@@ -180,6 +184,14 @@ impl RemoteWidgets {
     /// text area.
     pub fn with_rich_inputs(mut self) -> Self {
         self.rich = true;
+        self
+    }
+
+    /// The host draws an SVG document's text, images and groups (#342): a
+    /// drawing that has them comes as `items` in its `draw` op. Otherwise
+    /// it comes as the paths alone, like any other drawing.
+    pub fn with_drawing_items(mut self) -> Self {
+        self.items = true;
         self
     }
 }
@@ -445,38 +457,151 @@ fn color(c: Option<Color>) -> Value {
 }
 
 /// `[{d, fill, stroke, w, round, dash}]` (and `eo: true` for the even-odd
-/// fill rule), `d` flat: `0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y`
-/// curve, `3` close.
+/// fill rule, `fg` / `sg` a [`gradient`] for the fill / stroke), `d` flat:
+/// `0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close.
 fn drawing(paths: &[prism_core::Path]) -> Value {
+    Value::Array(paths.iter().map(path).collect())
+}
+
+/// Segments as a flat list (see [`drawing`]).
+fn segments(segments: &[prism_core::Segment]) -> Vec<f32> {
     use prism_core::Segment as S;
-    let paths: Vec<Value> = paths
+    let mut d: Vec<f32> = Vec::new();
+    for s in segments {
+        match *s {
+            S::Move(x, y) => d.extend([0., x, y]),
+            S::Line(x, y) => d.extend([1., x, y]),
+            S::Cubic(a, b, c, e, f, g) => d.extend([2., a, b, c, e, f, g]),
+            S::Close => d.push(3.),
+            S::Arc { .. } => {}
+        }
+    }
+    d
+}
+
+fn path(p: &prism_core::Path) -> Value {
+    let mut path = json!({
+        "d": segments(&p.segments),
+        "fill": color(p.fill),
+        "stroke": color(p.stroke),
+        "w": p.width,
+        "round": p.round,
+        "dash": p.dash.map(|(a, b)| [a, b]),
+    });
+    if p.even_odd {
+        path["eo"] = json!(true);
+    }
+    if let Some(g) = &p.fill_gradient {
+        path["fg"] = gradient(g);
+    }
+    if let Some(g) = &p.stroke_gradient {
+        path["sg"] = gradient(g);
+    }
+    path
+}
+
+/// A gradient: `k` `"l"` (`c`: `x1 y1 x2 y2`) or `"r"` (`c`: `cx cy r fx
+/// fy`), `m` the transform from those coordinates to points (`a b c d e
+/// f`), `sp` 0 pad, 1 reflect, 2 repeat, `o` the stops' offsets and `cl`
+/// their colors.
+fn gradient(g: &prism_core::shape::Gradient) -> Value {
+    use prism_core::shape::{GradientShape, Spread};
+    let (kind, coords) = match g.shape {
+        GradientShape::Linear { x1, y1, x2, y2 } => ("l", vec![x1, y1, x2, y2]),
+        GradientShape::Radial { cx, cy, r, fx, fy } => ("r", vec![cx, cy, r, fx, fy]),
+    };
+    json!({
+        "k": kind,
+        "c": coords,
+        "m": g.transform,
+        "sp": match g.spread {
+            Spread::Pad => 0,
+            Spread::Reflect => 1,
+            Spread::Repeat => 2,
+        },
+        "o": g.stops.iter().map(|s| s.offset).collect::<Vec<_>>(),
+        "cl": g.stops.iter().map(|s| color(Some(s.color))).collect::<Vec<_>>(),
+    })
+}
+
+/// What a shape draws when it is more than paths
+/// (`prism_core::shape::Item`), each with its kind `t`:
+///
+/// - `"p"`: a path, as in [`drawing`];
+/// - `"x"`: a line of text: `m` its transform to points, `x` / `y` its
+///   anchor, `a` 0 start, 1 middle, 2 end, `b` 0 alphabetic, 1 middle, 2
+///   central, 3 hanging, `r` its runs `[{s, ff, z, w, it, k, c, dx, dy}]`
+///   (text, family as in [`typography`], size, weight, italic, letter
+///   spacing, color, room before, baseline shift down);
+/// - `"i"`: an image: `m`, `r` its rectangle `x y w h`, `src` a `data:`
+///   URL, `f` 0 meet, 1 slice, 2 stretch, `a` its alignment `x y`, `o` its
+///   opacity;
+/// - `"g"`: a group: `o` its opacity, `clip` `{d, eo}`, `mask` `{l, i}`
+///   (luminance or alpha, its items), `sh` its shadows `[[dx, dy, blur,
+///   color]]`, `b` its blur, `i` its items.
+fn drawing_items(items: &[prism_core::shape::Item]) -> Value {
+    use prism_core::shape::{Anchor, Baseline, Fit, Item};
+    let all: Vec<Value> = items
         .iter()
-        .map(|p| {
-            let mut d: Vec<f32> = Vec::new();
-            for s in &p.segments {
-                match *s {
-                    S::Move(x, y) => d.extend([0., x, y]),
-                    S::Line(x, y) => d.extend([1., x, y]),
-                    S::Cubic(a, b, c, e, f, g) => d.extend([2., a, b, c, e, f, g]),
-                    S::Close => d.push(3.),
-                    S::Arc { .. } => {}
-                }
+        .map(|item| match item {
+            Item::Path(p) => {
+                let mut v = path(p);
+                v["t"] = json!("p");
+                v
             }
-            let mut path = json!({
-                "d": d,
-                "fill": color(p.fill),
-                "stroke": color(p.stroke),
-                "w": p.width,
-                "round": p.round,
-                "dash": p.dash.map(|(a, b)| [a, b]),
-            });
-            if p.even_odd {
-                path["eo"] = json!(true);
-            }
-            path
+            Item::Text(t) => json!({
+                "t": "x",
+                "m": t.transform,
+                "x": t.x,
+                "y": t.y,
+                "a": match t.anchor {
+                    Anchor::Start => 0,
+                    Anchor::Middle => 1,
+                    Anchor::End => 2,
+                },
+                "b": match t.baseline {
+                    Baseline::Alphabetic => 0,
+                    Baseline::Middle => 1,
+                    Baseline::Central => 2,
+                    Baseline::Hanging => 3,
+                },
+                "r": t.runs.iter().map(|r| json!({
+                    "s": r.text,
+                    "ff": crate::fonts::resolve(&r.family).encode(),
+                    "z": r.size,
+                    "w": r.weight,
+                    "it": r.italic,
+                    "k": r.spacing,
+                    "c": color(Some(r.fill)),
+                    "dx": r.dx,
+                    "dy": r.dy,
+                })).collect::<Vec<_>>(),
+            }),
+            Item::Image(i) => json!({
+                "t": "i",
+                "m": i.transform,
+                "r": [i.x, i.y, i.w, i.h],
+                "src": i.src,
+                "f": match i.fit {
+                    Fit::Meet => 0,
+                    Fit::Slice => 1,
+                    Fit::Stretch => 2,
+                },
+                "a": [i.align.0, i.align.1],
+                "o": i.opacity,
+            }),
+            Item::Group(g) => json!({
+                "t": "g",
+                "o": g.opacity,
+                "clip": g.clip.as_ref().map(|c| json!({ "d": segments(&c.segments), "eo": c.even_odd })),
+                "mask": g.mask.as_ref().map(|m| json!({ "l": m.luminance, "i": drawing_items(&m.items) })),
+                "sh": g.shadows.iter().map(|s| json!([s.dx, s.dy, s.blur, color(Some(s.color))])).collect::<Vec<_>>(),
+                "b": g.blur,
+                "i": drawing_items(&g.items),
+            }),
         })
         .collect();
-    Value::Array(paths)
+    Value::Array(all)
 }
 
 fn transform(t: Transform) -> Value {
@@ -1277,6 +1402,14 @@ impl Widgets for RemoteWidgets {
             .push(json!({ "op": "draw", "id": id, "paths": drawing(paths) }));
     }
 
+    fn set_drawing_items(&mut self, id: &NodeId, items: &[prism_core::shape::Item]) {
+        if !self.items {
+            return self.set_drawing(id, &prism_core::shape::flatten(items));
+        }
+        self.ops
+            .push(json!({ "op": "draw", "id": id, "items": drawing_items(items) }));
+    }
+
     fn set_scene(&mut self, id: &NodeId, _update: &prism_core::scene3d::SceneUpdate, json: &str) {
         // The host applies it to its scene player (`prism_core::scene3d::wire`).
         let update: Value = serde_json::from_str(json).unwrap_or(Value::Null);
@@ -2053,6 +2186,7 @@ mod scene_tests {
                     Path::rect(0., 0., 1., 1.).fill(Color::current().with_alpha(0.5)),
                     Path::rect(0.25, 0.25, 0.5, 0.5).fill(rgb(0xff0000)),
                 ],
+                ..Default::default()
             }),
             chip_icon_ratio: Some(2.),
             tooltip: Some("Ada Lovelace".into()),

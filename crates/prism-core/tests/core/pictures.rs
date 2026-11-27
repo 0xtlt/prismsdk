@@ -53,6 +53,7 @@ fn even_odd_paths_survive_the_text_form() {
     let d = Drawing {
         inset: (0., 0.),
         paths: vec![p.clone(), Path::rect(0., 0., 1., 1.).fill(rgb(0))],
+        ..Default::default()
     };
     let back = Drawing::decode(&d.encode());
     assert!(back.paths[0].even_odd);

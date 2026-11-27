@@ -215,7 +215,9 @@ impl Span {
             }
             ChipIcon::Vector { drawing, ratio } => {
                 self.run.chip_icon = None;
-                self.run.chip_drawing = Some(drawing);
+                // A chip's icon is paths in flat colors: what every
+                // renderer of chips draws, and what its run's text holds.
+                self.run.chip_drawing = Some(drawing.plain());
                 self.run.chip_icon_ratio = (ratio > 0. && ratio != 1.).then_some(ratio);
             }
         }
@@ -1056,8 +1058,8 @@ impl ChipIcon {
     pub fn shape(paths: impl IntoIterator<Item = Path>) -> ChipIcon {
         ChipIcon::Vector {
             drawing: Drawing {
-                inset: (0., 0.),
                 paths: paths.into_iter().collect(),
+                ..Drawing::default()
             },
             ratio: 1.,
         }

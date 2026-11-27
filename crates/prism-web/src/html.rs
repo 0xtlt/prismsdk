@@ -804,9 +804,14 @@ impl HtmlBackend {
             // box's fixed size, the way `drawShape` (client.js) draws it;
             // the client draws it again whenever the box is resized.
             NodeKind::Shape => {
+                // What a document defines (gradients, clips) is named after
+                // its node: unique in the page.
+                let prefix = format!("pv{id}");
                 let svg = match self.sheet.borrow_mut().as_mut() {
-                    Some(sheet) => shape_svg(&n.text, n.fixed_size, &mut |css| sheet.attr(css)),
-                    None => shape_svg(&n.text, n.fixed_size, &mut |css| {
+                    Some(sheet) => {
+                        shape_svg(&n.text, n.fixed_size, &prefix, &mut |css| sheet.attr(css))
+                    }
+                    None => shape_svg(&n.text, n.fixed_size, &prefix, &mut |css| {
                         format!(r#" style="{}""#, escape(css))
                     }),
                 };
@@ -1175,16 +1180,24 @@ pub(crate) fn object_position_css(config: &str) -> String {
 /// or arcs (circles would turn into ellipses); else nothing until the
 /// client measures the box. `style` gives each path its paint, as CSS
 /// (` data-ps="…"` on a page, so no `style` attribute is needed).
+///
+/// An SVG document (gradients, text, images, groups, or a size of its own,
+/// #342) is drawn by [`crate::drawing`], its definitions' ids starting
+/// with `prefix`.
 pub(crate) fn shape_svg(
     text: &str,
     size: Option<(f32, f32)>,
+    prefix: &str,
     style: &mut dyn FnMut(&str) -> String,
 ) -> String {
     use prism_core::shape::{Drawing, Segment};
+    let d = Drawing::decode(text);
+    if crate::drawing::is_document(&d) {
+        return crate::drawing::document_svg(&d, size, prefix, style);
+    }
     match size {
         Some(size) => shape_svg_with(text, size, false, style),
         None => {
-            let d = Drawing::decode(text);
             let arcs = d
                 .paths
                 .iter()
@@ -1204,7 +1217,8 @@ pub(crate) fn shape_svg(
 }
 
 /// [`shape_svg`] in a `w` × `h` box; with `non_scaling`, strokes keep
-/// their width whatever size the `<svg>` is shown at.
+/// their width whatever size the `<svg>` is shown at, unless the drawing
+/// has a size of its own: its strokes follow the box.
 fn shape_svg_with(
     text: &str,
     (w, h): (f32, f32),
@@ -1216,10 +1230,16 @@ fn shape_svg_with(
     if d.paths.is_empty() {
         return String::new();
     }
-    let scaled = non_scaling;
     let (ix, iy) = d.inset;
     let (iw, ih) = ((w - 2. * ix).max(0.), (h - 2. * iy).max(0.));
     let side = iw.min(ih);
+    // What strokes and dashes are multiplied by (`Drawing::resolve`).
+    let own = d
+        .size
+        .filter(|(sw, sh)| *sw > 0. && *sh > 0.)
+        .map(|(sw, sh)| (iw / sw).min(ih / sh));
+    let scaled = non_scaling && own.is_none();
+    let stroke = own.unwrap_or(1.);
     // Two decimals: the browser can't show more, and the page stays small.
     let num = |v: f32| {
         let v = (v * 100.).round() / 100.;
@@ -1306,7 +1326,7 @@ fn shape_svg_with(
         let paint = |c: Option<prism_core::Color>| c.map_or("none".to_string(), |c| c.to_css());
         let mut css = format!("fill:{};stroke:{};", paint(p.fill), paint(p.stroke));
         if p.stroke.is_some() {
-            let _ = write!(css, "stroke-width:{};", num(p.width));
+            let _ = write!(css, "stroke-width:{};", num(p.width * stroke));
             if scaled {
                 css.push_str("vector-effect:non-scaling-stroke;");
             }
@@ -1315,7 +1335,12 @@ fn shape_svg_with(
             css.push_str("stroke-linecap:round;stroke-linejoin:round;");
         }
         if let Some((dash, gap)) = p.dash {
-            let _ = write!(css, "stroke-dasharray:{} {};", num(dash), num(gap));
+            let _ = write!(
+                css,
+                "stroke-dasharray:{} {};",
+                num(dash * stroke),
+                num(gap * stroke)
+            );
         }
         if p.even_odd {
             css.push_str("fill-rule:evenodd;");
@@ -1381,7 +1406,7 @@ fn chip_html(out: &mut String, r: &prism_core::TextRun, style: &mut dyn FnMut(&s
             let d = prism_core::Drawing {
                 // Insets in points at 16 to the em.
                 inset: (d.inset.0 * 100. / 16., d.inset.1 * 100. / 16.),
-                paths: d.paths.clone(),
+                ..d.plain()
             };
             let svg = shape_svg_with(&d.encode(), (100. * ratio, 100.), true, style);
             let size = style(&format!("width:{ratio}em"));

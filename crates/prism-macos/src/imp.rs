@@ -642,6 +642,10 @@ pub struct ViewIvars {
     /// What a shape draws, in points, and the layers drawing it.
     shape: RefCell<Vec<prism_core::Path>>,
     shape_layers: RefCell<Vec<Retained<objc2_quartz_core::CAShapeLayer>>>,
+    /// What a shape draws when it is more than flat paths (gradients, text,
+    /// images, groups: #342), in points, and the layer showing its picture.
+    drawing: RefCell<Vec<prism_core::shape::Item>>,
+    drawing_layer: RefCell<Option<Retained<objc2_quartz_core::CALayer>>>,
     /// Background and border when only some corners are rounded (a path:
     /// `maskedCorners` is skipped by `renderInContext`, so snapshots and
     /// the screen would differ).
@@ -728,6 +732,16 @@ define_class!(
             }
         }
 
+        /// Another screen, with more or fewer pixels per point: a drawing's
+        /// picture (#342) is made again for them.
+        #[unsafe(method(viewDidChangeBackingProperties))]
+        fn view_did_change_backing_properties(&self) {
+            let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
+            if !self.ivars().drawing.borrow().is_empty() {
+                self.setNeedsDisplay(true);
+            }
+        }
+
         #[unsafe(method(updateLayer))]
         fn update_layer(&self) {
             let Some(layer) = self.layer() else { return };
@@ -809,6 +823,7 @@ define_class!(
             }
             drop(image);
             self.update_shape_layers(&layer);
+            self.update_drawing_layer(&layer);
             let tint = iv.background.borrow().clone().filter(|_| blurs);
             crate::decor::update(
                 self,
@@ -1647,6 +1662,44 @@ impl PrismView {
             layers.push(shape);
         }
         *iv.shape_layers.borrow_mut() = layers;
+    }
+
+    /// The picture of a drawing with gradients, text, images or groups
+    /// (#342), in a layer of its own: drawn again within the view's
+    /// appearance (adaptive colors) and for its window's pixels.
+    fn update_drawing_layer(&self, layer: &objc2_quartz_core::CALayer) {
+        let iv = self.ivars();
+        // A new layer each time: a new picture in the same layer would
+        // fade in.
+        if let Some(old) = iv.drawing_layer.borrow_mut().take() {
+            old.removeFromSuperlayer();
+        }
+        let items = iv.drawing.borrow();
+        if items.is_empty() {
+            return;
+        }
+        use objc2_app_kit::NSAppearanceCustomization;
+        let dark = self
+            .effectiveAppearance()
+            .bestMatchFromAppearancesWithNames(&NSArray::from_slice(&[
+                unsafe { objc2_app_kit::NSAppearanceNameAqua },
+                unsafe { objc2_app_kit::NSAppearanceNameDarkAqua },
+            ]))
+            .is_some_and(|n| &*n == unsafe { objc2_app_kit::NSAppearanceNameDarkAqua });
+        let scale = self.window().map_or(2., |w| w.backingScaleFactor());
+        let b = self.bounds();
+        let Some(picture) =
+            crate::vector::picture(&items, b.size.width, b.size.height, scale, dark)
+        else {
+            return;
+        };
+        let l = objc2_quartz_core::CALayer::new();
+        l.setFrame(b);
+        // An image shows the same way up whether or not the layers are
+        // flipped.
+        unsafe { l.setContents(Some(picture.as_object())) };
+        layer.addSublayer(&l);
+        *iv.drawing_layer.borrow_mut() = Some(l);
     }
 
     /// Draws the background and border as a path rounding only some corners
@@ -4339,7 +4392,26 @@ impl Widgets for AppKit {
 
     fn set_drawing(&mut self, view: &View, paths: &[prism_core::Path]) {
         if let View::Container(v) = view {
-            *v.ivars().shape.borrow_mut() = paths.to_vec();
+            // Flat paths are shape layers; a gradient is drawn (#342).
+            let drawn = paths
+                .iter()
+                .any(|p| p.fill_gradient.is_some() || p.stroke_gradient.is_some());
+            let (shape, drawing) = if drawn {
+                let items = paths.iter().cloned().map(prism_core::shape::Item::Path);
+                (Vec::new(), items.collect())
+            } else {
+                (paths.to_vec(), Vec::new())
+            };
+            *v.ivars().shape.borrow_mut() = shape;
+            *v.ivars().drawing.borrow_mut() = drawing;
+            v.setNeedsDisplay(true);
+        }
+    }
+
+    fn set_drawing_items(&mut self, view: &View, items: &[prism_core::shape::Item]) {
+        if let View::Container(v) = view {
+            v.ivars().shape.borrow_mut().clear();
+            *v.ivars().drawing.borrow_mut() = items.to_vec();
             v.setNeedsDisplay(true);
         }
     }

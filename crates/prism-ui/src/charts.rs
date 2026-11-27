@@ -1790,6 +1790,7 @@ impl Sparkline {
         Drawing {
             inset: (3., 3.),
             paths: self.paths(&Theme::of(cx)),
+            ..Default::default()
         }
     }
 
@@ -1936,6 +1937,7 @@ impl Ring {
         Drawing {
             inset: (th / 2., th / 2.),
             paths: self.paths(&Theme::of(cx)),
+            ..Default::default()
         }
     }
 }

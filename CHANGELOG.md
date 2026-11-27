@@ -7,6 +7,48 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- Full SVG document rendering in `svg()` and `picture_data(bytes, "image/svg+xml")`
+  (#342): `linearGradient` and `radialGradient` on fills and strokes
+  (`gradientUnits`, `gradientTransform`, `spreadMethod`, `href`), `text` and
+  `tspan` (`x`, `y`, `dx`, `dy`, `font-family`, `font-size`, `font-weight`,
+  `font-style`, `letter-spacing`, `text-anchor`, `dominant-baseline`), `image`
+  with `data:` URLs (`preserveAspectRatio` `meet`, `slice`, `none` and all nine
+  alignments), groups with whole-group `opacity`, `clip-path`, luminance and
+  alpha `mask`, drop shadows, glows and blurs (`feDropShadow`, standard shadow
+  filter chains, `feGaussianBlur`, CSS `drop-shadow()` and `blur()`), `symbol`,
+  `use`, nested `svg`, `viewBox` with `preserveAspectRatio`, CSS length units,
+  and `<style>` sheets (type, `.class`, `#id`, descendant and child selectors).
+  Drawn natively on every app backend: inline `<svg>` on the web (server and
+  client), Core Graphics and Core Text on macOS, iOS, iPadOS, tvOS and
+  visionOS, `Canvas` on Android (render effects on Android 12+, bitmaps before),
+  cairo and pango on Linux, and Direct2D and DirectWrite on Windows (flat paths
+  stay XAML `Path`s). Surfaces that draw flat paths only (widgets, Live
+  Activities, CarPlay, Android Auto, watchOS, and a `rich_input` chip's icon)
+  keep the shapes with each gradient's middle color.
+- Gradient fills and strokes on `shape()` paths (#342): `Path::fill_gradient`,
+  `Path::stroke_gradient`, `shape::Gradient` (`linear`, `radial`, `spread`,
+  `color_at`), `shape::Item` (`Path`, `Text`, `Image`, `Group`), `Drawing::size`,
+  `Drawing::items`, `Drawing::resolve_items`, `Drawing::is_flat`,
+  `Drawing::flattened`, `Drawing::plain`, `Widgets::set_drawing_items`, and
+  `RemoteWidgets::with_drawing_items`.
+- `Svg::skipped` (#342): `prism::svg::parse` reports unsupported features
+  (patterns, markers, `foreignObject`, `textPath`, other filters, non-`data:`
+  images, unsupported CSS selectors, animations) instead of dropping them
+  silently; debug builds log them once per document.
+- Counter example: `/components/svg` screen showing card, diagram and effects
+  documents at full and half sizes (#342).
+
+### Changed
+
+- **Breaking:** `Path` has new public fields `fill_gradient` and
+  `stroke_gradient`, `Drawing` has `size` and `items`, and `Svg` has `skipped`
+  (#342): code building them with struct literals adds them or starts from
+  `..Default::default()`.
+- `svg().tint(color)` now recolors painted `<text>` runs as well as paths
+  (#342).
+
 ## 0.6.0 (2026-11-26)
 
 Widgets stay current without the app: `Widget::refresh` runs on each of

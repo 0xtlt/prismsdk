@@ -33,6 +33,7 @@ mod security;
 mod strings;
 mod timetable;
 mod typography;
+mod vectors;
 mod widgets;
 
 use prism::prelude::*;
@@ -126,6 +127,9 @@ pub fn run() {
             })
             .route("/components/media", |cx, _| {
                 cx.new_entity(media::MediaDemo::new)
+            })
+            .route("/components/svg", |cx, _| {
+                cx.new_entity(|_| vectors::VectorsScreen)
             })
             .route("/components/islands", |cx, _| {
                 cx.new_entity(islands::IslandsDemo::new)
@@ -1023,6 +1027,12 @@ impl Render for Gallery {
                             .subtitle(strings::gallery_media_subtitle(cx))
                             .leading("▶")
                             .on_click(navigate_to("/components/media")),
+                    )
+                    .child(
+                        ui::list_row(strings::gallery_vectors(cx))
+                            .subtitle(strings::gallery_vectors_subtitle(cx))
+                            .leading("◈")
+                            .on_click(navigate_to("/components/svg")),
                     ),
             )
             .child(

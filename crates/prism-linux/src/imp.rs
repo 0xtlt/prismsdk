@@ -69,8 +69,12 @@ pub enum View {
     Stack(NodeId, Rc<NavStack>),
     Tabs(NodeId, Rc<TabBar>),
     Sheet(NodeId, Rc<Sheet>),
-    /// Vector drawing (cairo), with its paths in points.
-    Shape(NodeId, gtk::DrawingArea, Rc<RefCell<Vec<prism_core::Path>>>),
+    /// Vector drawing (cairo), with what it draws in points.
+    Shape(
+        NodeId,
+        gtk::DrawingArea,
+        Rc<RefCell<crate::vector::Drawing>>,
+    ),
     /// 3D scene (OpenGL).
     Scene(NodeId, Rc<crate::scene3d::SceneView>),
     Slider(
@@ -102,55 +106,8 @@ pub(crate) fn dark() -> bool {
 
 /// Fills, then strokes, each path with cairo.
 pub(crate) fn draw_paths(cr: &gtk::cairo::Context, paths: &[prism_core::Path]) {
-    use prism_core::Segment as S;
-    let dark = SHAPE_DARK.with(|d| d.get());
-    let source = |c: Color| {
-        let c = if dark {
-            c.dark_variant()
-        } else {
-            c.light_variant()
-        };
-        cr.set_source_rgba(c.r as f64, c.g as f64, c.b as f64, c.a as f64);
-    };
     for p in paths {
-        cr.new_path();
-        for s in &p.segments {
-            match *s {
-                S::Move(x, y) => cr.move_to(x as f64, y as f64),
-                S::Line(x, y) => cr.line_to(x as f64, y as f64),
-                S::Cubic(a, b, c, d, e, f) => {
-                    cr.curve_to(a as f64, b as f64, c as f64, d as f64, e as f64, f as f64)
-                }
-                S::Close => cr.close_path(),
-                S::Arc { .. } => {}
-            }
-        }
-        if let Some(c) = p.fill {
-            source(c);
-            cr.set_fill_rule(if p.even_odd {
-                gtk::cairo::FillRule::EvenOdd
-            } else {
-                gtk::cairo::FillRule::Winding
-            });
-            let _ = cr.fill_preserve();
-        }
-        if let Some(c) = p.stroke {
-            source(c);
-            cr.set_line_width(p.width as f64);
-            let (cap, join) = if p.round {
-                (gtk::cairo::LineCap::Round, gtk::cairo::LineJoin::Round)
-            } else {
-                (gtk::cairo::LineCap::Butt, gtk::cairo::LineJoin::Miter)
-            };
-            cr.set_line_cap(cap);
-            cr.set_line_join(join);
-            match p.dash {
-                Some((d, g)) => cr.set_dash(&[d as f64, g as f64], 0.),
-                None => cr.set_dash(&[], 0.),
-            }
-            let _ = cr.stroke_preserve();
-        }
-        cr.new_path();
+        crate::vector::path(cr, p, dark());
     }
 }
 
@@ -2185,11 +2142,11 @@ impl Widgets for Gtk {
             NodeKind::Timer => View::Timer(id, gtk::Label::new(None)),
             NodeKind::Shape => {
                 let area = gtk::DrawingArea::new();
-                let paths: Rc<RefCell<Vec<prism_core::Path>>> = Rc::default();
-                let drawn = paths.clone();
-                area.set_draw_func(move |_, cr, _, _| draw_paths(cr, &drawn.borrow()));
+                let drawing: Rc<RefCell<crate::vector::Drawing>> = Rc::default();
+                let drawn = drawing.clone();
+                area.set_draw_func(move |area, cr, _, _| drawn.borrow().draw(area, cr));
                 self.shapes.insert(id, area.clone());
-                View::Shape(id, area, paths)
+                View::Shape(id, area, drawing)
             }
             NodeKind::Scene3d => {
                 let scene =
@@ -2804,8 +2761,15 @@ impl Widgets for Gtk {
     }
 
     fn set_drawing(&mut self, view: &View, paths: &[prism_core::Path]) {
-        if let View::Shape(_, area, p) = view {
-            *p.borrow_mut() = paths.to_vec();
+        if let View::Shape(_, area, drawing) = view {
+            drawing.borrow_mut().set_paths(paths);
+            area.queue_draw();
+        }
+    }
+
+    fn set_drawing_items(&mut self, view: &View, items: &[prism_core::shape::Item]) {
+        if let View::Shape(_, area, drawing) = view {
+            drawing.borrow_mut().set_items(items);
             area.queue_draw();
         }
     }

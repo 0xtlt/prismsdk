@@ -65,6 +65,15 @@ pub fn source(family: &str, weight: u16, italic: bool) -> Option<String> {
     })
 }
 
+/// The file behind a XAML font source (`ms-appx:///prism-fonts/<file>#Family`):
+/// DirectWrite, which draws the text of pictures (`vector.rs`), takes files.
+pub fn file(source: &str) -> Option<PathBuf> {
+    let name = source.strip_prefix("ms-appx:///prism-fonts/")?;
+    let name = name.split('#').next()?;
+    let path = folder()?.join(name);
+    path.is_file().then_some(path)
+}
+
 /// The app's data folder (`%LOCALAPPDATA%\<app>`): fonts go to its
 /// `prism-fonts`.
 pub fn set_data_dir(data: &Path) {

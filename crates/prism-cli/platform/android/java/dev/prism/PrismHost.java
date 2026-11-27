@@ -534,7 +534,14 @@ public final class PrismHost {
                 if (n.kind.equals("web_view")) PrismWeb.load(n, p.optString("text"));
                 else setText(n, p.optString("text"));
                 break;
-            case "draw": if (n.view instanceof PrismShape) ((PrismShape) n.view).setPaths(p.optJSONArray("paths")); break;
+            case "draw":
+                if (n.view instanceof PrismShape) {
+                    // An SVG document's text, images and groups come as `items` (#342).
+                    PrismShape shape = (PrismShape) n.view;
+                    if (p.has("items")) shape.setItems(p.optJSONArray("items"));
+                    else shape.setPaths(p.optJSONArray("paths"));
+                }
+                break;
             case "scene": {
                 // A scene update (`SceneUpdate`): PrismScenePlayer reads the JSON itself.
                 Object u = p.opt("u");
