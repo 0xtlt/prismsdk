@@ -1769,6 +1769,15 @@ impl<'a> Walker<'a> {
             }
             let fx = get("fx").map_or(cx, |_| coord("fx", "50%", 0));
             let fy = get("fy").map_or(cy, |_| coord("fy", "50%", 1));
+            // A focal point outside the circle is brought back inside it,
+            // as browsers do: every backend then draws the same gradient.
+            let (dx, dy) = (fx - cx, fy - cy);
+            let far = (dx * dx + dy * dy).sqrt();
+            let (fx, fy) = if far > 0.99 * r {
+                (cx + dx / far * 0.99 * r, cy + dy / far * 0.99 * r)
+            } else {
+                (fx, fy)
+            };
             GradientShape::Radial {
                 cx: cx as f32,
                 cy: cy as f32,
@@ -3104,6 +3113,19 @@ mod tests {
         );
         let (x, y) = through(g.transform, 0.5, 0.5);
         assert!(close(x, 0.5) && close(y, 0.5));
+        // A focal point outside the circle comes back inside it.
+        let far = items(
+            r##"<svg viewBox="0 0 10 10">
+              <radialGradient id="g" gradientUnits="userSpaceOnUse" cx="5" cy="5" r="2" fx="9" fy="5">
+                <stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/>
+              </radialGradient>
+              <rect width="10" height="10" fill="url(#g)"/>
+            </svg>"##,
+        );
+        match path(&far[0]).fill_gradient.as_ref().unwrap().shape {
+            GradientShape::Radial { fx, fy, .. } => assert!(close(fx, 6.98) && close(fy, 5.)),
+            other => panic!("{other:?}"),
+        }
         // A paint that is not there: the color after it, or nothing.
         assert_eq!(path(&all[3]).fill, Some(rgba(0xabcdef, 1.)));
         assert!(path(&all[3]).fill_gradient.is_none());
