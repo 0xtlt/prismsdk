@@ -133,6 +133,8 @@ mod drops;
 mod dxgl;
 #[cfg(target_os = "windows")]
 mod edit;
+// A drawing's blurs, shadows, masks and placements: no Win32, tested everywhere.
+mod effects;
 #[cfg(target_os = "windows")]
 mod events;
 // Which file of a font family draws a weight: no Win32, tested everywhere.
@@ -266,6 +268,9 @@ mod tray;
 #[cfg(target_os = "windows")]
 mod underlay;
 mod underline;
+// Drawings that are more than flat paths, as pictures (Direct2D).
+#[cfg(target_os = "windows")]
+mod vector;
 #[cfg(target_os = "windows")]
 mod view;
 #[cfg(target_os = "windows")]

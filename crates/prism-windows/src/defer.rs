@@ -482,9 +482,6 @@ impl Win {
             if !n.icon.is_empty() {
                 controls::set_icon(&v.content, &n.icon)?;
             }
-            if !n.paths.is_empty() {
-                controls::set_paths(&v.content, &n.paths, &pal)?;
-            }
             if let Some(spec) = &n.menu {
                 v.outer.SetContextFlyout(&crate::events::menu(spec)?)?;
             }
@@ -508,6 +505,9 @@ impl Win {
         })();
         if let Err(e) = r {
             log!("node {id} made late: {e}");
+        }
+        if kind == NodeKind::Shape {
+            self.draw_shape(id);
         }
         // Clicks, hover, press: a clickable view's button and its peer.
         self.update_hit(id);

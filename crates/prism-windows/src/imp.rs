@@ -693,8 +693,10 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     if let (Some(k), Some(i)) = (system::scale_override(), &w.island) {
                         i.set_scale(k);
                     }
-                    // Its pixels change: 3D scenes draw again.
+                    // Its pixels change: 3D scenes draw again, and the
+                    // drawings that are pictures.
                     crate::scene3d::redraw_all();
+                    w.redraw_pictures();
                 });
                 let _ = SetWindowPos(
                     h,
@@ -801,6 +803,8 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         w.measurer.forget(id);
                         w.show_picture(id);
                     }
+                    // A drawing's image.
+                    w.redraw_shapes_with(&loaded);
                     // Natural sizes changed.
                     s.renderer.mark_all_dirty();
                     relayout(s);

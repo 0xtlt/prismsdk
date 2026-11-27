@@ -80,8 +80,9 @@ pub struct Node {
     /// `prism_core::events::pointer_mask` bits.
     pub pointer_mask: u8,
     pub menu: Option<prism_core::menu::MenuSpec>,
-    /// A shape's paths, in its own points.
-    pub paths: Vec<prism_core::Path>,
+    /// What a shape draws, in its own points: paths, and an SVG
+    /// document's text, images and groups.
+    pub drawing: Vec<prism_core::shape::Item>,
     pub scroll_events: bool,
 }
 
@@ -110,7 +111,7 @@ impl Node {
             keys_global: false,
             pointer_mask: 0,
             menu: None,
-            paths: Vec::new(),
+            drawing: Vec::new(),
             scroll_events: false,
         }
     }

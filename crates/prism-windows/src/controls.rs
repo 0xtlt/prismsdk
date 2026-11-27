@@ -794,11 +794,13 @@ pub fn set_icon(c: &Content, icon: &str) -> Result<()> {
     Ok(())
 }
 
-/// A shape's paths, in its own points.
-pub fn set_paths(c: &Content, paths: &[prism_core::Path], pal: &Palette) -> Result<()> {
-    let Content::Shape(canvas) = c else {
-        return Ok(());
-    };
+/// A shape's paths in flat colors, in its own points, in place of what
+/// its canvas held (a drawing with more is a picture: `vector.rs`).
+pub fn set_paths<'a>(
+    canvas: &Canvas,
+    paths: impl IntoIterator<Item = &'a prism_core::Path>,
+    pal: &Palette,
+) -> Result<()> {
     let children = canvas.Children()?;
     children.Clear()?;
     use prism_core::shape::Segment;
