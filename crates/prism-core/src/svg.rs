@@ -1334,6 +1334,11 @@ impl Lines {
         if s.is_empty() {
             return;
         }
+        // Room before a line's first run moves the whole line, however it
+        // is anchored (as browsers do).
+        if line.runs.is_empty() {
+            line.x += std::mem::take(&mut self.dx) as f32;
+        }
         line.runs.push(TextRun {
             text: s,
             family: state.family.clone(),
@@ -3194,6 +3199,16 @@ mod tests {
         assert!(close(x, 20. / 200.) && close(y, 40. / 100.), "{x} {y}");
         // Nothing but spaces: no text.
         assert_eq!(all.len(), 3);
+
+        // Room before a line moves the line, anchored or not; room before
+        // a later run is the run's.
+        let all = items(
+            r#"<svg viewBox="0 0 200 100">
+              <text x="100" y="50" dx="6" text-anchor="end">a<tspan dx="3">b</tspan></text>
+            </svg>"#,
+        );
+        let t = text(&all[0]);
+        assert_eq!((t.x, t.runs[0].dx, t.runs[1].dx), (106., 0., 3.));
     }
 
     #[test]

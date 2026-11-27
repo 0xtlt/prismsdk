@@ -115,6 +115,13 @@ dialog.prism-sheet > * { flex: 1; }
 .prism-shape { position: relative; }
 .prism-shape > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 [dir="rtl"] .prism-shape > svg { transform: scaleX(-1); }
+/* An SVG document's text (#342): its runs say their own font, and nothing
+   of the page's text style leaks in (a right-to-left page would anchor
+   each line by its other end). A picture: not selectable. */
+.prism-shape > svg text { direction: ltr; font: 400 16px/1 sans-serif; letter-spacing: normal; word-spacing: normal; text-transform: none; text-decoration: none; text-shadow: none; white-space: pre; -webkit-user-select: none; user-select: none; }
+/* Mirrored with the drawing, its text and images stay readable: each is
+   turned around again, in place. */
+[dir="rtl"] .prism-shape > svg :is(text, image) { transform-box: fill-box; transform-origin: center; transform: scaleX(-1); }
 /* 3D scenes: the canvas fills the box (its size never feeds back into the layout). */
 .prism-scene3d { position: relative; overflow: hidden; }
 .prism-scene3d > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }

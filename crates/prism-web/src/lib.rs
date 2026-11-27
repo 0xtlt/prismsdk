@@ -38,6 +38,7 @@ mod cookies;
 mod css;
 mod device_info;
 mod downloads;
+mod drawing;
 mod fonts;
 mod handoff;
 mod host;
