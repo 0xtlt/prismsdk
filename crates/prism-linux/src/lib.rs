@@ -51,6 +51,8 @@ mod sheet;
 mod text;
 #[cfg(target_os = "linux")]
 mod tray;
+#[cfg(target_os = "linux")]
+mod vector;
 
 #[cfg(target_os = "linux")]
 pub use imp::run;
