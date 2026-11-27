@@ -7,6 +7,23 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.7.0 (2026-11-27)
+
+`svg(markup)` (and `picture_data(bytes, "image/svg+xml")`) now draws full
+SVG documents natively on every app backend: linear and radial gradients,
+`<text>` and `<tspan>`, `data:` URL `<image>`s, whole-group `opacity`,
+`clip-path`, luminance and alpha `mask`, drop shadows, glows and blurs,
+`<use>`, `<symbol>`, nested `<svg>` and `<style>` sheets (#342). Inline
+`<svg>` on the web, Core Graphics and Core Text on Apple platforms,
+`Canvas` on Android, cairo and pango on Linux, and Direct2D and
+DirectWrite on Windows; flat-path surfaces (widgets, Live Activities, car
+screens, watchOS, chip icons) fall back to paths with each gradient's
+middle color. `shape()` paths also gain gradient fills and strokes
+(`Path::fill_gradient`, `Path::stroke_gradient`), and `Svg::skipped`
+reports unsupported SVG features instead of dropping them silently.
+**Breaking:** `Path` adds `fill_gradient` and `stroke_gradient`, `Drawing`
+adds `size` and `items`, and `Svg` adds `skipped`.
+
 ### Added
 
 - Full SVG document rendering in `svg()` and `picture_data(bytes, "image/svg+xml")`
