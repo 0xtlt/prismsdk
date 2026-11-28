@@ -97,7 +97,8 @@ pub enum NodeKind {
     // --- Web views (#62) ---
     /// Another web page shown inside the app: an `<iframe>` on the web,
     /// `WKWebView` on Apple platforms, `android.webkit.WebView` on Android,
-    /// WinUI's `WebView2` on Windows (see [`web_view`](crate::web_view())). Its text is the URL, its
+    /// WinUI's `WebView2` on Windows, WebKitGTK on Linux (with
+    /// prismsdk's `web-view` feature; see [`web_view`](crate::web_view())). Its text is the URL, its
     /// config a [`WebViewConfig`](crate::web_view::WebViewConfig). No
     /// natural size: give it one. Reports `UiEvent::WebMessage` and
     /// `UiEvent::WebLoad`.

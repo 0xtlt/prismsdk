@@ -46,6 +46,12 @@ camera = ["prism-macos?/camera", "prism-ios?/camera", "prism-watchos?/camera"]
 microphone = ["prism-macos?/microphone", "prism-ios?/microphone", "prism-watchos?/microphone"]
 photo-library = ["prism-macos?/photo-library", "prism-ios?/photo-library", "prism-watchos?/photo-library"]
 face-id = ["prism-macos?/face-id", "prism-ios?/face-id", "prism-watchos?/face-id"]
+# Linux (#343): web views (`web_view`) with WebKitGTK 6.0, which the app
+# then links (`libwebkitgtk-6.0-dev` to build, `libwebkitgtk-6.0-4` at run
+# time). Without it a web view is an empty box there and
+# `capabilities().web_view` is false. Elsewhere it changes nothing: web
+# views are built in.
+web-view = ["prism-linux?/web-view"]
 
 [dependencies]
 prism-core.workspace = true

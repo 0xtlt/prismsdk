@@ -19,6 +19,16 @@ bumps the minor version). Every crate of the workspace shares one version.
   when it changes (another screen, browser zoom, Android's display size) the
   app re-renders and `on_resize` handlers run. `Runtime::set_scale_factor`
   and `App::set_scale_factor` let backends and tests set it.
+- Web views on Linux (#343): `web_view` shows its page with WebKitGTK 6.0,
+  with the same messages as the other platforms (`prismHost.postMessage`
+  in the main frame, `message` events from the app, only from and to the
+  allowed origins), links to other origins and popups in the system
+  browser, and the sandbox (scripts, forms, popups, an ephemeral session
+  without `same_origin`). Behind prismsdk's new `web-view` feature, so
+  apps without web views do not link libwebkitgtk-6.0; without it a web
+  view is an empty box, as before. The Docker image has
+  `libwebkitgtk-6.0-dev`, and a `.deb` of an app with the feature depends
+  on `libwebkitgtk-6.0-4`.
 
 ### Fixed
 
