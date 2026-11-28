@@ -1236,6 +1236,15 @@ impl Runtime {
         self.poll()
     }
 
+    /// The screen's pixels per point (`cx.scale_factor()`): the window
+    /// moved to another screen, the browser zoomed. Re-renders everything
+    /// and runs the `on_resize` handlers when it changes; a value that is
+    /// not finite and positive is ignored. Returns the resulting patches.
+    pub fn set_scale_factor(&mut self, scale: f32) -> Vec<Patch> {
+        self.app.set_scale_factor(scale);
+        self.poll()
+    }
+
     /// The window entered or left full screen, or its buttons moved
     /// (`cx.is_fullscreen()`, `cx.window_controls()`). Re-renders
     /// everything if anything differs. Returns the resulting patches.

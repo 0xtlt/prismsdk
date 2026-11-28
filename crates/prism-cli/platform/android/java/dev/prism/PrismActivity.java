@@ -104,6 +104,8 @@ public class PrismActivity extends Activity {
                         outer.getPaddingTop(), outer.getPaddingRight(), outer.getPaddingBottom(), outer.getPaddingLeft()}));
             }
             e.put("safe", new org.json.JSONArray(PrismHost.safeInsets));
+            // Pixels per dp (`cx.scale_factor()`, #343).
+            e.put("density", PrismHost.density);
         } catch (JSONException ignored) {}
         return e;
     }
@@ -128,10 +130,19 @@ public class PrismActivity extends Activity {
         if (!PrismHost.handleBack()) super.onBackPressed();
     }
 
-    /** The system's dark mode changed (the Activity stays: `configChanges`). */
+    /**
+     * The system's dark mode changed (the Activity stays: `configChanges`), or the
+     * screen's density (display size setting, another display): dp follow it (#343).
+     */
     @Override
     public void onConfigurationChanged(android.content.res.Configuration config) {
         super.onConfigurationChanged(config);
+        float density = getResources().getDisplayMetrics().density;
+        if (ready && density != PrismHost.density) {
+            PrismHost.density = density;
+            JSONObject e = resized(PrismHost.root.getWidth(), PrismHost.root.getHeight());
+            PrismHost.main.post(() -> PrismHost.send(e));
+        }
         if (ready) PrismHost.restyle();
     }
 

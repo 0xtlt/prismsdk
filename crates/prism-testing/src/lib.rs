@@ -532,6 +532,13 @@ impl Harness {
         self.dispatch(UiEvent::DropFiles(id, files))
     }
 
+    /// The window moved to a screen with `scale` pixels per point, like a
+    /// backend reports it (`cx.scale_factor()`, #343).
+    pub fn set_scale_factor(&mut self, scale: f32) -> &[Patch] {
+        let p = self.rt.set_scale_factor(scale);
+        self.apply(p)
+    }
+
     pub fn open_link(&mut self, path: &str) -> &[Patch] {
         let p = self.rt.open_link(path);
         self.apply(p)

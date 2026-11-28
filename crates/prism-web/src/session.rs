@@ -245,6 +245,7 @@ impl WebApp {
             .name("prism-session".into())
             .spawn(move || {
                 let _permit = permit;
+                let scale = visitor.scale;
                 let mut options = app.options(visitor.with_sid(&sid), path);
                 let device = options.device_info.clone();
                 options.wake_ui = Some(std::sync::Arc::new(move || {
@@ -253,7 +254,7 @@ impl WebApp {
                     }
                 }));
                 let mut runtime =
-                    Runtime::with_options(&app.init_with(request, page_request), options);
+                    Runtime::with_options(&app.init_with(request, page_request, scale), options);
                 // Frame callbacks come from the page's requestAnimationFrame (#311).
                 runtime.set_native_frames(true);
                 let sign_ins = crate::security::session_key();
@@ -853,9 +854,16 @@ impl Live {
             }
             // The browser window was resized; `safe`: what the device's
             // notch, bars and rounded corners cover (`env(safe-area-inset-*)`,
-            // top, right, bottom, left).
+            // top, right, bottom, left); `dpr`: its `devicePixelRatio`
+            // (zoom, another screen; #343), kept when missing or invalid.
             Some("viewport") => match (finite_f32(v.get("w")), finite_f32(v.get("h"))) {
-                (Some(w), Some(h)) if w >= 0. && h >= 0. => rt.set_window(w, h, safe_area(&v)),
+                (Some(w), Some(h)) if w >= 0. && h >= 0. => {
+                    if let Some(scale) = finite_f32(v.get("dpr")).and_then(crate::app::scale_factor)
+                    {
+                        rt.app.set_scale_factor(scale);
+                    }
+                    rt.set_window(w, h, safe_area(&v))
+                }
                 _ => Vec::new(),
             },
             // The page described its device (on connect, rotation, fold).

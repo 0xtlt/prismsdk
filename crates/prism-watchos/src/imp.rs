@@ -151,8 +151,12 @@ pub extern "C" fn prism_watch_ready(
         Some(icloud) => Box::new(icloud),
         None => Box::new(prism_core::FileStorage::new(data_dir().join("cloud"))),
     };
+    // `cx.scale_factor()` (#343): `WKInterfaceDevice.screenScale` pixels per
+    // watch point, Prism points being `zoom` of them. A watch's screen
+    // never changes.
+    let init = prism_native::with_scale_factor(init, scale as f32 * zoom);
     let runtime = Runtime::with_options(
-        init,
+        &init,
         prism_core::RuntimeOptions {
             capabilities: prism_core::PlatformServices::capabilities(&services),
             cloud_storage: Some(cloud),

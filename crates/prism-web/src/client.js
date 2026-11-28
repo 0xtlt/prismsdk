@@ -7394,13 +7394,35 @@
     const s = getComputedStyle(safeProbe);
     return ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].map((k) => parseFloat(s[k]) || 0);
   };
+  // `cx.scale_factor()` (#343): device pixels per CSS pixel, which browser
+  // zoom and moving the window to another screen change.
+  const pixelRatio = () => {
+    const r = window.devicePixelRatio;
+    return r > 0 && isFinite(r) ? r : 1;
+  };
+  const viewportCookie = () => {
+    document.cookie = `prism_vw=${innerWidth}x${innerHeight}x${pixelRatio()}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  };
   let resizeTimer = null;
   const reportViewport = () => {
-    document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    send({ t: "viewport", w: innerWidth, h: innerHeight, safe: safeArea() });
+    viewportCookie();
+    send({ t: "viewport", w: innerWidth, h: innerHeight, safe: safeArea(), dpr: pixelRatio() });
   };
   addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(reportViewport, 120); });
-  document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  viewportCookie();
+  // A change of ratio without a resize (another screen of the same size in
+  // CSS pixels): a query that matches the current ratio stops matching.
+  const watchPixelRatio = () => {
+    if (!window.matchMedia) return;
+    const q = matchMedia(`(resolution: ${pixelRatio()}dppx)`);
+    const changed = () => {
+      if (q.removeEventListener) q.removeEventListener("change", changed); else q.removeListener(changed);
+      reportViewport();
+      watchPixelRatio();
+    };
+    if (q.addEventListener) q.addEventListener("change", changed); else q.addListener(changed);
+  };
+  watchPixelRatio();
 
   // Page visibility → app lifecycle (background tasks keep running server-side).
   const reportLifecycle = () => send({ t: "lifecycle", state: document.hidden ? "background" : document.hasFocus() ? "active" : "inactive" });
@@ -8290,7 +8312,7 @@
     const compress = inflate ? "&compress=deflate-raw" : "";
     const page = pageId ? `&page=${encodeURIComponent(pageId)}` : "";
     pageId = "";
-    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}${compress}${page}`);
+    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}&dpr=${pixelRatio()}${search}${compress}${page}`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (e) => onFrame(socket, e.data);
     ws.onclose = closed;

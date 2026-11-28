@@ -2203,6 +2203,46 @@ fn a_session_follows_the_viewport_and_lifecycle() {
     op_with_text(&page.next()["p"], "narrow");
 }
 
+struct Density;
+impl Render for Density {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        text(format!("scale {}", cx.scale_factor()))
+    }
+}
+
+pub(crate) fn density_app(tag: &str) -> (WebApp, TempDir) {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Density);
+        cx.set_root(root);
+    });
+    web_app(init, tag)
+}
+
+#[test]
+fn a_session_follows_the_pixel_ratio() {
+    let (app, _dir) = density_app("dpr");
+    // 1 until the page reports.
+    let page = Page::open(&app, "/ws?w=400&h=800");
+    op_with_text(&page.next()["p"], "scale 1");
+    // The socket's query: the first tree has it.
+    let page = Page::open(&app, "/ws?w=400&h=800&dpr=2");
+    op_with_text(&page.next()["p"], "scale 2");
+    // Browser zoom, another screen: the viewport report carries it.
+    page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": 1.5 }));
+    op_with_text(&page.next()["p"], "scale 1.5");
+    // A report without it keeps it.
+    page.send(json!({ "t": "viewport", "w": 400, "h": 800 }));
+    page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": 3 }));
+    op_with_text(&page.next()["p"], "scale 3");
+    // The first paint reads the cookie the page wrote.
+    let mut headers = HeaderMap::new();
+    headers.insert("cookie", "prism_vw=1280x800x2".parse().unwrap());
+    let mut req = Request::get("/").body(()).unwrap();
+    *req.headers_mut() = headers;
+    let html = String::from_utf8(app.handle(&req).body().clone()).unwrap();
+    assert!(html.contains("scale 2"), "{html}");
+}
+
 #[test]
 fn a_late_platform_authenticator_report_re_renders() {
     struct Auth;
@@ -2701,6 +2741,8 @@ fn cookies_and_urls_are_parsed_strictly() {
     );
     assert_eq!(viewport_cookie("prism_vw=1280x800"), Some((1280., 800.)));
     assert_eq!(viewport_cookie("prism_vw=1280"), None);
+    // With the page's pixel ratio (#343).
+    assert_eq!(viewport_cookie("prism_vw=1280x800x2"), Some((1280., 800.)));
     assert_eq!(time_zone("prism_tz=-18000"), Some(-18000));
     assert_eq!(time_zone("prism_tz=999999"), None, "out of range");
     let a = crate::app::new_session_id();
