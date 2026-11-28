@@ -376,7 +376,6 @@ impl State {
         if w <= 0. {
             return None;
         }
-        self.report_scale_factor();
         let i = self.renderer.widgets.content_insets();
         let safe = prism_core::Edges {
             top: i.top / zoom,
@@ -391,6 +390,8 @@ impl State {
                 self.window_rerendered = true;
             }
         }
+        // After the size: a render for a new density sees the new viewport.
+        self.report_scale_factor();
         Some((w, h))
     }
 
@@ -1460,7 +1461,21 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
             }
             runtime
         }
-        None => make_runtime(init, path, &services),
+        None => {
+            // `cx.scale_factor()` (#343) before the first render, so the
+            // first layout does not report it again: the scene's display
+            // scale (0 if unknown: told at that layout), times the TV zoom.
+            // SAFETY: a plain property read on the main thread.
+            let display = unsafe { scene.traitCollection().displayScale() } as f32;
+            #[cfg(target_os = "tvos")]
+            let display = display * crate::tv::zoom();
+            if display > 0. {
+                let init = prism_native::with_scale_factor(init, display);
+                make_runtime(&init, path, &services)
+            } else {
+                make_runtime(init, path, &services)
+            }
+        }
     };
     #[allow(unused_mut)]
     let mut renderer = NativeRenderer::new(UiKit {

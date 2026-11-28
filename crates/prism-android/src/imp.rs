@@ -396,6 +396,14 @@ fn relayout(s: &mut State) {
             s.renderer.apply(&patches);
         }
     }
+    // Pixels per dp (`cx.scale_factor()`, #343): the zoom, after the
+    // viewport so a render for a new density sees its new size.
+    if zoom != s.runtime.app.scale_factor() {
+        let patches = s.runtime.set_scale_factor(zoom);
+        if !patches.is_empty() {
+            s.renderer.apply(&patches);
+        }
+    }
     // A new language: dates (and line breaks) measure differently.
     if s.renderer.widgets.ops.iter().any(|op| op["op"] == "env") {
         forget_measures();
@@ -897,15 +905,17 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeEvent(
                 s.safe = edges("safe");
                 // The screen's density changed (display size setting, another
                 // display; the Activity stays): dp, Prism points, are that
-                // many pixels now (`cx.scale_factor()`, #343).
-                match num("density") {
-                    Some(d) if d.is_finite() && d >= 0.5 && d != s.renderer.zoom() => {
-                        forget_measures();
-                        s.renderer.set_zoom(d);
-                        s.runtime.set_scale_factor(d)
-                    }
-                    _ => Vec::new(),
+                // many pixels now. The relayout below tells the app the new
+                // viewport, then `cx.scale_factor()` (#343).
+                if let Some(d) = num("density")
+                    && d.is_finite()
+                    && d >= 0.5
+                    && d != s.renderer.zoom()
+                {
+                    forget_measures();
+                    s.renderer.set_zoom(d);
                 }
+                Vec::new()
             }
             // A video's size, once its player knows it (#207).
             Some("video_size") => {

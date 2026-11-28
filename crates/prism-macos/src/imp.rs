@@ -567,7 +567,6 @@ impl State {
 
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.frame().size;
-        self.sync_scale_factor();
         // Responsive layouts: tell the app its window size and what covers
         // it (a full-size content view's title bar and toolbar, #28):
         // re-renders when it crosses a breakpoint or the insets move.
@@ -590,6 +589,8 @@ impl State {
                 self.renderer.apply(&patches);
             }
         }
+        // After the size: a render for a new density sees the new viewport.
+        self.sync_scale_factor();
         self.sync_window_chrome();
         // Fullscreen, another screen: `cx.device_info()`.
         if w > 0.
