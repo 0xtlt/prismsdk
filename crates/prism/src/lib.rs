@@ -372,7 +372,7 @@ impl Application {
     /// app's page reports messages from `app://main` and loads of
     /// `app://main/…` on every platform; Android serves it at
     /// `https://main.app.prism.invalid/…` (see
-    /// [`web_view`](prism_core::web_view#app-schemes)) and gives no
+    /// [`web_view`](mod@prism_core::web_view#app-schemes)) and gives no
     /// request bodies. On the web the handler is not called: the app
     /// serves the scheme's pages with its own routes
     /// (`WebApp::web_scheme_path`).

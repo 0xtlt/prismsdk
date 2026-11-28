@@ -462,7 +462,7 @@ pub fn check_web_scheme(scheme: &str) -> Result<(), String> {
 }
 
 /// Serves `scheme` with `handler` in every web view of the app (see the
-/// [module docs](self)); a handler registered before for it is replaced.
+/// [module docs](super#app-schemes)); a handler registered before for it is replaced.
 /// Apps call it through `Application::web_scheme`, before the first web
 /// view.
 ///
@@ -562,7 +562,7 @@ pub fn decode_header_lines(lines: &str) -> Vec<(String, String)> {
 pub const ENGINE_DOMAIN: &str = "prism.invalid";
 
 /// The `https:` URL standing for an app scheme's URL where the engine only
-/// fetches web schemes (Android, see the [module docs](self)):
+/// fetches web schemes (Android, see the [module docs](super#app-schemes)):
 /// `app://main/a.css?v=1` → `https://main.app.prism.invalid/a.css?v=1`.
 /// `None` for a URL of another scheme (`https:`), or one this cannot
 /// stand for: no host, a port, user info, or a host that is not letters,
