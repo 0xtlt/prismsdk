@@ -382,6 +382,12 @@ pub fn background_threads() -> usize {
     pool::global().max()
 }
 
+/// Runs `job` on the [`AsyncApp::background`] pool, outside any task
+/// (answers to an app scheme's requests, #343). A panic in it is caught.
+pub(crate) fn run_in_background(job: impl FnOnce() + Send + 'static) {
+    pool::global().submit(Box::new(job));
+}
+
 /// The bounded, elastic thread pool behind [`AsyncApp::background`].
 mod pool {
     use std::collections::VecDeque;

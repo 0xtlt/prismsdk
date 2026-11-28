@@ -385,6 +385,68 @@ pub mod web {
         }
     }
 
+    /// The schemes the app serves (#343, `Application::web_scheme`), one
+    /// per line, for the bridge's `WKURLSchemeHandler`: the caller frees
+    /// it with [`prism_web_string_free`].
+    #[unsafe(no_mangle)]
+    pub extern "C" fn prism_web_schemes() -> *mut c_char {
+        c(&prism_core::web_view::web_schemes().join("\n")).into_raw()
+    }
+
+    /// Frees a string of [`prism_web_schemes`].
+    ///
+    /// # Safety
+    /// `p` comes from `prism_web_schemes` (or is null), freed once.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prism_web_string_free(p: *mut c_char) {
+        if !p.is_null() {
+            drop(unsafe { CString::from_raw(p) });
+        }
+    }
+
+    /// The bridge's callback with the answer to request `task`: `head` is
+    /// the status then one `Name: value` header per line
+    /// (`SchemeResponse::encode_head`), `body` its `len` bytes. Called on a
+    /// background thread; the pointers are valid during the call only.
+    pub type SchemeDone =
+        extern "C" fn(task: u64, head: *const c_char, body: *const u8, len: usize);
+
+    /// A page asked an app scheme for `url` (#343): the app's handler
+    /// answers on a background thread (never the UI's; a panic is a
+    /// `500`), then `done` gets the answer there. `headers` are
+    /// `Name: value` lines.
+    ///
+    /// # Safety
+    /// The strings are valid C strings (or null) and `body` holds `len`
+    /// bytes (or is null), during the call.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prism_web_scheme_request(
+        task: u64,
+        method: *const c_char,
+        url: *const c_char,
+        headers: *const c_char,
+        body: *const u8,
+        len: usize,
+        done: SchemeDone,
+    ) {
+        let s = |p: *const c_char| {
+            if p.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+            }
+        };
+        let mut request = prism_core::SchemeRequest::new(s(method), s(url));
+        request.headers = prism_core::web_view::decode_header_lines(&s(headers));
+        if !body.is_null() && len > 0 {
+            request.body = unsafe { std::slice::from_raw_parts(body, len) }.to_vec();
+        }
+        prism_core::web_view::serve_web_request(request, move |r| {
+            let head = c(&r.encode_head());
+            done(task, head.as_ptr(), r.body.as_ptr(), r.body.len());
+        });
+    }
+
     /// What the bridge reports through `prism_web_view_event` (which each
     /// backend exports): kind 0 a message (`a`: JSON, `b`: origin), kind 1
     /// a finished load (`a`: URL).

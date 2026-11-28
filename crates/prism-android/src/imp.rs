@@ -531,6 +531,45 @@ pub extern "system" fn Java_dev_prism_PrismHost_sceneBlob(
     }
 }
 
+/// `PrismHost.webScheme(method, url, headers)`: a web view's page asked
+/// for the `https:` URL standing for an app scheme (#343,
+/// `shouldInterceptRequest`). The app's handler answers on this thread (a
+/// WebView thread, never the UI's; a panic is a `500`):
+/// `<status> <reason>`, header lines, an empty line, the body. Null when
+/// the URL stands for no app scheme. `headers` are `Name: value` lines.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_webScheme(
+    env: *mut JNIEnv,
+    _class: jclass,
+    method: jstring,
+    url: jstring,
+    headers: jstring,
+) -> jbyteArray {
+    let (method, url, headers) = unsafe {
+        (
+            jni::rust_string(env, method),
+            jni::rust_string(env, url),
+            jni::rust_string(env, headers),
+        )
+    };
+    let Some(request) = prism_native::remote::scheme_request(&method, &url, &headers) else {
+        return std::ptr::null_mut();
+    };
+    let response = prism_core::web_view::respond_web_request(&request);
+    let bytes = prism_native::remote::encode_scheme_response(&response);
+    let Ok(len) = jsize::try_from(bytes.len()) else {
+        return std::ptr::null_mut();
+    };
+    unsafe {
+        let e = (**env).v1_6;
+        let array = (e.NewByteArray)(env, len);
+        if !array.is_null() {
+            (e.SetByteArrayRegion)(env, array, 0, len, bytes.as_ptr().cast());
+        }
+        array
+    }
+}
+
 // --- Background jobs (PrismJob.java) ---------------------------------------------------
 
 /// The system runs background task `task` (JobScheduler). In the open app's

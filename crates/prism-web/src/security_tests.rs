@@ -2029,3 +2029,151 @@ fn s35_the_strict_policy_frames_as_configured_and_keeps_sandboxes() {
         }
     }
 }
+
+// --- S36: app schemes on the web (#343) --------------------------------------------------------
+
+/// The first paint of a web view of `url`, its scheme `s36app` served at
+/// `/canvas`.
+fn s36_frame(url: &str) -> String {
+    use prism_core::{Backend, NodeKind, Patch};
+    let mut b = crate::html::HtmlBackend::default();
+    b.scheme_paths = vec![
+        ("s36app".into(), "/canvas".into()),
+        ("s36none".into(), "/none".into()),
+    ];
+    b.apply(&[
+        Patch::Create {
+            id: 1,
+            kind: NodeKind::WebView,
+        },
+        Patch::SetText {
+            id: 1,
+            text: url.into(),
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    b.to_html()
+}
+
+fn s36_src(url: &str) -> String {
+    let html = s36_frame(url);
+    let start = html.find(r#"data-src=""#).expect("a frame") + 10;
+    html[start..start + html[start..].find('"').unwrap()].to_string()
+}
+
+/// S36: a web view of the app's own scheme shows a path the app serves on
+/// its origin, and nothing in the URL leads out of the declared path or to
+/// another origin: no `..` (escaped or not), no escaped `/` or `\`, no
+/// odd host (user, port, empty), and only for a scheme the app serves.
+#[test]
+fn s36_an_app_scheme_page_stays_under_its_declared_path() {
+    prism_core::web_view::register_web_scheme("s36app", |_| {
+        prism_core::SchemeResponse::not_found()
+    });
+    for (url, src) in [
+        ("s36app://main/index.html", "/canvas/main/index.html"),
+        (
+            "S36APP://Main/a/b.css?v=1#top",
+            "/canvas/main/a/b.css?v=1#top",
+        ),
+        ("s36app://main", "/canvas/main/"),
+        ("s36app://main?x=../..", "/canvas/main/?x=../.."),
+        ("s36app://docs.v2/x%20y", "/canvas/docs.v2/x%20y"),
+        ("s36app://main/a&b", "/canvas/main/a&amp;b"),
+    ] {
+        assert_eq!(s36_src(url), src, "{url}");
+    }
+    for url in [
+        "s36app://main/../../secret",
+        "s36app://main/a/..",
+        "s36app://main/./x",
+        "s36app://main/a/%2e%2e/%2E%2e/x",
+        "s36app://main/.%2e/x",
+        "s36app://main/a%2F..%2F..%2Fx",
+        "s36app://main/a%2f",
+        "s36app://main/a%5c..",
+        "s36app://main/a\\..\\x",
+        "s36app://main/a b",
+        "s36app://main/a\tb",
+        "s36app://ma_in/x",
+        "s36app://..//evil.example/x",
+        "s36app:////evil.example/x",
+        "s36app://user@main/x",
+        "s36app://main:8080/x",
+        "s36app://evil.example%2f/x",
+        "s36app:///x",
+        "s36app://main./x",
+    ] {
+        assert_eq!(s36_src(url), "", "{url}");
+    }
+    // A declared scheme the app does not serve is never rewritten.
+    let paths = [("s36none".to_string(), "/none".to_string())];
+    assert_eq!(crate::schemes::rewrite(&paths, "s36none://main/x"), None);
+    assert_eq!(crate::schemes::script_attr(&paths), None);
+    // A path declared for a scheme only, on this origin.
+    for (scheme, path) in [
+        ("s36app", "//evil.example"),
+        ("s36app", "https://evil.example/"),
+        ("s36app", "/a/../b"),
+        ("s36app", "/a/%2E%2E"),
+        ("s36app", "/a%2fb"),
+        ("s36app", "/a\\b"),
+        ("s36app", "canvas"),
+        ("https", "/canvas"),
+        ("javascript", "/canvas"),
+    ] {
+        let declared = std::panic::catch_unwind(|| {
+            uploads_app(&TempDir::new("sec-s36-declare"), false)
+                .0
+                .web_scheme_path(scheme, path)
+        });
+        assert!(declared.is_err(), "{scheme} {path}");
+    }
+}
+
+/// S36: the first page shows the app scheme's view at its path, and tells
+/// the page script only the paths of schemes the app serves.
+#[test]
+fn s36_the_page_frames_the_declared_path_only() {
+    use prism_core::prelude::*;
+    prism_core::web_view::register_web_scheme("s36page", |_| {
+        prism_core::SchemeResponse::not_found()
+    });
+    struct Canvas;
+    impl Render for Canvas {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            web_view("s36page://main/index.html?a=1&b=2")
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Canvas);
+        cx.set_root(root);
+    });
+    let dir = TempDir::new("sec-s36-page");
+    let page = |app: crate::WebApp| {
+        let req = http::Request::get("/").body(()).unwrap();
+        String::from_utf8(app.handle(&req).into_body()).unwrap()
+    };
+    let new = || {
+        crate::WebApp::new(prism_core::AppConfig::default(), init.clone())
+            .data_dir(dir.to_path_buf())
+    };
+    let body = page(
+        new()
+            .web_scheme_path("s36page", "/canvas/")
+            .web_scheme_path("s36gone", "/gone"),
+    );
+    assert!(
+        body.contains(r#"data-src="/canvas/main/index.html?a=1&amp;b=2""#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"data-prism-schemes="{&quot;s36page&quot;:&quot;/canvas&quot;}""#),
+        "{body}"
+    );
+    assert!(!body.contains("s36gone"), "{body}");
+    // Without a declared path: an empty frame, and no paths for the script.
+    let body = page(new());
+    assert!(body.contains(r#"data-src="""#), "{body}");
+    assert!(!body.contains("data-prism-schemes"), "{body}");
+}

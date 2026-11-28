@@ -1494,3 +1494,97 @@ fn chip_click_with_its_box() {
     );
     assert_eq!(parse_input_event(&json!({"t": "menu", "id": 9})), None);
 }
+
+/// #343: a web view of an app scheme goes to the host (Android) as the
+/// `https:` URL standing for it, with its allowed origins; its messages
+/// and loads come back as the app wrote them.
+#[test]
+fn app_scheme_web_view_ops() {
+    use prism_native::remote::parse_input_event;
+    let mut w = RemoteWidgets::new(measure);
+    w.create(4, NodeKind::WebView);
+    w.set_text(&4, "app://main/index.html?v=1");
+    assert_eq!(
+        last(&w),
+        json!({"op": "text", "id": 4, "text": "https://main.app.prism.invalid/index.html?v=1"})
+    );
+    w.set_config(
+        &4,
+        NodeKind::WebView,
+        "messages loads\napp://main\nhttps://example.com",
+    );
+    assert_eq!(
+        last(&w),
+        json!({"op": "config", "id": 4,
+               "config": "messages loads\nhttps://main.app.prism.invalid\nhttps://example.com"})
+    );
+    // Web pages are sent as they are.
+    w.set_text(&4, "https://example.com/a");
+    assert_eq!(last(&w)["text"], "https://example.com/a");
+    // Other nodes' texts are never mapped.
+    w.create(5, NodeKind::Text);
+    w.set_text(&5, "app://main/");
+    assert_eq!(last(&w)["text"], "app://main/");
+
+    let msg = parse_input_event(&json!({"t": "webmsg", "id": 4, "data": "1",
+        "origin": "https://main.app.prism.invalid"}));
+    assert_eq!(
+        msg,
+        Some(prism_core::UiEvent::WebMessage(
+            4,
+            "1".into(),
+            "app://main".into()
+        ))
+    );
+    let load = parse_input_event(&json!({"t": "webload", "id": 4,
+        "url": "https://main.app.prism.invalid/index.html#x"}));
+    assert_eq!(
+        load,
+        Some(prism_core::UiEvent::WebLoad(
+            4,
+            "app://main/index.html#x".into()
+        ))
+    );
+    let other = parse_input_event(&json!({"t": "webmsg", "id": 4, "data": "1",
+        "origin": "https://example.com"}));
+    assert_eq!(
+        other,
+        Some(prism_core::UiEvent::WebMessage(
+            4,
+            "1".into(),
+            "https://example.com".into()
+        ))
+    );
+}
+
+/// #343: what Android's `shouldInterceptRequest` hands the app, and the
+/// answer it reads back.
+#[test]
+fn app_scheme_requests_from_the_host() {
+    use prism_native::remote::{encode_scheme_response, scheme_request};
+    let r = scheme_request(
+        "GET",
+        "https://main.app.prism.invalid/api/data.json?x=1",
+        "Accept: */*\nOrigin: https://main.app.prism.invalid\nReferer: https://main.app.prism.invalid/index.html\n",
+    )
+    .unwrap();
+    assert_eq!(r.url, "app://main/api/data.json?x=1");
+    assert_eq!(r.header("referer"), Some("app://main/index.html"));
+    assert_eq!(r.origin().as_deref(), Some("app://main"));
+    // A third-party frame keeps its own origin.
+    let third = scheme_request(
+        "GET",
+        "https://main.app.prism.invalid/api/data.json",
+        "Origin: https://ads.example\n",
+    )
+    .unwrap();
+    assert_eq!(third.origin().as_deref(), Some("https://ads.example"));
+    assert!(scheme_request("GET", "https://example.com/", "").is_none());
+    let bytes = encode_scheme_response(
+        &prism_core::SchemeResponse::text("hi").with_header("Cache-Control", "no-store"),
+    );
+    assert_eq!(
+        bytes,
+        b"200 OK\nContent-Type: text/plain; charset=utf-8\nCache-Control: no-store\n\nhi"
+    );
+}

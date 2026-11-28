@@ -78,6 +78,12 @@ public final class PrismHost {
     static native void nativeWidgetRefresh(String task, String kind, String info);
     /** A 3D scene's blob by id (prism-core `scene3d::blobs`), null once gone; any thread (PrismScene's loader). */
     static native byte[] sceneBlob(String id);
+    /**
+     * An app scheme's answer (#343) for a request to the https URL standing for it
+     * (`https://main.app.prism.invalid/…`): `<status> <reason>`, header lines, an empty
+     * line, the body. null: no app scheme. Any thread (the app's handler runs on it).
+     */
+    static native byte[] webScheme(String method, String url, String headers);
 
     /** The application (also set when a background job starts without the Activity). */
     static android.content.Context context;

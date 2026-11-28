@@ -267,3 +267,84 @@ fn messages_from_origins_the_view_does_not_allow_are_dropped() {
         Some("ok")
     );
 }
+
+/// #343: a page the app serves itself. Its scheme loads once registered,
+/// talks to the app from its own origin by default, and the app hears the
+/// URL it wrote.
+#[test]
+fn a_page_of_the_app_s_own_scheme_loads_and_talks_from_its_origin() {
+    use prism_core::web_view::{is_web_view_url, register_web_scheme, respond_web_request};
+    assert!(!is_web_view_url("canvas-test://main/index.html"));
+    register_web_scheme("canvas-test", |r: &SchemeRequest| match r.path().as_str() {
+        "/index.html" => SchemeResponse::html("<p>canvas</p>"),
+        _ => SchemeResponse::not_found(),
+    });
+    assert!(is_web_view_url("canvas-test://main/index.html"));
+    assert!(is_web_view_url("Canvas-Test://main/index.html"));
+    // Another app's scheme still does not load.
+    assert!(!is_web_view_url("other-test://main/index.html"));
+
+    let mut h = Harness::new(|cx| {
+        let e = cx.new_entity(|_| Editor {
+            url: "canvas-test://main/index.html".into(),
+            sandboxed: false,
+            selected: None,
+            loads: Vec::new(),
+        });
+        mount(cx, e);
+    });
+    let id = web(&h);
+    assert_eq!(h.host.get(id).text, "canvas-test://main/index.html");
+    // `Editor` allows https://preview.example.com only: a view without
+    // `allow_origin` allows its URL's own origin.
+    let own = WebViewConfig::default();
+    assert!(own.allows("canvas-test://main/index.html", "canvas-test://main"));
+    assert!(!own.allows("canvas-test://main/index.html", "canvas-test://other"));
+    assert!(!own.allows("canvas-test://main/index.html", "https://main"));
+    h.dispatch(UiEvent::WebLoad(id, "canvas-test://main/index.html".into()));
+    assert_eq!(
+        h.root::<Editor>().read(&h.rt.app).loads,
+        ["canvas-test://main/index.html"]
+    );
+    let page = respond_web_request(&SchemeRequest::new("GET", "canvas-test://main/index.html"));
+    assert_eq!(
+        (page.status, page.body.as_slice()),
+        (200, &b"<p>canvas</p>"[..])
+    );
+}
+
+/// #343: a view of the app's scheme without `allow_origin` hears its own
+/// page, and no other.
+#[test]
+fn an_app_scheme_view_allows_its_own_origin_by_default() {
+    struct Canvas {
+        got: Vec<String>,
+    }
+    impl Render for Canvas {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            web_view("canvas-own://main/")
+                .id("canvas")
+                .on_message(cx.listener(|this, e: &WebMessageEvent, _| {
+                    this.got.push(format!("{} {}", e.origin, e.data));
+                }))
+        }
+    }
+    prism_core::web_view::register_web_scheme("canvas-own", |_| SchemeResponse::not_found());
+    let mut h = Harness::new(|cx| {
+        let e = cx.new_entity(|_| Canvas { got: Vec::new() });
+        mount(cx, e);
+    });
+    let id = web(&h);
+    for origin in [
+        "canvas-own://main",
+        "canvas-own://other",
+        "https://main.canvas-own.prism.invalid",
+        "null",
+    ] {
+        h.dispatch(UiEvent::WebMessage(id, "1".into(), origin.into()));
+    }
+    assert_eq!(
+        h.root::<Canvas>().read(&h.rt.app).got,
+        ["canvas-own://main 1"]
+    );
+}

@@ -24,6 +24,14 @@
 //!   is answered 403 before it leaves, scripts on or off;
 //! - `on_load` hears each page that finished loading.
 //!
+//! - the app's own schemes (#343, `Application::web_scheme("app", …)`) are
+//!   WebView2 custom schemes (`CoreWebView2CustomSchemeRegistration`, with
+//!   an authority, secure, requests from its own pages allowed): every
+//!   request to `app://…`, in any frame and of any kind, is answered by
+//!   the app's handler on a background thread (`WebResourceRequested` with
+//!   a deferral). The page is at `app://main/…`, its origin `app://main`.
+//!   Nothing is registered when the app serves no scheme.
+//!
 //! One `CoreWebView2Environment` serves every web view of the app, its
 //! data (cookies, cache) in `%LOCALAPPDATA%\<app>\WebView2`, not next to
 //! the executable. WebView2's async operations are awaited by polling
@@ -37,7 +45,13 @@ use std::rc::Rc;
 use prism_core::web_view::{WebViewConfig, origin_of};
 use prism_core::{NodeId, UiEvent};
 use windows::Foundation::TypedEventHandler;
+use windows::Storage::Streams::IRandomAccessStream;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Com::IStream;
+use windows::Win32::System::WinRT::{
+    BSOS_DEFAULT, CreateRandomAccessStreamOverStream, CreateStreamOverRandomAccessStream,
+};
+use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use windows_core::{HSTRING, Result};
 use windows_future::{AsyncStatus, IAsyncOperation};
@@ -47,11 +61,12 @@ use crate::links;
 use crate::widgets::Win;
 use crate::win::log;
 use crate::winui::bindings::Microsoft::Web::WebView2::Core::{
-    CoreWebView2, CoreWebView2Environment, CoreWebView2EnvironmentOptions,
-    CoreWebView2NavigationCompletedEventArgs, CoreWebView2NavigationStartingEventArgs,
-    CoreWebView2NewWindowRequestedEventArgs, CoreWebView2ProcessFailedEventArgs,
-    CoreWebView2WebMessageReceivedEventArgs, CoreWebView2WebResourceContext,
-    CoreWebView2WebResourceRequestSourceKinds, CoreWebView2WebResourceRequestedEventArgs,
+    CoreWebView2, CoreWebView2CustomSchemeRegistration, CoreWebView2Environment,
+    CoreWebView2EnvironmentOptions, CoreWebView2NavigationCompletedEventArgs,
+    CoreWebView2NavigationStartingEventArgs, CoreWebView2NewWindowRequestedEventArgs,
+    CoreWebView2ProcessFailedEventArgs, CoreWebView2WebMessageReceivedEventArgs,
+    CoreWebView2WebResourceContext, CoreWebView2WebResourceRequestSourceKinds,
+    CoreWebView2WebResourceRequestedEventArgs,
 };
 use crate::winui::h;
 use crate::winui::xaml::Controls::{CoreWebView2InitializedEventArgs, WebView2};
@@ -241,6 +256,7 @@ fn start(id: NodeId, data: &std::path::Path) {
     let r = (|| -> Result<IAsyncOperation<CoreWebView2Environment>> {
         let _ = std::fs::create_dir_all(data);
         let options = CoreWebView2EnvironmentOptions::new()?;
+        register_schemes(&options);
         CoreWebView2Environment::CreateWithOptionsAsync(
             &h(""),
             &h(&data.display().to_string()),
@@ -324,6 +340,18 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
         // An older runtime: the main frame's documents.
         core.AddWebResourceRequestedFilter(&h("*"), CoreWebView2WebResourceContext::Document)?;
     }
+    // The app's schemes (#343): every request, in any frame.
+    for scheme in prism_core::web_view::web_schemes() {
+        let pattern = h(&format!("{scheme}://*"));
+        let all = core.AddWebResourceRequestedFilter2(
+            &pattern,
+            CoreWebView2WebResourceContext::All,
+            CoreWebView2WebResourceRequestSourceKinds::All,
+        );
+        if all.is_err() {
+            core.AddWebResourceRequestedFilter(&pattern, CoreWebView2WebResourceContext::All)?;
+        }
+    }
     core.WebResourceRequested(&TypedEventHandler::<
         CoreWebView2,
         CoreWebView2WebResourceRequestedEventArgs,
@@ -331,13 +359,16 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
         let (Some(a), Some(state)) = (a.as_ref(), state_of(id)) else {
             return Ok(());
         };
-        if !state.borrow().blocks_forms()
-            || !a
-                .Request()?
-                .Method()?
-                .to_string()
-                .eq_ignore_ascii_case("POST")
-        {
+        let document = a.ResourceContext()? == CoreWebView2WebResourceContext::Document;
+        let post = a
+            .Request()?
+            .Method()?
+            .to_string()
+            .eq_ignore_ascii_case("POST");
+        if !(state.borrow().blocks_forms() && document && post) {
+            if is_app_scheme(&a.Request()?.Uri()?.to_string()) {
+                serve_scheme(id, a)?;
+            }
             return Ok(());
         }
         let uri = a.Request()?.Uri()?.to_string();
@@ -472,6 +503,119 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
     Ok(())
 }
 
+/// Registers the app's schemes (#343) on the environment's options:
+/// `app://main/…` URLs with an authority (so `app://main` is an origin),
+/// secure, and fetchable from the scheme's own pages (`app://*`: WebView2
+/// checks the `Origin` of every request that has one, same-origin POSTs
+/// included). Other origins are refused, opaque ones too.
+fn register_schemes(options: &CoreWebView2EnvironmentOptions) {
+    let schemes = prism_core::web_view::web_schemes();
+    if schemes.is_empty() {
+        return;
+    }
+    let r = (|| -> Result<()> {
+        let list = options.CustomSchemeRegistrations()?;
+        for scheme in &schemes {
+            let reg = CoreWebView2CustomSchemeRegistration::CreateInstance(&h(scheme))?;
+            reg.SetHasAuthorityComponent(true)?;
+            reg.SetTreatAsSecure(1)?;
+            reg.AllowedOrigins()?.Append(&h(&format!("{scheme}://*")))?;
+            list.Append(&reg)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        log!("web views: the app's schemes {schemes:?} are not registered: {e}");
+    }
+}
+
+/// Whether `url` is of a scheme the app serves (#343).
+fn is_app_scheme(url: &str) -> bool {
+    url.split_once(':')
+        .is_some_and(|(s, _)| prism_core::web_view::is_web_scheme(&s.to_ascii_lowercase()))
+}
+
+/// Answers a request to the app's scheme (#343): the app's handler runs on
+/// a background thread while WebView2 waits (a deferral); the answer is
+/// set on the UI thread.
+fn serve_scheme(id: NodeId, a: &CoreWebView2WebResourceRequestedEventArgs) -> Result<()> {
+    let request = a.Request()?;
+    let mut r =
+        prism_core::SchemeRequest::new(request.Method()?.to_string(), request.Uri()?.to_string());
+    let headers = request.Headers()?.First()?;
+    while headers.HasCurrent()? {
+        let kv = headers.Current()?;
+        r.headers
+            .push((kv.Key()?.to_string(), kv.Value()?.to_string()));
+        headers.MoveNext()?;
+    }
+    if let Ok(content) = request.Content() {
+        r.body = read_stream(&content);
+    }
+    let deferral = a.GetDeferral()?;
+    let args = a.clone();
+    let answer: std::sync::Arc<std::sync::Mutex<Option<prism_core::SchemeResponse>>> =
+        Default::default();
+    let filled = answer.clone();
+    prism_core::web_view::serve_web_request(r, move |response| {
+        *filled.lock().unwrap_or_else(|e| e.into_inner()) = Some(response);
+    });
+    when_ready(move || {
+        let Some(response) = answer.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            return false;
+        };
+        if let Err(e) = respond(&args, &response) {
+            log!("web view {id}: an answer of the app's scheme was not sent: {e}");
+        }
+        let _ = deferral.Complete();
+        true
+    });
+    Ok(())
+}
+
+/// Sets `response` as the answer to `args`'s request.
+fn respond(
+    args: &CoreWebView2WebResourceRequestedEventArgs,
+    response: &prism_core::SchemeResponse,
+) -> Result<()> {
+    let Some(env) = ENV.with(|e| e.borrow().clone()) else {
+        return Ok(());
+    };
+    let mut headers = String::new();
+    for (name, value) in response.header_list() {
+        headers.push_str(&format!("{name}: {value}\r\n"));
+    }
+    let stream: Option<IRandomAccessStream> =
+        match unsafe { SHCreateMemStream(Some(&response.body)) } {
+            Some(s) => Some(unsafe { CreateRandomAccessStreamOverStream(&s, BSOS_DEFAULT) }?),
+            None => None,
+        };
+    args.SetResponse(&env.CreateWebResourceResponse(
+        stream.as_ref(),
+        i32::from(response.status),
+        &h(response.reason()),
+        &h(&headers),
+    )?)
+}
+
+/// A request's body, read whole.
+fn read_stream(content: &IRandomAccessStream) -> Vec<u8> {
+    let Ok(stream) = (unsafe { CreateStreamOverRandomAccessStream::<_, IStream>(content) }) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let mut read = 0u32;
+        let hr = unsafe { stream.Read(buf.as_mut_ptr().cast(), buf.len() as u32, Some(&mut read)) };
+        if hr.is_err() || read == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..read as usize]);
+    }
+    out
+}
+
 /// The origin of the page at `url`: `file://` for a local file (as
 /// WebKit reports it), none for `about:blank` or `data:`.
 fn page_origin(url: &str) -> Option<String> {
@@ -601,6 +745,16 @@ type Waiting = Box<dyn FnMut() -> bool>;
 thread_local! {
     static PENDING: RefCell<Vec<Waiting>> = const { RefCell::new(Vec::new()) };
     static POLLING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Runs `ready` on the UI thread until it answers true (polled with the
+/// async operations).
+fn when_ready(ready: impl FnMut() -> bool + 'static) {
+    PENDING.with(|p| p.borrow_mut().push(Box::new(ready)));
+    if POLLING.get() == 0 {
+        let timer = unsafe { SetTimer(None::<HWND>, 0, 20, Some(poll)) };
+        POLLING.set(timer);
+    }
 }
 
 /// Runs `then` with `op`'s result once it completes, on the UI thread.

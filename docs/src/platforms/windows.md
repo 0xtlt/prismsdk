@@ -193,7 +193,12 @@ kinds and services come next (see [Not yet](#not-yet)).
   `submit` events, `form.submit()` and `requestSubmit()`, and every POST
   of a document (a frame's too) is answered 403 before it leaves
   (`WebResourceRequested`), scripts on or off. `on_load` hears each
-  loaded page.
+  loaded page. The app's own schemes (`Application::web_scheme`, #343)
+  are WebView2 custom schemes (`CoreWebView2CustomSchemeRegistration`,
+  with an authority and treated as secure), registered when the
+  environment is created; their requests are answered off the UI thread
+  through `WebResourceRequested` and a deferral. Type-checked only so
+  far (clippy for `x86_64-pc-windows-gnu`), not yet run on Windows.
 - **Videos** are `MediaPlayerElement`s with the transport controls
   (play, scrubber, volume, full window), a poster, autoplay, looping and
   muted; their height follows the video's ratio once it opens;
