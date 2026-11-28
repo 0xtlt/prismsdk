@@ -174,7 +174,7 @@ On Linux, web views use WebKitGTK 6.0 (the GTK 4 build of WebKit), which apps li
 
 ```toml
 [dependencies]
-prism = { package = "prismsdk", version = "0.7", features = ["web-view"] }
+prism = { package = "prismsdk", version = "0.7.1", features = ["web-view"] }
 ```
 
 - Building needs `libwebkitgtk-6.0-dev` (in `docker/linux-dev.Dockerfile`); running needs `libwebkitgtk-6.0-4`, which `prism build linux` adds to the `.deb`'s dependencies (`dpkg-shlibdeps`). Debian 12, Ubuntu 23.04, Fedora 38 and later ship it, with GTK 4.8 or later.

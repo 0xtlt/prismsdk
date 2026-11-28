@@ -7,6 +7,17 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+## 0.7.1 (2026-11-28)
+
+Pictures stop piling up in memory: each backend keeps the pictures on
+screen and up to 64 MB of the others, and a picture whose source changes
+stays shown until the new one is ready instead of flashing the background
+(#343). Apps can read the screen's density with `cx.scale_factor()`, and
+re-render when it changes. Web views can show the app's own pages, served
+from Rust through a scheme (`Application::web_scheme("app", …)`), and work
+on Linux with WebKitGTK 6.0 behind the new opt-in `web-view` feature. No
+breaking change.
+
 ### Added
 
 - `cx.scale_factor()`: the pixels per point of the screen the window is on
