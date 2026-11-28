@@ -95,9 +95,10 @@
 //! |---|---|---|
 //! | macOS, iOS, iPadOS, visionOS | `app://main/x` | `WKURLSchemeHandler` |
 //! | Windows | `app://main/x` | a WebView2 custom scheme (`CoreWebView2CustomSchemeRegistration`, `WebResourceRequested`) |
+//! | Linux, with prismsdk's `web-view` feature | `app://main/x` | a URI scheme of WebKitGTK's web context (`webkit_web_context_register_uri_scheme`) |
 //! | Android | `https://main.app.prism.invalid/x` ([`engine_url`]): Chromium's `fetch` only knows web schemes | `shouldInterceptRequest`; the request's body is not available |
 //! | Web | `<path>/main/x`, a path the app serves with its own routes (`WebApp::web_scheme_path("app", "<path>")`): the handler is not called | the app's HTTP server |
-//! | tvOS, watchOS, Linux | – (no web view) | – |
+//! | tvOS, watchOS, Linux without the feature | – (no web view) | – |
 //!
 //! Wherever the page really is, the app sees the URL it wrote:
 //! [`SchemeRequest::url`], [`WebLoadEvent::url`] (`app://main/x`) and

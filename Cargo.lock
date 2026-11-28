@@ -2294,6 +2294,7 @@ dependencies = [
  "prismsdk-native",
  "prismsdk-push",
  "serde_json",
+ "soup3-sys",
  "webkit6-sys",
 ]
 

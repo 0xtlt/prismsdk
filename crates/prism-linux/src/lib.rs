@@ -42,6 +42,9 @@ mod rich;
 mod scene3d;
 #[cfg(target_os = "linux")]
 mod security;
+// The app's schemes in web views (#343), with the `web-view` feature.
+#[cfg(all(target_os = "linux", feature = "web-view"))]
+mod schemes;
 #[cfg(target_os = "linux")]
 mod services;
 #[cfg(target_os = "linux")]

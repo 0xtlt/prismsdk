@@ -32,6 +32,9 @@ glow.workspace = true
 # through its C API (webkit.rs: the `webkit6` crate needs GTK 4.10).
 webkit6-sys = { version = "0.6", optional = true }
 javascriptcore6-sys = { version = "0.6", optional = true }
+# The headers of app scheme requests and answers (#343): libsoup 3, which
+# WebKitGTK 6.0 links.
+soup3-sys = { version = "0.9", optional = true }
 serde_json = { workspace = true, optional = true }
 
 [features]
@@ -39,7 +42,7 @@ serde_json = { workspace = true, optional = true }
 # libwebkitgtk-6.0 (`libwebkitgtk-6.0-dev` to build, `libwebkitgtk-6.0-4`
 # at run time), which apps without web views should not need. Without it a
 # web view is an empty box and `capabilities().web_view` is false.
-web-view = ["dep:webkit6-sys", "dep:javascriptcore6-sys", "dep:serde_json"]
+web-view = ["dep:webkit6-sys", "dep:javascriptcore6-sys", "dep:soup3-sys", "dep:serde_json"]
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]

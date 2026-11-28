@@ -141,9 +141,10 @@ Those routes are the app's own HTTP endpoints, public like any other: check who 
 |---|---|---|
 | macOS, iOS, iPadOS, visionOS | `app://main/x` | the handler, through a `WKURLSchemeHandler` |
 | Windows | `app://main/x` | the handler, through a WebView2 custom scheme |
+| Linux (`web-view` feature) | `app://main/x` | the handler, through a URI scheme of WebKitGTK's web context |
 | Android | `https://main.app.prism.invalid/x` (Chromium's `fetch` only knows web schemes; `.invalid` never resolves) | the handler, through `shouldInterceptRequest`; a request's body is not available there |
 | Web | `/canvas/main/x` | the app's own routes (`web_scheme_path`) |
-| tvOS, watchOS, Linux | – | – (no web view) |
+| tvOS, watchOS, Linux without the feature | – | – (no web view) |
 
 ## Platforms
 

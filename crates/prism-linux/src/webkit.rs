@@ -12,10 +12,12 @@
 use std::ffi::c_char;
 use std::ptr;
 
+use gtk::glib::ffi::gpointer;
 use gtk::glib::translate::{FromGlib, FromGlibPtrFull, FromGlibPtrNone, ToGlibPtr, ToGlibPtrMut};
 use gtk::glib::{self, Object, Value, gobject_ffi};
-use gtk::prelude::*;
+use gtk::{gio, prelude::*};
 use javascriptcore6_sys as jsc;
+use soup3_sys as soup;
 use webkit6_sys as ffi;
 
 /// A `WebKitWebContext`: web processes and URL schemes, shared by views.
@@ -28,10 +30,175 @@ impl WebContext {
         WebContext(unsafe { Object::from_glib_full(ffi::webkit_web_context_new() as *mut _) })
     }
 
-    /// The C object, for calls not wrapped here (`register_uri_scheme`).
-    #[allow(dead_code)]
-    pub fn as_ptr(&self) -> *mut ffi::WebKitWebContext {
+    fn ptr(&self) -> *mut ffi::WebKitWebContext {
         self.0.as_ptr() as *mut _
+    }
+
+    /// Serves `scheme` with `f` in every view of the context (#343): its
+    /// URLs are secure (as `https:`) and fetchable with CORS. For views
+    /// made after: call it before the first.
+    pub fn register_scheme(&self, scheme: &str, f: fn(SchemeRequest)) {
+        unsafe extern "C" fn received(request: *mut ffi::WebKitURISchemeRequest, data: gpointer) {
+            // SAFETY: `data` is the boxed `fn` given below, alive as long
+            // as the context; `request` is alive for the call, and
+            // `from_glib_none` takes a reference of Prism's own.
+            unsafe {
+                let f = *(data as *const fn(SchemeRequest));
+                f(SchemeRequest(Object::from_glib_none(
+                    request as *mut gobject_ffi::GObject,
+                )));
+            }
+        }
+        unsafe extern "C" fn free(data: gpointer) {
+            // SAFETY: the box made below, freed once, by the context.
+            drop(unsafe { Box::from_raw(data as *mut fn(SchemeRequest)) });
+        }
+        let data = Box::into_raw(Box::new(f)) as gpointer;
+        // SAFETY: valid context and strings; the context owns `data` and
+        // frees it with `free`. The security manager is the context's.
+        unsafe {
+            ffi::webkit_web_context_register_uri_scheme(
+                self.ptr(),
+                scheme.to_glib_none().0,
+                Some(received),
+                data,
+                Some(free),
+            );
+            let security = ffi::webkit_web_context_get_security_manager(self.ptr());
+            if !security.is_null() {
+                ffi::webkit_security_manager_register_uri_scheme_as_secure(
+                    security,
+                    scheme.to_glib_none().0,
+                );
+                ffi::webkit_security_manager_register_uri_scheme_as_cors_enabled(
+                    security,
+                    scheme.to_glib_none().0,
+                );
+            }
+        }
+    }
+}
+
+/// A `WebKitURISchemeRequest`: a page asked for a URL of one of the app's
+/// schemes. Holds a reference until answered ([`finish`](Self::finish),
+/// [`fail`](Self::fail)), which consumes it: answered once.
+pub struct SchemeRequest(Object);
+
+impl SchemeRequest {
+    fn ptr(&self) -> *mut ffi::WebKitURISchemeRequest {
+        self.0.as_ptr() as *mut _
+    }
+
+    /// The URL asked for (`app://main/index.html`).
+    pub fn uri(&self) -> String {
+        // SAFETY: valid request; the string is the request's.
+        let uri: Option<String> = unsafe {
+            FromGlibPtrNone::from_glib_none(ffi::webkit_uri_scheme_request_get_uri(self.ptr()))
+        };
+        uri.unwrap_or_default()
+    }
+
+    /// `GET`, `POST`…
+    pub fn method(&self) -> String {
+        // SAFETY: valid request; the string is the request's.
+        let method: Option<String> = unsafe {
+            FromGlibPtrNone::from_glib_none(ffi::webkit_uri_scheme_request_get_http_method(
+                self.ptr(),
+            ))
+        };
+        method
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "GET".into())
+    }
+
+    /// The request's headers, in order.
+    pub fn headers(&self) -> Vec<(String, String)> {
+        unsafe extern "C" fn each(name: *const c_char, value: *const c_char, data: gpointer) {
+            // SAFETY: `data` is the vector below, borrowed for the walk;
+            // the strings are the headers', alive for the call.
+            unsafe {
+                let out = &mut *(data as *mut Vec<(String, String)>);
+                let text = |p: *const c_char| -> String {
+                    if p.is_null() {
+                        String::new()
+                    } else {
+                        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+                    }
+                };
+                out.push((text(name), text(value)));
+            }
+        }
+        let mut out: Vec<(String, String)> = Vec::new();
+        // SAFETY: valid request; its headers (if any) are its own, walked
+        // now, with `out` alive for the walk.
+        unsafe {
+            let headers = ffi::webkit_uri_scheme_request_get_http_headers(self.ptr());
+            if !headers.is_null() {
+                soup::soup_message_headers_foreach(
+                    headers,
+                    Some(each),
+                    &mut out as *mut Vec<(String, String)> as gpointer,
+                );
+            }
+        }
+        out
+    }
+
+    /// The body (a `fetch` POST's), to read: none without one.
+    pub fn body(&self) -> Option<gio::InputStream> {
+        // SAFETY: valid request; returns a new reference, or null.
+        unsafe {
+            let stream = ffi::webkit_uri_scheme_request_get_http_body(self.ptr());
+            (!stream.is_null()).then(|| gio::InputStream::from_glib_full(stream))
+        }
+    }
+
+    /// Answers with `response` (its status, type, headers and body).
+    pub fn finish(self, response: prism_core::SchemeResponse) {
+        let (status, reason) = (u32::from(response.status), response.reason());
+        let headers = response.header_list();
+        // The type also goes apart: WebKit takes the MIME type and charset
+        // from it, the page's `fetch` sees the header.
+        let content_type = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.clone());
+        let len = response.body.len() as i64;
+        let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(response.body));
+        // SAFETY: valid request; the response takes its own reference to
+        // the stream; the headers are given to the response (transfer
+        // full); the response is let go once the request holds it.
+        unsafe {
+            let list = soup::soup_message_headers_new(soup::SOUP_MESSAGE_HEADERS_RESPONSE);
+            for (name, value) in &headers {
+                soup::soup_message_headers_append(
+                    list,
+                    name.to_glib_none().0,
+                    value.to_glib_none().0,
+                );
+            }
+            let r = ffi::webkit_uri_scheme_response_new(
+                stream.upcast_ref::<gio::InputStream>().to_glib_none().0,
+                len,
+            );
+            ffi::webkit_uri_scheme_response_set_status(r, status, reason.to_glib_none().0);
+            if let Some(t) = content_type {
+                ffi::webkit_uri_scheme_response_set_content_type(r, t.to_glib_none().0);
+            }
+            ffi::webkit_uri_scheme_response_set_http_headers(r, list);
+            ffi::webkit_uri_scheme_request_finish_with_response(self.ptr(), r);
+            gobject_ffi::g_object_unref(r as *mut gobject_ffi::GObject);
+        }
+    }
+
+    /// Fails the request (WebKit reports a network error to the page).
+    pub fn fail(self, message: &str) {
+        let error = glib::Error::new(gio::IOErrorEnum::Failed, message);
+        // SAFETY: valid request and error (copied by WebKit).
+        unsafe {
+            let e: *const glib::ffi::GError = error.to_glib_none().0;
+            ffi::webkit_uri_scheme_request_finish_error(self.ptr(), e as *mut _);
+        }
     }
 }
 

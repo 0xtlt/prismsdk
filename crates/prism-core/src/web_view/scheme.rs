@@ -15,9 +15,10 @@
 //! |---|---|
 //! | macOS, iOS, iPadOS, visionOS | a `WKURLSchemeHandler`: the page is at `app://main/…` |
 //! | Windows | a WebView2 custom scheme (`CoreWebView2CustomSchemeRegistration`): the page is at `app://main/…` |
+//! | Linux (prismsdk's `web-view` feature) | a URI scheme of WebKitGTK's web context (`webkit_web_context_register_uri_scheme`), secure and CORS-enabled: the page is at `app://main/…` |
 //! | Android | `shouldInterceptRequest`: Chromium's fetch only knows web schemes, so the page is at `https://main.app.prism.invalid/…` ([`engine_url`]), a host that never exists (RFC 6761) and that the web view always answers itself |
 //! | Web | not by the handler: `WebApp::web_scheme_path("app", "/canvas")` loads `/canvas/main/…`, which the app serves with its own routes |
-//! | tvOS, watchOS, Linux | no web view |
+//! | tvOS, watchOS, Linux without the feature | no web view |
 //!
 //! The app always sees the URL as it wrote it (`app://main/…`): in
 //! [`SchemeRequest::url`], [`WebLoadEvent::url`](super::WebLoadEvent::url) and

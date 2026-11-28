@@ -39,7 +39,9 @@ bumps the minor version). Every crate of the workspace shares one version.
   and an engine's own (`http`, `file`, `javascript`, …) or a scheme served
   twice fails at startup. A `WKURLSchemeHandler` on Apple platforms,
   `shouldInterceptRequest` on Android (the page is at
-  `https://main.app.prism.invalid`), a WebView2 custom scheme on Windows.
+  `https://main.app.prism.invalid`), a WebView2 custom scheme on Windows,
+  a URI scheme of the web context with WebKitGTK on Linux (the `web-view`
+  feature).
   The app sees `app://main` as the URL and origin everywhere. No CORS
   header is added. On the web, `WebApp::web_scheme_path("app", "/canvas")`
   shows the page from a path the app serves with its own routes (the

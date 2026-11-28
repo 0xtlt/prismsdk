@@ -25,8 +25,9 @@
 //!
 //! One `WebContext` serves every web view of the app, with one persistent
 //! network session, its data in `$XDG_DATA_HOME/<app>/WebKit` and its
-//! cache in `$XDG_CACHE_HOME/<app>/WebKit`. Custom URL schemes go on that
-//! context ([`context`]).
+//! cache in `$XDG_CACHE_HOME/<app>/WebKit`. The app's own schemes
+//! (`Application::web_scheme`, `app://main/…`) are served on that context
+//! ([`crate::schemes`]).
 //!
 //! The `WebKitWebView` is made on the main loop's next turn, after the
 //! update that created the node: its network session (from the sandbox,
@@ -83,12 +84,18 @@ thread_local! {
     static SESSION: RefCell<Option<NetworkSession>> = const { RefCell::new(None) };
 }
 
-/// The web context every web view of the app shares. App schemes
-/// (`app://`) are registered on it (`webkit_web_context_register_uri_scheme`,
-/// and its security manager's `register_uri_scheme_as_secure` and
-/// `register_uri_scheme_as_cors_enabled`), before a view loads them.
+/// The web context every web view of the app shares, with the app's
+/// schemes (`app://`, [`crate::schemes`]) registered on it as it is made,
+/// before the first view.
 pub fn context() -> WebContext {
-    CONTEXT.with(|c| c.borrow_mut().get_or_insert_with(WebContext::new).clone())
+    if let Some(c) = CONTEXT.with(|c| c.borrow().clone()) {
+        return c;
+    }
+    // Made and set up without the cell borrowed (WebKit calls).
+    let c = WebContext::new();
+    crate::schemes::register(&c);
+    CONTEXT.with(|cell| *cell.borrow_mut() = Some(c.clone()));
+    c
 }
 
 /// The app's persistent network session (cookies, storage, cache), in its
