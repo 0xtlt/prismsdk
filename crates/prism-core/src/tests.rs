@@ -3627,7 +3627,9 @@ fn the_scale_factor_re_renders_and_runs_resize_handlers_when_it_changes() {
             text(format!("scale {}", cx.scale_factor()))
         }
     }
-    let seen: Arc<Mutex<Vec<((f32, f32), f32)>>> = Arc::default();
+    // (size, scale factor) per `on_resize` call.
+    type Seen = Vec<((f32, f32), f32)>;
+    let seen: Arc<Mutex<Seen>> = Arc::default();
     let log = seen.clone();
     let init: AppInit = Arc::new(move |cx: &mut App| {
         let root = cx.new_entity(|_| Density);
