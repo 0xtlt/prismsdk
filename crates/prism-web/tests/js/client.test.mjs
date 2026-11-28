@@ -1245,7 +1245,7 @@ test("window resizes are reported once settled", () => {
   const timer = page.timers.at(-1);
   assert.equal(timer.ms, 120);
   timer.fn();
-  assert.deepEqual(lastSent(page), { t: "viewport", w: 390, h: 800, safe: [0, 0, 0, 0] });
+  assert.deepEqual(lastSent(page), { t: "viewport", w: 390, h: 800, safe: [0, 0, 0, 0], dpr: 2 });
   // The size as older servers read it (`WxH`), the ratio in its own cookie.
   assert.ok(page.document.cookies.some((c) => c.startsWith("prism_vw=390x800;")));
   assert.ok(page.document.cookies.some((c) => /^prism_dpr=[0-9.]+;/.test(c)));
