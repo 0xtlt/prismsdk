@@ -2525,6 +2525,13 @@ impl Widgets for Gtk {
                         gtk::Overflow::Visible
                     })
             }
+            // A web page inside its rounded corners (#343).
+            #[cfg(feature = "web-view")]
+            View::Web(_, w) => w.root.set_overflow(if s.corner_radius > 0. || s.clip {
+                gtk::Overflow::Hidden
+            } else {
+                gtk::Overflow::Visible
+            }),
             _ => {}
         }
     }

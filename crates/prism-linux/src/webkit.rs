@@ -60,6 +60,16 @@ impl NetworkSession {
     }
 }
 
+/// A signal handler, until disconnected (the view's handlers go with
+/// its node: a view being let go may still emit while it stops).
+pub struct Connection(Object, glib::SignalHandlerId);
+
+impl Connection {
+    pub fn disconnect(self) {
+        self.0.disconnect(self.1);
+    }
+}
+
 /// When a user script runs, and where.
 pub struct Script<'a> {
     pub source: &'a str,
@@ -143,8 +153,8 @@ impl UserContentManager {
     }
 
     /// `f` gets what handler `name` was posted, if it is a string.
-    pub fn connect_message(&self, name: &str, f: impl Fn(String) + 'static) {
-        self.0.connect_local(
+    pub fn connect_message(&self, name: &str, f: impl Fn(String) + 'static) -> Connection {
+        let id = self.0.connect_local(
             &format!("script-message-received::{name}"),
             false,
             move |args| {
@@ -162,6 +172,7 @@ impl UserContentManager {
                 None
             },
         );
+        Connection(self.0.clone(), id)
     }
 }
 
@@ -360,9 +371,9 @@ impl WebView {
     }
 
     /// A page started loading (`true`) or finished (`false`).
-    pub fn connect_load(&self, f: impl Fn(&WebView, bool) + 'static) {
+    pub fn connect_load(&self, f: impl Fn(&WebView, bool) + 'static) -> Connection {
         let view = self.0.downgrade();
-        self.0.connect_local("load-changed", false, move |args| {
+        let id = self.0.connect_local("load-changed", false, move |args| {
             let view = WebView(view.upgrade()?);
             match enum_arg(args, 1) {
                 ffi::WEBKIT_LOAD_STARTED => f(&view, true),
@@ -371,20 +382,25 @@ impl WebView {
             }
             None
         });
+        self.connection(id)
     }
 
     /// A load failed (WebKit then shows its error page).
-    pub fn connect_load_failed(&self, f: impl Fn() + 'static) {
-        self.0.connect_local("load-failed", false, move |_| {
+    pub fn connect_load_failed(&self, f: impl Fn() + 'static) -> Connection {
+        let id = self.0.connect_local("load-failed", false, move |_| {
             f();
             Some(false.to_value())
         });
+        self.connection(id)
     }
 
     /// A policy decision: `f` returns whether it decided (else WebKit's
     /// default: allowed).
-    pub fn connect_decide_policy(&self, f: impl Fn(&PolicyDecision, Policy) -> bool + 'static) {
-        self.0.connect_local("decide-policy", false, move |args| {
+    pub fn connect_decide_policy(
+        &self,
+        f: impl Fn(&PolicyDecision, Policy) -> bool + 'static,
+    ) -> Connection {
+        let id = self.0.connect_local("decide-policy", false, move |args| {
             let decision = PolicyDecision(args.get(1)?.get::<Object>().ok()?);
             let kind = match enum_arg(args, 2) {
                 ffi::WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION => Policy::Navigation,
@@ -393,12 +409,14 @@ impl WebView {
             };
             Some(f(&decision, kind).to_value())
         });
+        self.connection(id)
     }
 
     /// The page's process ended without the app asking.
-    pub fn connect_process_died(&self, f: impl Fn(&WebView) + 'static) {
+    pub fn connect_process_died(&self, f: impl Fn(&WebView) + 'static) -> Connection {
         let view = self.0.downgrade();
-        self.0
+        let id = self
+            .0
             .connect_local("web-process-terminated", false, move |args| {
                 if enum_arg(args, 1) != ffi::WEBKIT_WEB_PROCESS_TERMINATED_BY_API
                     && let Some(view) = view.upgrade()
@@ -407,5 +425,10 @@ impl WebView {
                 }
                 None
             });
+        self.connection(id)
+    }
+
+    fn connection(&self, id: glib::SignalHandlerId) -> Connection {
+        Connection(self.0.clone().upcast(), id)
     }
 }

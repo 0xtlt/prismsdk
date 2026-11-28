@@ -44,7 +44,9 @@ use prism_core::{NodeId, UiEvent};
 
 use crate::imp::dispatch;
 use crate::links;
-use crate::webkit::{NetworkSession, Policy, Script, UserContentManager, WebContext, WebView};
+use crate::webkit::{
+    Connection, NetworkSession, Policy, Script, UserContentManager, WebContext, WebView,
+};
 
 /// The script world the message handler lives in: page scripts never run
 /// there.
@@ -119,6 +121,8 @@ struct State {
     url: String,
     config: WebViewConfig,
     view: Option<WebView>,
+    /// The view's signal handlers (and its content manager's).
+    signals: Vec<Connection>,
     /// The view's network session is ephemeral (as made).
     ephemeral: bool,
     /// The page finished loading (messages go now).
@@ -166,6 +170,7 @@ impl Web {
             url: String::new(),
             config: WebViewConfig::default(),
             view: None,
+            signals: Vec::new(),
             ephemeral: false,
             loaded: false,
             failed: false,
@@ -241,10 +246,16 @@ impl Web {
     /// Stops the page and lets the view go (the node is gone, or its
     /// network session changes).
     pub fn teardown(&self) {
-        let Some(view) = self.state.borrow_mut().view.take() else {
-            return;
+        let (view, signals) = {
+            let mut st = self.state.borrow_mut();
+            let Some(view) = st.view.take() else { return };
+            st.loaded = false;
+            (view, std::mem::take(&mut st.signals))
         };
-        self.state.borrow_mut().loaded = false;
+        // First: stopping may report a failed load.
+        for s in signals {
+            s.disconnect();
+        }
         view.stop_loading();
         if let Some(ucm) = view.user_content_manager() {
             ucm.remove_all_scripts();
@@ -286,12 +297,10 @@ fn schedule(state: &Rc<RefCell<State>>) {
 }
 
 fn perform_load(state: &Rc<RefCell<State>>) {
-    let view = match state.borrow().view.clone() {
-        Some(view) => view,
-        None => match make_view(state) {
-            Some(view) => view,
-            None => return,
-        },
+    // Not borrowed while the view is made (a `match` would hold it).
+    let shown = state.borrow().view.clone();
+    let Some(view) = shown.or_else(|| make_view(state)) else {
+        return;
     };
     let url = state.borrow().url.clone();
     if !url.is_empty() {
@@ -326,8 +335,9 @@ fn make_view(state: &Rc<RefCell<State>>) -> Option<WebView> {
     view.set_background_color(&gdk::RGBA::new(0., 0., 0., 0.));
     bridge(&ucm, config.messages);
 
+    let mut signals = Vec::new();
     let weak = Rc::downgrade(state);
-    ucm.connect_message(HANDLER, move |body| {
+    signals.push(ucm.connect_message(HANDLER, move |body| {
         let Some(state) = weak.upgrade() else { return };
         let Some((origin, json)) = links::parse_message(&body) else {
             return;
@@ -339,50 +349,58 @@ fn make_view(state: &Rc<RefCell<State>>) -> Option<WebView> {
         let event = UiEvent::WebMessage(st.id, json.to_string(), origin.to_string());
         drop(st);
         dispatch(event);
-    });
+    }));
 
     let weak = Rc::downgrade(state);
-    view.connect_decide_policy(move |decision, kind| {
+    signals.push(view.connect_decide_policy(move |decision, kind| {
         let (Some(state), Some(nav)) = (weak.upgrade(), decision.navigation()) else {
             return false;
         };
-        let st = state.borrow();
-        if nav.form && st.blocks_forms() {
-            log::form(st.id, &nav.uri);
-            decision.ignore();
-            return true;
-        }
-        match kind {
-            // In any frame: WebKitGTK does not say which one.
-            Policy::Navigation => {
-                let user = !nav.redirect && (nav.form || nav.link || nav.user_gesture);
-                if links::leaves(&nav.uri, user, |o| st.allows(o)) {
-                    decision.ignore();
-                    drop(st);
-                    open_externally(&nav.uri);
-                    return true;
-                }
-                false
-            }
-            // Never a window of the view's own: the browser, if allowed
-            // and asked for by the user.
-            Policy::NewWindow => {
-                decision.ignore();
-                match links::new_window(&nav.uri, st.popups(), nav.user_gesture) {
-                    Ok(()) => {
-                        drop(st);
-                        open_externally(&nav.uri);
+        // Decided with the state, acted on without it (WebKit may call
+        // back into a handler).
+        let (id, verdict) = {
+            let st = state.borrow();
+            let verdict = if nav.form && st.blocks_forms() {
+                Verdict::Form
+            } else {
+                match kind {
+                    // In any frame: WebKitGTK does not say which one.
+                    Policy::Navigation => {
+                        let user = !nav.redirect && (nav.form || nav.link || nav.user_gesture);
+                        if links::leaves(&nav.uri, user, |o| st.allows(o)) {
+                            Verdict::Browser
+                        } else {
+                            Verdict::Allow
+                        }
                     }
-                    Err(why) => log::new_window(st.id, &nav.uri, why),
+                    // Never a window of the view's own: the browser, if
+                    // allowed and asked for by the user.
+                    Policy::NewWindow => {
+                        match links::new_window(&nav.uri, st.popups(), nav.user_gesture) {
+                            Ok(()) => Verdict::Browser,
+                            Err(why) => Verdict::NoWindow(why),
+                        }
+                    }
+                    Policy::Other => Verdict::Allow,
                 }
-                true
-            }
-            Policy::Other => false,
+            };
+            (st.id, verdict)
+        };
+        match verdict {
+            Verdict::Allow => return false,
+            Verdict::Form => log::form(id, &nav.uri),
+            Verdict::NoWindow(why) => log::new_window(id, &nav.uri, why),
+            Verdict::Browser => {}
         }
-    });
+        decision.ignore();
+        if matches!(verdict, Verdict::Browser) {
+            open_externally(&nav.uri);
+        }
+        true
+    }));
 
     let weak = Rc::downgrade(state);
-    view.connect_load(move |view, started| {
+    signals.push(view.connect_load(move |view, started| {
         let Some(state) = weak.upgrade() else { return };
         if started {
             let mut st = state.borrow_mut();
@@ -404,21 +422,35 @@ fn make_view(state: &Rc<RefCell<State>>) -> Option<WebView> {
         if loads {
             dispatch(UiEvent::WebLoad(id, view.uri().unwrap_or_default()));
         }
-    });
+    }));
     let weak = Rc::downgrade(state);
-    view.connect_load_failed(move || {
+    signals.push(view.connect_load_failed(move || {
         if let Some(state) = weak.upgrade() {
             state.borrow_mut().failed = true;
         }
-    });
+    }));
     // The page's process died: load it again.
-    view.connect_process_died(WebView::reload);
+    signals.push(view.connect_process_died(WebView::reload));
 
     root.append(view.widget());
     let mut st = state.borrow_mut();
     st.view = Some(view.clone());
+    st.signals = signals;
     st.ephemeral = ephemeral;
     Some(view)
+}
+
+/// What a policy decision becomes.
+#[derive(Clone, Copy)]
+enum Verdict {
+    /// WebKit goes on.
+    Allow,
+    /// Refused: a sandbox without forms.
+    Form,
+    /// Refused, opened in the system browser.
+    Browser,
+    /// A new window refused.
+    NoWindow(links::Refused),
 }
 
 /// Installs the bridge (or takes it away). For the next page: the shown
