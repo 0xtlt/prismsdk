@@ -534,7 +534,7 @@ export function withShaders(source) {
  * when `layers` is given, a `<div id="prism-layers">` holding it), and
  * returns the page, its window and the socket it opened.
  */
-export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true, pageId = "" } = {}) {
+export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true, pageId = "", schemes = null } = {}) {
   const document = new Document();
   const customElements = new CustomElementRegistry();
   document.registry = customElements;
@@ -546,6 +546,7 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
   const script = document.createElement("script");
   script.dataset.base = base;
   if (pageId) script.dataset.page = pageId;
+  if (schemes) script.dataset.prismSchemes = JSON.stringify(schemes);
   if (nonce) script.nonce = nonce;
   document.currentScript = script;
   document.title = "Prism";

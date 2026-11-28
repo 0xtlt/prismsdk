@@ -127,6 +127,9 @@ pub(crate) struct Inner {
     /// Sites that may show the app's pages in a frame, besides the app's
     /// own origin (`frame_ancestor`).
     pub frame_ancestors: Vec<String>,
+    /// Where the app serves its schemes' pages itself (#343,
+    /// `web_scheme_path`): scheme → path.
+    pub scheme_paths: Vec<(String, String)>,
 }
 
 /// `client.js` with what it takes from prism-core: the glyph table and the
@@ -237,6 +240,7 @@ impl WebApp {
                 handoffs: Default::default(),
                 frame_origins: Vec::new(),
                 frame_ancestors: Vec::new(),
+                scheme_paths: Vec::new(),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {
@@ -776,6 +780,7 @@ impl WebApp {
         let mut html = HtmlBackend::default();
         html.asset_urls = Some(asset_urls);
         html.base.clone_from(&self.inner.base);
+        html.scheme_paths.clone_from(&self.inner.scheme_paths);
         html.apply(&runtime.render_settled(self.inner.first_paint_wait));
         // Run-time fonts (by URL) and stylesheets of the first paint; the
         // live page registers them again (`client.js` keeps these).
@@ -829,7 +834,7 @@ impl WebApp {
 <div id="prism-toasts" role="status" aria-live="polite"></div>
 <div id="prism-layers" popover="manual">{layers}</div>
 <div id="prism-connection" role="status" aria-live="polite" hidden>{reconnecting}</div>
-<script src="{prefix}/{js}" data-base="{base}"{page}{n}></script>
+<script src="{prefix}/{js}" data-base="{base}"{page}{schemes}{n}></script>
 </body>
 </html>"#,
             n = crate::host::nonce_attr(nonce),
@@ -853,6 +858,10 @@ impl WebApp {
                 r#" data-page="{}""#,
                 html::escape(id)
             )),
+            schemes = crate::schemes::script_attr(&self.inner.scheme_paths).map_or(
+                String::new(),
+                |json| format!(r#" data-prism-schemes="{}""#, html::escape(&json))
+            ),
         );
         (page, code)
     }
@@ -1155,6 +1164,58 @@ impl WebApp {
     /// was sent to, with `Cache-Control: private`.
     pub fn public_scenes(self, public: bool) -> Self {
         self.configure(|i| i.public_scenes = public)
+    }
+
+    /// Where the app serves the pages of its scheme `scheme` on the web
+    /// (#343): `web_scheme_path("app", "/canvas")` shows
+    /// `web_view("app://main/x?q")` as an `<iframe>` of `/canvas/main/x?q`
+    /// (the URL's host, then its path and query). The app serves that path
+    /// with its own routes, next to [`router`](Self::router):
+    ///
+    /// ```ignore
+    /// let prism = Application::new()
+    ///     .web_scheme("app", serve) // natively
+    ///     .web(|w| w.web_scheme_path("app", "/canvas"))
+    ///     .web_app(|cx| cx.new_entity(Canvas::new));
+    /// let app = axum::Router::new()
+    ///     .route("/canvas/main/{*path}", get(canvas_files))
+    ///     .merge(prism.router());
+    /// ```
+    ///
+    /// `Application::web_scheme`'s handler is not called on the web: those
+    /// routes are the app's own HTTP endpoints, public like any other, so
+    /// they check who asks (the session's cookie, its user) before
+    /// answering with private data. The page is on the app's origin, which
+    /// it can reach (the app's page, its cookies): serve only the app's own
+    /// content there.
+    ///
+    /// The app still sees the URL it wrote: the view's messages come from
+    /// `app://main`, its loads are `app://main/x`, and messages to it go to
+    /// the frame while it shows a page under `/canvas/main/`. A path is
+    /// from the server's root as the browser sees it (not under
+    /// [`base_path`](Self::base_path)). Only schemes the app serves
+    /// (`Application::web_scheme`) are rewritten, and no URL can leave the
+    /// declared path (`..`, escaped `/` or `\` refuse the URL). Without a
+    /// path, the web view of such a URL stays empty (said once on stderr).
+    ///
+    /// # Panics
+    ///
+    /// If `scheme` is not a scheme an app may serve
+    /// ([`check_web_scheme`](prism_core::web_view::check_web_scheme)) or
+    /// `path` is not an absolute path on the app's origin (`/canvas`: no
+    /// `//` at its start, `\`, `?`, `#`, spaces, `.` or `..` segments).
+    pub fn web_scheme_path(self, scheme: &str, path: &str) -> Self {
+        if let Err(why) = prism_core::web_view::check_web_scheme(scheme) {
+            panic!("prism-web: web_scheme_path: {why}");
+        }
+        let path = match crate::schemes::check_path(path) {
+            Ok(path) => path,
+            Err(why) => panic!("prism-web: web_scheme_path: {why}"),
+        };
+        self.configure(|i| {
+            i.scheme_paths.retain(|(s, _)| s != scheme);
+            i.scheme_paths.push((scheme.to_string(), path));
+        })
     }
 
     /// Live sessions right now.

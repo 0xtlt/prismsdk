@@ -50,6 +50,7 @@ mod islands;
 mod navbar;
 mod pictures;
 mod scene_blobs;
+mod schemes;
 mod security;
 #[cfg(test)]
 mod security_tests;
