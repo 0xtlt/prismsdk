@@ -1,6 +1,6 @@
 # Web views: another page inside the app
 
-`web_view(url)` shows a web page inside the app: an `<iframe>` on the web, a `WKWebView` on Apple platforms, an `android.webkit.WebView` on Android, a WinUI `WebView2` on Windows. The page and the app talk through messages, both ways. A content editor uses it for its live preview: the rendered page beside the form, reloaded after each change, the selection going back and forth.
+`web_view(url)` shows a web page inside the app: an `<iframe>` on the web, a `WKWebView` on Apple platforms, an `android.webkit.WebView` on Android, a WinUI `WebView2` on Windows, a WebKitGTK `WebKitWebView` on Linux (with prismsdk's `web-view` feature, [below](#linux)). The page and the app talk through messages, both ways. A content editor uses it for its live preview: the rendered page beside the form, reloaded after each change, the selection going back and forth.
 
 ```rust
 use prism::prelude::*;
@@ -37,7 +37,7 @@ cx.reload_web_view("preview");
 
 ## The page's side
 
-The page receives the app's messages as `message` events on `window`, everywhere. To send, it calls `window.parent.postMessage` in a browser frame, and `prismHost.postMessage` in a native web view, which Prism adds to the page's main frame (only when the app listens with `on_message`). Embedded frames do not get it: only the main frame speaks for the page. On Apple platforms and Windows, `prismHost` is there before the page's scripts run. On Android it is added as the page starts loading, so a script that runs first may not see it yet: wait for the `prismhost` event on `window` (messages posted before the page finished loading are held until then). A page that works in both:
+The page receives the app's messages as `message` events on `window`, everywhere. To send, it calls `window.parent.postMessage` in a browser frame, and `prismHost.postMessage` in a native web view, which Prism adds to the page's main frame (only when the app listens with `on_message`). Embedded frames do not get it: only the main frame speaks for the page. On Apple platforms, Windows and Linux, `prismHost` is there before the page's scripts run. On Android it is added as the page starts loading, so a script that runs first may not see it yet: wait for the `prismhost` event on `window` (messages posted before the page finished loading are held until then). A page that works in both:
 
 ```js
 function postToApp(value) {
@@ -56,7 +56,7 @@ The app gets the value as JSON either way (`WebMessageEvent::data::<T>()`, `data
 **Allowed origins** are the pages the app talks to: by default the URL's own origin, or the ones given with `.allow_origin("https://cdn.example.com")` (once per origin; `"*"` for any). A `file://` page has no origin of its own: talk to it with `"*"`.
 
 - Messages from other origins are dropped, and messages to the page are delivered only while it shows an allowed origin. A message is for the origin the page shows when the app sends it: if the page has moved to another origin by the time it arrives, it is dropped.
-- Native web views keep their main frame on them: a link to another origin opens in the system browser. Scripts and redirects may still navigate; their messages are filtered.
+- Native web views keep their main frame on them: a link to another origin opens in the system browser. Scripts and redirects may still navigate; their messages are filtered. WebKitGTK does not say which frame a navigation is for, so on Linux a click that would take an embedded frame to an origin the view does not allow opens in the system browser too.
 - Natively, nothing opens outside the app unless the user tapped or clicked for it: a link, or a new window (unless a sandbox leaves out `popups()`). Only web links open (in the system browser), and `mailto:` and `tel:` ones (in the mail and phone apps); never another app's own scheme (`intent:`, `market:`, a custom one).
 - On the web, a frame cannot be held back: it may navigate anywhere. Only its messages are filtered.
 - Messages must come from the main frame of the web view (an `<iframe>` inside the page does not speak for it).
@@ -68,28 +68,28 @@ The app gets the value as JSON either way (`WebMessageEvent::data::<T>()`, `data
 web_view(url).sandbox(WebSandbox::new().scripts().same_origin())
 ```
 
-| `WebSandbox` | Web (`sandbox` attribute) | Apple | Android | Windows |
-|---|---|---|---|---|
-| `scripts()` | `allow-scripts` | `allowsContentJavaScript` | `setJavaScriptEnabled` | `IsScriptEnabled` |
-| `forms()` | `allow-forms` | form navigations cancelled otherwise | not enforced | otherwise a script in every frame stops submissions (`submit`, `form.submit()`, `requestSubmit()`) and every POST of a document is answered 403 before it leaves |
-| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open` after a tap: the system browser; ignored otherwise | the same | the same (`NewWindowRequested`, user-initiated) |
-| `same_origin()` | `allow-same-origin` | otherwise a private, non-persistent data store | otherwise DOM storage off | otherwise InPrivate |
+| `WebSandbox` | Web (`sandbox` attribute) | Apple | Android | Windows | Linux |
+|---|---|---|---|---|---|
+| `scripts()` | `allow-scripts` | `allowsContentJavaScript` | `setJavaScriptEnabled` | `IsScriptEnabled` | `enable-javascript-markup` |
+| `forms()` | `allow-forms` | form navigations cancelled otherwise | not enforced | otherwise a script in every frame stops submissions (`submit`, `form.submit()`, `requestSubmit()`) and every POST of a document is answered 403 before it leaves | form navigations cancelled otherwise, in every frame (a script's `fetch` still sends) |
+| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open` after a tap: the system browser; ignored otherwise | the same | the same (`NewWindowRequested`, user-initiated) | the same (a new-window policy decision with a user gesture) |
+| `same_origin()` | `allow-same-origin` | otherwise a private, non-persistent data store | otherwise DOM storage off | otherwise InPrivate | otherwise an ephemeral network session (cookies and storage in memory, for that view) |
 
 A window the page opens with `popups()` is not sandboxed: on the web it is a normal tab (`allow-popups-to-escape-sandbox`), as natively, where it opens in the system browser.
 
 Without `scripts()` there are no messages from the page. A page sandboxed without `same_origin()` has an opaque origin on the web: its messages come from `"null"`, so talk to it with `.allow_origin("*")`.
 
-Changes to the sandbox apply from the next page the view loads (on Apple platforms, a change of `same_origin` makes a new web view).
+Changes to the sandbox apply from the next page the view loads (on Apple platforms and Linux, a change of `same_origin` makes a new web view).
 
 ## Platforms
 
-| | Web | macOS, iOS, iPadOS, visionOS | Android | Windows | tvOS, watchOS, Linux |
-|---|---|---|---|---|---|
-| View | `<iframe>` | `WKWebView` | `android.webkit.WebView` | WinUI `WebView2` (Edge WebView2 Runtime) | an empty box |
-| Page → app | `parent.postMessage` | `prismHost.postMessage` (script message handler, main frame) | `prismHost.postMessage` (a message port given to the main frame) | `prismHost.postMessage` (`chrome.webview`) | – |
-| App → page | `postMessage` to the frame's origin | `message` event (`evaluateJavaScript`) | `message` event (through the same port) | `message` event (`ExecuteScriptAsync`) | – |
+| | Web | macOS, iOS, iPadOS, visionOS | Android | Windows | Linux (`web-view` feature) | tvOS, watchOS |
+|---|---|---|---|---|---|---|
+| View | `<iframe>` | `WKWebView` | `android.webkit.WebView` | WinUI `WebView2` (Edge WebView2 Runtime) | `WebKitWebView` (WebKitGTK 6.0) | an empty box |
+| Page → app | `parent.postMessage` | `prismHost.postMessage` (script message handler, main frame) | `prismHost.postMessage` (a message port given to the main frame) | `prismHost.postMessage` (`chrome.webview`) | `prismHost.postMessage` (a script message handler in an isolated world, main frame) | – |
+| App → page | `postMessage` to the frame's origin | `message` event (`evaluateJavaScript`) | `message` event (through the same port) | `message` event (`ExecuteScriptAsync`) | `message` event (`webkit_web_view_evaluate_javascript`) | – |
 
-`cx.capabilities().web_view` says whether the platform shows the page. tvOS and watchOS have no WebKit, and Linux has no web view yet (WebKitGTK would add a system dependency): the node is an empty box sized by its style, so show something else there:
+`cx.capabilities().web_view` says whether the platform shows the page. tvOS and watchOS have no WebKit, and on Linux web views need the `web-view` feature: without it the node is an empty box sized by its style, so show something else there:
 
 ```rust
 if cx.capabilities().web_view {
@@ -102,3 +102,17 @@ if cx.capabilities().web_view {
 ```
 
 On the web, a strict CSP (`WebApp::strict_csp()`) only allows frames of the app's own origin: add the others with `WebApp::frame_origin("https://preview.example.com")` (`frame-src`). The first paint draws the frame without loading it: the live page loads it once, when the client starts.
+
+## Linux
+
+On Linux, web views use WebKitGTK 6.0 (the GTK 4 build of WebKit), which apps link only with prismsdk's `web-view` feature, so apps without web views do not depend on it:
+
+```toml
+[dependencies]
+prism = { package = "prismsdk", version = "0.7", features = ["web-view"] }
+```
+
+- Building needs `libwebkitgtk-6.0-dev` (in `docker/linux-dev.Dockerfile`); running needs `libwebkitgtk-6.0-4`, which `prism build linux` adds to the `.deb`'s dependencies (`dpkg-shlibdeps`). Debian 12, Ubuntu 23.04, Fedora 38 and later ship it, with GTK 4.8 or later.
+- Cookies and storage go to `$XDG_DATA_HOME/<title>/WebKit`, the cache to `$XDG_CACHE_HOME/<title>/WebKit`, shared by the app's web views (a sandbox without `same_origin()` keeps its own in memory).
+- `prismHost` lives in the main frame. WebKitGTK does not say which frame posts a message, so Prism's handler sits in an isolated script world, which page scripts never reach: the page's `prismHost` hands it each message, and it posts it with the main frame's origin.
+- WebKit runs pages in a sandbox of its own (bubblewrap), which needs user namespaces. Containers often lack them: there, tests start the app with `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` (never in production).

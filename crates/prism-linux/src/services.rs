@@ -143,6 +143,8 @@ impl LinuxServices {
                 // GtkDropTarget (#111).
                 drop_files: true,
                 drag_and_drop: true,
+                // WebKitGTK 6.0, with the `web-view` feature (web.rs).
+                web_view: cfg!(feature = "web-view"),
                 ..Default::default()
             },
             data_dir,

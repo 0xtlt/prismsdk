@@ -92,6 +92,9 @@ pub enum View {
     Overlay(NodeId, Rc<OverlayView>),
     /// A video (#207): GTK's player (GStreamer) with its own controls.
     Video(NodeId, gtk::Video),
+    /// A web view (#343): WebKitGTK, with the `web-view` feature.
+    #[cfg(feature = "web-view")]
+    Web(NodeId, Rc<crate::web::Web>),
 }
 
 thread_local! {
@@ -138,6 +141,8 @@ impl View {
             | View::Radio(id, _)
             | View::Overlay(id, _)
             | View::Video(id, _) => *id,
+            #[cfg(feature = "web-view")]
+            View::Web(id, _) => *id,
         }
     }
 
@@ -166,6 +171,8 @@ impl View {
             View::Radio(_, r) => r.root.clone().upcast(),
             View::Overlay(_, o) => o.anchor.clone().upcast(),
             View::Video(_, v) => v.clone().upcast(),
+            #[cfg(feature = "web-view")]
+            View::Web(_, w) => w.root.clone().upcast(),
         }
     }
 }
@@ -793,6 +800,15 @@ fn node_of(w: &gtk::Widget) -> Option<NodeId> {
         .find_map(|c| c.strip_prefix('p').and_then(|n| n.parse::<NodeId>().ok()))
 }
 
+/// Whether `w` is a web view's page (#343): typing there is the page's,
+/// as in a text field.
+fn is_web_page(_w: &gtk::Widget) -> bool {
+    #[cfg(feature = "web-view")]
+    return crate::web::is_page(_w);
+    #[cfg(not(feature = "web-view"))]
+    false
+}
+
 /// Reports key presses in `window` (`UiEvent::Key`): to the focused node's
 /// nearest ancestor with `on_key_down`, and to global listeners. Typing in
 /// a text field only reaches local listeners.
@@ -846,7 +862,7 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
             .and_then(|w| GtkWindowExt::focus(&w));
         let editing = focus
             .as_ref()
-            .is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::TextView>());
+            .is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::TextView>() || is_web_page(f));
         // In a text field: its selection before the key (#86).
         // And where its caret is (#211).
         let (selection, edges) = match focus.as_ref() {
@@ -2255,8 +2271,12 @@ impl Widgets for Gtk {
                 });
                 View::Sheet(id, sheet)
             }
-            // No web view on Linux yet (#62): an empty box sized by its
-            // style (`capabilities().web_view` is false).
+            // A web view (#343): WebKitGTK, with the `web-view` feature.
+            #[cfg(feature = "web-view")]
+            NodeKind::WebView => View::Web(id, Rc::new(crate::web::Web::new(id, &self.app_title))),
+            // Without it, an empty box sized by its style
+            // (`capabilities().web_view` is false).
+            #[cfg(not(feature = "web-view"))]
             NodeKind::WebView => View::Container(id, kind, layout::container()),
             NodeKind::Video => View::Video(id, video_widget(id)),
             NodeKind::Checkbox => View::Check(id, controls::checkbox(id)),
@@ -2548,6 +2568,9 @@ impl Widgets for Gtk {
                 }
             }
             View::Check(_, b) => b.set_label((!text.is_empty()).then_some(text)),
+            // A web view's URL (#343).
+            #[cfg(feature = "web-view")]
+            View::Web(_, w) => w.load(text),
             // A video's source (#207): a URL, a file or an asset. GTK's
             // player sends no headers: the first line is the URL.
             View::Video(_, v) => {
@@ -2780,9 +2803,28 @@ impl Widgets for Gtk {
         }
     }
 
+    // Web views (#343), with the `web-view` feature.
+    #[cfg(feature = "web-view")]
+    fn post_web_message(&mut self, view: &View, data: &str) {
+        if let View::Web(_, w) = view {
+            w.post(data);
+        }
+    }
+
+    #[cfg(feature = "web-view")]
+    fn reload_web_view(&mut self, view: &View) {
+        if let View::Web(_, w) = view {
+            w.reload();
+        }
+    }
+
     fn destroy(&mut self, view: &View) {
         if let View::Picture(id, _) = view {
             crate::focal::forget(*id);
+        }
+        #[cfg(feature = "web-view")]
+        if let View::Web(_, w) = view {
+            w.teardown();
         }
         let id = view.id();
         TYPED.with(|t| t.borrow_mut().remove(&id));
@@ -3406,6 +3448,9 @@ impl Widgets for Gtk {
                 self.update_text_focus(*id, l);
             }
             View::Radio(id, r) => r.set_options(*id, config),
+            // A web view's options (#343).
+            #[cfg(feature = "web-view")]
+            View::Web(_, w) => w.configure(config),
             View::Overlay(_, o) => o.configure(
                 prism_core::controls::OverlayConfig::decode(config),
                 &self.window,
@@ -4513,7 +4558,7 @@ fn set_accessible_label(w: &gtk::Widget, label: &str) {
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn data_dir(title: &str) -> std::path::PathBuf {
+pub(crate) fn data_dir(title: &str) -> std::path::PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share")))

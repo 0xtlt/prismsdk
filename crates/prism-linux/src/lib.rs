@@ -25,6 +25,9 @@ mod imp;
 mod input;
 #[cfg(target_os = "linux")]
 mod layout;
+// What a web view lets through: no WebKitGTK, tested without a display.
+#[cfg(all(target_os = "linux", feature = "web-view"))]
+mod links;
 #[cfg(target_os = "linux")]
 mod names;
 #[cfg(target_os = "linux")]
@@ -53,6 +56,11 @@ mod text;
 mod tray;
 #[cfg(target_os = "linux")]
 mod vector;
+// Web views (WebKitGTK 6.0), with the `web-view` feature.
+#[cfg(all(target_os = "linux", feature = "web-view"))]
+mod web;
+#[cfg(all(target_os = "linux", feature = "web-view"))]
+mod webkit;
 
 #[cfg(target_os = "linux")]
 pub use imp::run;

@@ -33,7 +33,8 @@
 //! | macOS, iOS, iPadOS, visionOS | `WKWebView` | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
 //! | Android | `android.webkit.WebView` | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
 //! | Windows | `WebView2` (WinUI, the Edge WebView2 Runtime) | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
-//! | tvOS, watchOS, Linux | none (`capabilities().web_view` is false): an empty box | – | – |
+//! | Linux, with prismsdk's `web-view` feature | `WebKitWebView` (WebKitGTK 6.0) | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
+//! | tvOS, watchOS, Linux without the feature | none (`capabilities().web_view` is false): an empty box | – | – |
 //!
 //! A page that runs in both kinds of hosts sends with:
 //!
@@ -56,6 +57,10 @@
 //! a link to another origin opens in the system browser. On the web a frame
 //! cannot be held back (it may navigate anywhere), only its messages are
 //! filtered.
+//!
+//! WebKitGTK does not say which frame a navigation is for: on Linux a click
+//! that would take an embedded frame to an origin the view does not allow
+//! opens in the system browser too.
 //!
 //! **Sandbox** ([`sandbox`](WebView::sandbox)): without it the page has the
 //! rights of its own origin, as in a browser tab. With it, only what the
@@ -114,8 +119,9 @@ pub struct WebSandbox {
     pub popups: bool,
     /// Keep its origin: cookies and storage. Without it the web treats the
     /// page as an opaque origin (its messages come from `"null"`), Apple
-    /// platforms give it a private, non-persistent store, Android turns
-    /// DOM storage off.
+    /// platforms give it a private, non-persistent store, Windows browses
+    /// InPrivate, Linux gives it an ephemeral network session, Android
+    /// turns DOM storage off.
     pub same_origin: bool,
 }
 
