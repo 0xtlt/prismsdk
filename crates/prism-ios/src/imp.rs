@@ -129,6 +129,51 @@ fn with_state(f: impl FnOnce(&mut State)) {
     });
 }
 
+/// Runs `f` on the state unless it is borrowed (a platform callback during
+/// an update): `false` then, so the caller can try again. A torn-down
+/// state runs nothing and counts as done.
+fn try_with_state(f: impl FnOnce(&mut State)) -> bool {
+    STATE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut guard) => {
+            if let Some(state) = guard.as_mut() {
+                f(state);
+            }
+            true
+        }
+        Err(_) => false,
+    })
+}
+
+/// A picture's bytes arrived (main thread, #343): shown now, or once the
+/// state is free again. A completion skipped while the state is busy would
+/// leave its source loading forever (its nodes never show it), so it is
+/// posted again, a few milliseconds later, up to about a second.
+fn picture_ready(src: String, bytes: Option<Vec<u8>>, tries: u32) {
+    let mut payload = Some((src, bytes));
+    let done = try_with_state(|s| {
+        if let Some((src, bytes)) = payload.take() {
+            s.renderer.widgets.picture_loaded(&src, bytes);
+            s.renderer.mark_all_dirty();
+            s.relayout();
+        }
+    });
+    if done {
+        return;
+    }
+    let Some((src, bytes)) = payload else { return };
+    if tries >= 100 {
+        eprintln!(
+            "prism-ios: a loaded picture was dropped (the app stayed busy): {:?}",
+            prism_core::picture_source(&src).0
+        );
+        return;
+    }
+    let when = dispatch2::DispatchTime::try_from(std::time::Duration::from_millis(10))
+        .unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ =
+        dispatch2::DispatchQueue::main().after(when, move || picture_ready(src, bytes, tries + 1));
+}
+
 /// Overlays anchored at a caret (#328) or a chip (#327) follow it: called
 /// as soon as a field's text, selection or scrolling changes.
 pub(crate) fn follow_anchors() {
@@ -384,39 +429,37 @@ impl State {
             bottom: i.bottom / zoom,
             left: i.left / zoom,
         };
-        if (w, h) != self.runtime.app.window_size() || safe != self.runtime.app.safe_area() {
-            let patches = self.runtime.set_window(w, h, safe);
+        // The size and the density together: `on_resize` runs once for a
+        // change that moves both, and a render for a new density sees the
+        // new viewport.
+        let scale = self.scale_factor();
+        if (w, h) != self.runtime.app.window_size()
+            || safe != self.runtime.app.safe_area()
+            || scale != self.runtime.app.scale_factor()
+        {
+            let patches = self.runtime.set_window_metrics(w, h, safe, scale);
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
                 self.window_rerendered = true;
             }
         }
-        // After the size: a render for a new density sees the new viewport.
-        self.report_scale_factor();
         Some((w, h))
     }
 
-    /// Tells the app the pixels per Prism point of the screen the window is
-    /// on (`cx.scale_factor()`, #343): the trait collection's display scale
-    /// (visionOS has no `UIScreen`), times the TV zoom.
-    fn report_scale_factor(&mut self) {
+    /// The pixels per Prism point of the screen the window is on
+    /// (`cx.scale_factor()`, #343): the trait collection's display scale
+    /// (visionOS has no `UIScreen`), times the TV zoom; what the app has
+    /// while the view is in no window.
+    fn scale_factor(&self) -> f32 {
         use objc2_ui_kit::UITraitEnvironment;
         let traits = self.renderer.widgets.root.traitCollection();
         // SAFETY: a plain property read on the main thread.
         let display = unsafe { traits.displayScale() } as f32;
         // 0 until the view is in a window.
         if display <= 0. {
-            return;
+            return self.runtime.app.scale_factor();
         }
-        let scale = display * self.renderer.zoom();
-        if scale == self.runtime.app.scale_factor() {
-            return;
-        }
-        let patches = self.runtime.set_scale_factor(scale);
-        if !patches.is_empty() {
-            self.renderer.apply(&patches);
-            self.window_rerendered = true;
-        }
+        display * self.renderer.zoom()
     }
 
     fn layout_root(&mut self, size: CGSize) {
@@ -1903,13 +1946,7 @@ impl UiKit {
         let (src, sources) = (src.to_string(), self.image_sources.clone());
         std::thread::spawn(move || {
             let bytes = prism_native::images::load(&src, &sources);
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                with_state(|s| {
-                    s.renderer.widgets.picture_loaded(&src, bytes);
-                    s.renderer.mark_all_dirty();
-                    s.relayout();
-                })
-            });
+            dispatch2::DispatchQueue::main().exec_async(move || picture_ready(src, bytes, 0));
         });
     }
 
@@ -2859,6 +2896,7 @@ impl Widgets for UiKit {
     }
 
     fn set_drawing_items(&mut self, view: &View, items: &[prism_core::shape::Item]) {
+        crate::vector::hold(view.id(), items);
         SHAPES.with(|s| s.borrow_mut().insert(view.id(), items.to_vec()));
         view.ui().setNeedsDisplay();
     }
@@ -2869,6 +2907,7 @@ impl Widgets for UiKit {
 
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        crate::vector::forget(id);
         crate::forms::forget_selection(id);
         #[cfg(not(target_os = "tvos"))]
         crate::carets::forget(id);

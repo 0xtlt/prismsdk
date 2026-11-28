@@ -7474,7 +7474,10 @@
     return r > 0 && isFinite(r) ? r : 1;
   };
   const viewportCookie = () => {
-    document.cookie = `prism_vw=${innerWidth}x${innerHeight}x${pixelRatio()}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    // The ratio in its own cookie: a server of an older version on the
+    // same domain (a rolling deploy) still reads `prism_vw=WxH`.
+    document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    document.cookie = `prism_dpr=${pixelRatio()}; Path=/; Max-Age=31536000; SameSite=Lax`;
   };
   let resizeTimer = null;
   const reportViewport = () => {

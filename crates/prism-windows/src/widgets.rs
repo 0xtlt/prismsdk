@@ -1103,6 +1103,8 @@ impl Widgets for Win {
         if let Some(n) = self.scene.get_mut(*view) {
             n.drawing = paths.iter().cloned().map(Item::Path).collect();
         }
+        // Paths only: whatever images it drew before are released.
+        self.images.hold(*view, &[]);
         self.draw_shape(*view);
     }
 
@@ -1110,6 +1112,7 @@ impl Widgets for Win {
         if let Some(n) = self.scene.get_mut(*view) {
             n.drawing = items.to_vec();
         }
+        self.images.hold(*view, items);
         self.draw_shape(*view);
     }
 

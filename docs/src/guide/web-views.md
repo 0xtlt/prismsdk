@@ -114,7 +114,7 @@ web_view("app://main/index.html").id("canvas").flex_1()
 ```
 
 - The handler runs off the main thread (a slow answer never blocks the UI), so it is `Send + Sync`: reach the app's state through what it captures (an `Arc<Mutex<…>>`, a channel), not through `cx`. A panic in it answers `500` and is logged.
-- `SchemeRequest` has the `method`, `url`, `headers` and `body`, with `path()` (decoded), `query_param(name)`, `header(name)` and `origin()`. `SchemeResponse::html`, `text`, `json`, `file(name, bytes)` (its type from the name), `ok(content_type, bytes)` and `not_found()` answer; `with_status` and `with_header` adjust.
+- `SchemeRequest` has the `method`, `url`, `headers` and `body`, with `path()` (decoded, never above `/`), `path_segments()` (for a lookup in a folder: `None` for a path with `..` or an escaped `/`), `query_param(name)`, `header(name)` and `origin()`. `SchemeResponse::html`, `text`, `json`, `file(name, bytes)` (its type from the name), `ok(content_type, bytes)` and `not_found()` answer; `with_status` and `with_header` adjust.
 - A scheme is lower-case letters, digits and `-`, starting with a letter. The engines' own (`http`, `https`, `file`, `data`, `blob`, `javascript`, `about`, …) are refused, as is a scheme served twice: `run()` panics at startup with the reason.
 - An app that registers no scheme runs exactly as before.
 - Use relative URLs in the page (`editor.js`, `/fonts/a.woff2`): an absolute `app://…` link does not load on Android or the web.

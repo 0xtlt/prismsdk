@@ -390,16 +390,14 @@ fn relayout(s: &mut State) {
         bottom: i.bottom / zoom,
         left: i.left / zoom,
     };
-    if full != s.runtime.app.window_size() || safe != s.runtime.app.safe_area() {
-        let patches = s.runtime.set_window(full.0, full.1, safe);
-        if !patches.is_empty() {
-            s.renderer.apply(&patches);
-        }
-    }
-    // Pixels per dp (`cx.scale_factor()`, #343): the zoom, after the
-    // viewport so a render for a new density sees its new size.
-    if zoom != s.runtime.app.scale_factor() {
-        let patches = s.runtime.set_scale_factor(zoom);
+    // Pixels per dp (`cx.scale_factor()`, #343): the zoom, with the
+    // viewport, which a new density resizes too: `on_resize` runs once,
+    // and a render for a new density sees its new size.
+    if full != s.runtime.app.window_size()
+        || safe != s.runtime.app.safe_area()
+        || zoom != s.runtime.app.scale_factor()
+    {
+        let patches = s.runtime.set_window_metrics(full.0, full.1, safe, zoom);
         if !patches.is_empty() {
             s.renderer.apply(&patches);
         }

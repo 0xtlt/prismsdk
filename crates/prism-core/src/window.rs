@@ -251,17 +251,12 @@ impl App {
     /// re-renders and runs the resize handlers when it changes, and ignores
     /// a value that is not finite and positive. Backends call it (the web
     /// backend before the app's init, so the first render has it; native
-    /// backends through `Runtime::set_scale_factor`).
+    /// backends through `Runtime::set_window_metrics`, with the size).
     pub fn set_scale_factor(&mut self, scale: f32) {
         if !scale.is_finite() || scale <= 0. || scale == self.window.scale_factor {
             return;
         }
-        self.window.scale_factor = scale;
-        self.refresh();
-        let size = self.window.size;
-        for handler in self.window.handlers.clone() {
-            handler(size, self);
-        }
+        self.set_window_metrics(self.window.full, self.window.safe_area, scale);
     }
 
     pub(crate) fn set_viewport(&mut self, size: (f32, f32)) {
@@ -270,11 +265,35 @@ impl App {
 
     /// The window is `full` large and the system covers `safe_area` of it.
     pub(crate) fn set_window(&mut self, full: (f32, f32), safe_area: crate::style::Edges) {
+        self.set_window_metrics(full, safe_area, self.window.scale_factor);
+    }
+
+    /// The window's size, what the system covers of it and its screen's
+    /// density, at once (a density change often resizes the window in
+    /// points too): re-renders when the density, the insets or a
+    /// breakpoint change, and runs the resize handlers once when anything
+    /// changed, with the new size and density. A density that is not
+    /// finite and positive is kept as it was.
+    pub(crate) fn set_window_metrics(
+        &mut self,
+        full: (f32, f32),
+        safe_area: crate::style::Edges,
+        scale: f32,
+    ) {
+        let scale = if scale.is_finite() && scale > 0. {
+            scale
+        } else {
+            self.window.scale_factor
+        };
         let size = (
             (full.0 - safe_area.left - safe_area.right).max(0.),
             (full.1 - safe_area.top - safe_area.bottom).max(0.),
         );
-        if (self.window.full, self.window.safe_area, self.window.size) == (full, safe_area, size) {
+        let rescaled = scale != self.window.scale_factor;
+        if !rescaled
+            && (self.window.full, self.window.safe_area, self.window.size)
+                == (full, safe_area, size)
+        {
             return;
         }
         let before = (self.breakpoint(), self.window.band(self.window.size.0));
@@ -283,7 +302,8 @@ impl App {
         self.window.full = full;
         self.window.safe_area = safe_area;
         self.window.size = size;
-        if moved_insets || (self.breakpoint(), self.window.band(size.0)) != before {
+        self.window.scale_factor = scale;
+        if rescaled || moved_insets || (self.breakpoint(), self.window.band(size.0)) != before {
             self.refresh();
         }
         for handler in self.window.handlers.clone() {

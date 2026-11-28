@@ -856,15 +856,19 @@ impl Live {
             // notch, bars and rounded corners cover (`env(safe-area-inset-*)`,
             // top, right, bottom, left); `dpr`: its `devicePixelRatio`
             // (zoom, another screen; #343), kept when missing or invalid.
-            Some("viewport") => match (finite_f32(v.get("w")), finite_f32(v.get("h"))) {
-                (Some(w), Some(h)) if w >= 0. && h >= 0. => {
-                    if let Some(scale) = finite_f32(v.get("dpr")).and_then(crate::app::scale_factor)
-                    {
-                        rt.app.set_scale_factor(scale);
-                    }
-                    rt.set_window(w, h, safe_area(&v))
+            // Both at once: `on_resize` runs once, with the new size. Sides
+            // past `MAX_VIEWPORT` are clamped.
+            Some("viewport") => match finite_f32(v.get("w"))
+                .zip(finite_f32(v.get("h")))
+                .and_then(|(w, h)| crate::app::viewport_size(w, h))
+            {
+                Some((w, h)) => {
+                    let scale = finite_f32(v.get("dpr"))
+                        .and_then(crate::app::scale_factor)
+                        .unwrap_or(rt.app.scale_factor());
+                    rt.set_window_metrics(w, h, safe_area(&v), scale)
                 }
-                _ => Vec::new(),
+                None => Vec::new(),
             },
             // The page described its device (on connect, rotation, fold).
             Some("device") => {

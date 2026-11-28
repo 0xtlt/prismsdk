@@ -209,8 +209,6 @@ pub fn change_value(v: &Value) -> Option<f64> {
     }
 }
 
-/// The input events of #17 a host reports (`click` with a position,
-/// `pointer`, `drag`, `key`), shared by the Android and watchOS backends.
 /// `url` as the app wrote it: an app scheme's (#343) for the `https:` URL
 /// standing for it, else unchanged.
 fn app_url(url: &str) -> String {
@@ -252,6 +250,8 @@ pub fn encode_scheme_response(r: &prism_core::SchemeResponse) -> Vec<u8> {
     out
 }
 
+/// The input events of #17 a host reports (`click` with a position,
+/// `pointer`, `drag`, `key`), shared by the Android and watchOS backends.
 pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
     use prism_core::{
         DragEvent, DragPhase, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase, UiEvent,

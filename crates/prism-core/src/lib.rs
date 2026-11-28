@@ -1242,8 +1242,27 @@ impl Runtime {
     /// moved to another screen, the browser zoomed. Re-renders everything
     /// and runs the `on_resize` handlers when it changes; a value that is
     /// not finite and positive is ignored. Returns the resulting patches.
+    /// When the size may change with it, [`set_window_metrics`](Self::set_window_metrics)
+    /// runs the handlers once for both.
     pub fn set_scale_factor(&mut self, scale: f32) -> Vec<Patch> {
         self.app.set_scale_factor(scale);
+        self.poll()
+    }
+
+    /// [`set_window`](Self::set_window) and [`set_scale_factor`](Self::set_scale_factor)
+    /// at once: a new density (another screen, the system's display size)
+    /// often resizes the window in points too, and the `on_resize`
+    /// handlers then run once, with the new size and density. Returns the
+    /// resulting patches.
+    pub fn set_window_metrics(
+        &mut self,
+        width: f32,
+        height: f32,
+        safe_area: style::Edges,
+        scale: f32,
+    ) -> Vec<Patch> {
+        self.app
+            .set_window_metrics((width, height), safe_area, scale);
         self.poll()
     }
 

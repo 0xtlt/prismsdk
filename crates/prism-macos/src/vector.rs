@@ -1157,6 +1157,36 @@ thread_local! {
     static BITMAPS: RefCell<PictureCache<Option<Bitmap>>> = RefCell::default();
 }
 
+/// The drawing of node `id` shows `items` (#343): the bitmaps of their
+/// images stay decoded while it does, however large, instead of being
+/// evicted (and decoded again) while it paints.
+pub(crate) fn hold(id: prism_core::NodeId, items: &[Item]) {
+    let mut sources = Vec::new();
+    image_sources(items, &mut sources);
+    BITMAPS.with(|all| all.borrow_mut().hold(id, sources));
+}
+
+/// The drawing of node `id` is gone: its bitmaps join the pool.
+pub(crate) fn forget(id: prism_core::NodeId) {
+    BITMAPS.with(|all| all.borrow_mut().forget(id));
+}
+
+/// The image sources `items` draw, groups and masks included.
+fn image_sources<'a>(items: &'a [Item], out: &mut Vec<&'a str>) {
+    for item in items {
+        match item {
+            Item::Image(i) => out.push(&i.src),
+            Item::Group(g) => {
+                image_sources(&g.items, out);
+                if let Some(m) = &g.mask {
+                    image_sources(&m.items, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The bitmap of a `data:` URL, decoded once.
 fn bitmap(src: &str) -> Option<Bitmap> {
     BITMAPS.with(|all| cached(&mut all.borrow_mut(), src, decode))
@@ -1422,6 +1452,35 @@ mod tests {
         assert!(all.unshown_bytes() <= 13 << 20);
         drop(get);
         assert_eq!(decoded, 4, "`a` was decoded once");
+    }
+
+    #[test]
+    fn a_shown_drawing_keeps_its_bitmaps_past_the_budget() {
+        // Three 4 MB bitmaps drawn by node 7, with room for one unshown.
+        let mut all = PictureCache::new(5 << 20);
+        let image = |src: &str| {
+            Item::Image(Image {
+                src: src.into(),
+                ..Default::default()
+            })
+        };
+        let items = vec![image("a"), image("b"), image("c")];
+        let mut sources = Vec::new();
+        image_sources(&items, &mut sources);
+        all.hold(7, sources);
+        let mut decoded = 0;
+        for _paint in 0..3 {
+            for src in ["a", "b", "c"] {
+                cached(&mut all, src, |_| {
+                    decoded += 1;
+                    blank(1000., 1000.)
+                });
+            }
+        }
+        assert_eq!(decoded, 3, "each decoded once, not at every paint");
+        // Gone: what fits stays for when it comes back.
+        all.forget(7);
+        assert_eq!(all.len(), 1);
     }
 
     #[test]

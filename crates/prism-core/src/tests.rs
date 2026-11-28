@@ -3662,6 +3662,25 @@ fn the_scale_factor_re_renders_and_runs_resize_handlers_when_it_changes() {
         seen.lock().unwrap().last().copied(),
         Some(((900., 600.), 1.5))
     );
+    // A new density that resizes the window in points too (Android's
+    // display size, Windows' DPI): the handlers run once, with both.
+    seen.lock().unwrap().clear();
+    find_text(
+        &rt.set_window_metrics(450., 300., crate::Edges::default(), 3.),
+        "scale 3",
+    );
+    assert_eq!(*seen.lock().unwrap(), vec![((450., 300.), 3.)]);
+    // Unchanged: nothing; an invalid density keeps the current one.
+    assert!(
+        rt.set_window_metrics(450., 300., crate::Edges::default(), 3.)
+            .is_empty()
+    );
+    rt.set_window_metrics(500., 300., crate::Edges::default(), f32::NAN);
+    assert_eq!(
+        seen.lock().unwrap().last().copied(),
+        Some(((500., 300.), 3.))
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
 }
 
 #[test]

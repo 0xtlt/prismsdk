@@ -305,14 +305,22 @@ fn schedule(state: &Rc<RefCell<State>>) {
 
 fn perform_load(state: &Rc<RefCell<State>>) {
     // Not borrowed while the view is made (a `match` would hold it).
-    let shown = state.borrow().view.clone();
+    let (shown, url) = {
+        let st = state.borrow();
+        (st.view.clone(), st.url.clone())
+    };
+    // No URL (none given, or one `web_view` refused): a blank page, not
+    // the previous one, as an `<iframe>` without `src`.
+    if url.is_empty() {
+        if let Some(view) = shown {
+            view.load_uri("about:blank");
+        }
+        return;
+    }
     let Some(view) = shown.or_else(|| make_view(state)) else {
         return;
     };
-    let url = state.borrow().url.clone();
-    if !url.is_empty() {
-        view.load_uri(&url);
-    }
+    view.load_uri(&url);
 }
 
 /// Makes the node's `WebKitWebView` (in the app's network session, or an
@@ -421,7 +429,9 @@ fn make_view(state: &Rc<RefCell<State>>) -> Option<WebView> {
                 return;
             }
             st.loaded = true;
-            (std::mem::take(&mut st.queue), st.config.loads, st.id)
+            // The blank page shown for no URL is not one the app loaded.
+            let loads = st.config.loads && !st.url.is_empty();
+            (std::mem::take(&mut st.queue), loads, st.id)
         };
         for json in pending {
             deliver(&state, view, &json);

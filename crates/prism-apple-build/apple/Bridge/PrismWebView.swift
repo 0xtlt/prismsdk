@@ -135,10 +135,15 @@ final class PrismSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     /// The handler's answer: sent to the task if WebKit still waits for it.
+    /// A task WebKit still waits for always ends (finished or failed), or
+    /// its load would hang.
     private func finish(_ id: UInt64, _ head: String, _ body: Data) {
         guard let task = tasks.removeValue(forKey: id) else { return }
         ids[ObjectIdentifier(task)] = nil
-        guard let url = task.request.url else { return }
+        guard let url = task.request.url else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
         var lines = head.components(separatedBy: "\n")
         let status = Int(lines.removeFirst()) ?? 500
         var fields: [String: String] = [:]
@@ -150,7 +155,10 @@ final class PrismSchemeHandler: NSObject, WKURLSchemeHandler {
         }
         fields["Content-Length"] = String(body.count)
         guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",
-                                             headerFields: fields) else { return }
+                                             headerFields: fields) else {
+            task.didFailWithError(URLError(.badServerResponse))
+            return
+        }
         task.didReceive(response)
         if !body.isEmpty { task.didReceive(body) }
         task.didFinish()
@@ -253,6 +261,14 @@ final class PrismWebHost: PrismWebBase, WKNavigationDelegate, WKUIDelegate {
     }
 
     private func performLoad() {
+        // No URL (none given, or one web_view refused): a blank page, not
+        // the previous one, as an <iframe> without src.
+        if urlString.isEmpty {
+            if let view = webView, let blank = URL(string: "about:blank") {
+                view.load(URLRequest(url: blank))
+            }
+            return
+        }
         let view = webView ?? makeWebView()
         guard let url = URL(string: urlString), url.scheme != nil else { return }
         if url.isFileURL {
@@ -416,7 +432,8 @@ final class PrismWebHost: PrismWebBase, WKNavigationDelegate, WKUIDelegate {
         let pending = queue
         queue.removeAll()
         for json in pending { deliver(json, webView) }
-        if loads {
+        // The blank page shown for no URL is not one the app loaded.
+        if loads && !urlString.isEmpty {
             let url = webView.url?.absoluteString ?? urlString
             url.withCString { a in "".withCString { b in prismRustWebViewEvent(nodeId, 1, a, b) } }
         }

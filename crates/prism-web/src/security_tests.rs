@@ -348,15 +348,16 @@ fn an_invalid_pixel_ratio_is_ignored() {
     for good in [0.25, 1., 1.25, 2., 3., 8.] {
         assert_eq!(scale_factor(good), Some(good));
     }
-    assert_eq!(scale_cookie("prism_vw=1280x800x2"), Some(2.));
+    assert_eq!(scale_cookie("prism_vw=1280x800; prism_dpr=2"), Some(2.));
     for bad in [
         "prism_vw=1280x800",
-        "prism_vw=1280x800xNaN",
-        "prism_vw=1280x800xinf",
-        "prism_vw=1280x800x-1",
-        "prism_vw=1280x800x1e9",
-        "prism_vw=1280x800x",
-        "prism_vw=1280x800xabc",
+        "prism_dpr=NaN",
+        "prism_dpr=inf",
+        "prism_dpr=-1",
+        "prism_dpr=1e9",
+        "prism_dpr=",
+        "prism_dpr=abc",
+        "xprism_dpr=2",
     ] {
         assert_eq!(scale_cookie(bad), None, "{bad}");
     }
@@ -385,6 +386,48 @@ fn an_invalid_pixel_ratio_is_ignored() {
     }
     page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": 2 }));
     crate::tests::op_with_text(&page.next()["p"], "scale 2");
+}
+
+/// The viewport comes from the page too, and an app may allocate memory
+/// for it (`viewport × scale_factor`): each side is clamped to 16384 CSS
+/// pixels, and one that is not finite or is negative is ignored, from the
+/// socket's query, a viewport report or the cookie.
+#[test]
+fn a_huge_viewport_is_clamped() {
+    use crate::app::{MAX_VIEWPORT, viewport_cookie, viewport_size};
+    struct Size;
+    impl prism_core::Render for Size {
+        fn render(&mut self, cx: &mut prism_core::Context<Self>) -> impl prism_core::IntoElement {
+            let (w, h) = cx.viewport();
+            prism_core::text(format!("viewport {w}x{h}"))
+        }
+    }
+    assert_eq!(MAX_VIEWPORT, 16384.);
+    assert_eq!(viewport_size(1e9, 1e30), Some((16384., 16384.)));
+    assert_eq!(viewport_size(400., 800.), Some((400., 800.)));
+    for (w, h) in [(f32::NAN, 1.), (1., f32::INFINITY), (-1., 1.), (1., -0.5)] {
+        assert_eq!(viewport_size(w, h), None, "{w}x{h}");
+    }
+    assert_eq!(viewport_cookie("prism_vw=1e9x1e9"), Some((16384., 16384.)));
+    assert_eq!(viewport_cookie("prism_vw=infx800"), None);
+
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut prism_core::App| {
+        let root = cx.new_entity(|_| Size);
+        cx.set_root(root);
+    });
+    let (app, _dir) = crate::tests::web_app(init, "viewport-huge");
+    // The socket's query.
+    let page = crate::tests::Page::open(&app, "/ws?w=1e9&h=99999999&dpr=8");
+    crate::tests::op_with_text(&page.next()["p"], "viewport 16384x16384");
+    // A viewport report (crossing breakpoints, so it re-renders):
+    // clamped; not finite or negative: ignored.
+    page.send(json!({ "t": "viewport", "w": 400, "h": 500 }));
+    crate::tests::op_with_text(&page.next()["p"], "viewport 400x500");
+    for (w, h) in [(json!(-1), json!(800)), (json!("1e9"), json!(800))] {
+        page.send(json!({ "t": "viewport", "w": w, "h": h }));
+    }
+    page.send(json!({ "t": "viewport", "w": 1e30, "h": 500 }));
+    crate::tests::op_with_text(&page.next()["p"], "viewport 16384x500");
 }
 
 // --- S6: pictures fetched by the server ------------------------------------------------------

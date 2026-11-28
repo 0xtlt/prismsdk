@@ -1468,8 +1468,13 @@ fn relayout(s: &mut State) {
     if w <= 0. {
         return;
     }
-    if (w, h) != s.runtime.app.viewport() {
-        let patches = s.runtime.set_viewport(w, h);
+    // With the window's scale (`cx.scale_factor()`, #343): a size and a
+    // scale that change together run `on_resize` once.
+    let scale = window_scale(&s.renderer.widgets.window);
+    if (w, h) != s.runtime.app.viewport() || scale != s.runtime.app.scale_factor() {
+        let patches = s
+            .runtime
+            .set_window_metrics(w, h, Default::default(), scale);
         if !patches.is_empty() {
             s.renderer.apply(&patches);
             s.renderer.widgets.flush_css();
@@ -5427,11 +5432,9 @@ fn save_png(window: &gtk::Widget, path: &str) {
 // --- Remote pictures (#32) ----------------------------------------------------------------
 
 /// Downloads `src` (a URL, maybe with header lines) off the main thread and
-/// shows it in `p`, unless `p` was given another source meanwhile.
-/// Loads a remote picture off the UI thread. The picture keeps its previous
-/// image until the new one is ready (#343), and shows it only if its source
-/// (`prism-src`, set by `set_text`) is still this one; a failure shows
-/// nothing.
+/// shows it in `p`. The picture keeps its previous image until the new one
+/// is ready (#343), and shows it only if its source (`prism-src`, set by
+/// `set_text`) is still this one; a failure shows nothing.
 fn load_remote_picture(p: &gtk::Picture, src: &str) {
     let (picture, src) = (p.clone(), src.to_string());
     glib::spawn_future_local(async move {
@@ -5441,7 +5444,7 @@ fn load_remote_picture(p: &gtk::Picture, src: &str) {
                 .await
                 .ok()
                 .flatten();
-        // SAFETY: as above, a `String`.
+        // SAFETY: the key only ever holds a `String` (`set_text`).
         let current = unsafe {
             picture
                 .data::<String>("prism-src")

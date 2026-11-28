@@ -89,15 +89,51 @@ impl SchemeRequest {
     }
 
     /// The path, decoded (`/fonts/My Font.woff2`; `/` when the URL has
-    /// none). `%2F` decodes to `/`; engines resolve `.` and `..` before
-    /// they ask.
+    /// none), never above `/`: its `.` and `..` segments are resolved here
+    /// (escaped too: `%2E%2E`), whatever the engine did, and an escaped
+    /// `/`, `\` or NUL stays escaped (`%2F`), so decoding never makes a new
+    /// segment. `app://main/a/../b` is `/b`, `app://main/..%2Fsecret` is
+    /// `/..%2Fsecret`. To map a path to files, take
+    /// [`path_segments`](Self::path_segments).
     pub fn path(&self) -> String {
-        let path = split(&self.url).map_or("", |p| p.path);
-        if path.is_empty() {
-            "/".to_string()
-        } else {
-            percent_decode(path, false)
+        let raw = split(&self.url).map_or("", |p| p.path);
+        if raw.is_empty() {
+            return "/".to_string();
         }
+        let parts: Vec<&str> = raw.split('/').skip(1).collect();
+        let mut kept: Vec<&str> = Vec::new();
+        for (i, seg) in parts.iter().enumerate() {
+            let last = i + 1 == parts.len();
+            match dot_segment(seg) {
+                0 => kept.push(seg),
+                dots => {
+                    if dots == 2 {
+                        kept.pop();
+                    }
+                    // `/a/..` is the directory `/`, with its slash.
+                    if last {
+                        kept.push("");
+                    }
+                }
+            }
+        }
+        percent_decode_path(&format!("/{}", kept.join("/")))
+    }
+
+    /// The path's segments, decoded, for a lookup in a folder or a map:
+    /// `app://main/fonts/My%20Font.woff2` gives `["fonts", "My Font.woff2"]`
+    /// (empty segments left out). `None` if a segment is `.` or `..`
+    /// (escaped or not), or decodes to text with a `/`, a `\` or a NUL:
+    /// such a path could leave the folder, so answer it 404.
+    pub fn path_segments(&self) -> Option<Vec<String>> {
+        let raw = split(&self.url).map_or("", |p| p.path);
+        raw.split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let d = percent_decode(s, false);
+                (d != "." && d != ".." && !d.contains(['/', '\\', '\0'])).then_some(d)
+            })
+            .collect()
     }
 
     /// The query, still encoded (`page=2&q=a%20b`), if any.
@@ -606,6 +642,45 @@ fn split(url: &str) -> Option<Parts<'_>> {
     })
 }
 
+/// Whether a raw path segment is `.` (1) or `..` (2), escaped or not, as
+/// URL parsers read them; 0 otherwise.
+fn dot_segment(seg: &str) -> u8 {
+    match seg.to_ascii_lowercase().as_str() {
+        "." | "%2e" => 1,
+        ".." | ".%2e" | "%2e." | "%2e%2e" => 2,
+        _ => 0,
+    }
+}
+
+/// Decodes a path's `%XX` escapes, but those of `/`, `\\` and NUL, which
+/// stay escaped: decoding never adds a segment or ends a string.
+fn percent_decode_path(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (
+                bytes.get(i + 1).and_then(|&b| hex(b)),
+                bytes.get(i + 2).and_then(|&b| hex(b)),
+            )
+        {
+            let byte = (h * 16 + l) as u8;
+            if matches!(byte, b'/' | b'\\' | 0) {
+                out.extend_from_slice(&bytes[i..i + 3]);
+            } else {
+                out.push(byte);
+            }
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Decodes `%XX` escapes (and `+` as a space in a query).
 fn percent_decode(s: &str, plus: bool) -> String {
     let bytes = s.as_bytes();
@@ -703,6 +778,10 @@ mod tests {
         assert_eq!(r.header("content-type"), Some("application/json"));
         assert_eq!(r.origin().as_deref(), Some("app://main"));
         assert_eq!(SchemeRequest::new("GET", "app://main").path(), "/");
+        assert_eq!(
+            r.path_segments(),
+            Some(vec!["fonts".to_string(), "My Font.woff2".to_string()])
+        );
         assert_eq!(SchemeRequest::new("GET", "app://main?x").path(), "/");
         // The Referer's origin when there is no Origin; `null` stays.
         let referred = SchemeRequest::new("GET", "app://main/a.png")
@@ -711,6 +790,41 @@ mod tests {
         let sandboxed = SchemeRequest::new("GET", "app://main/a").with_header("Origin", "null");
         assert_eq!(sandboxed.origin().as_deref(), Some("null"));
         assert_eq!(SchemeRequest::new("GET", "app://main/").origin(), None);
+    }
+
+    #[test]
+    fn a_path_never_leaves_the_root() {
+        let path = |u: &str| SchemeRequest::new("GET", u).path();
+        let segments = |u: &str| SchemeRequest::new("GET", u).path_segments();
+        // Dot segments, escaped or not, resolve inside `/`.
+        assert_eq!(path("app://main/a/../b"), "/b");
+        assert_eq!(path("app://main/../../secret"), "/secret");
+        assert_eq!(path("app://main/%2e%2E/%2E./.%2e/secret"), "/secret");
+        assert_eq!(path("app://main/a/./b/."), "/a/b/");
+        assert_eq!(path("app://main/a/.."), "/");
+        assert_eq!(path("app://main/a/"), "/a/");
+        assert_eq!(path("app://main/"), "/");
+        // An escaped separator or NUL stays escaped: no new segment.
+        assert_eq!(path("app://main/..%2F..%2Fsecret"), "/..%2F..%2Fsecret");
+        assert_eq!(path("app://main/a%5Cb%00c"), "/a%5Cb%00c");
+        assert_eq!(path("app://main/caf%C3%A9%2fx%20y"), "/café%2fx y");
+        assert_eq!(path("app://main/100%"), "/100%");
+        // Segments refuse anything that could leave a folder.
+        assert_eq!(
+            segments("app://main//a/b%20c/"),
+            Some(vec!["a".to_string(), "b c".to_string()])
+        );
+        assert_eq!(segments("app://main/"), Some(vec![]));
+        for bad in [
+            "app://main/../secret",
+            "app://main/a/./b",
+            "app://main/%2e%2e/secret",
+            "app://main/..%2Fsecret",
+            "app://main/a%5Cb",
+            "app://main/a%00b",
+        ] {
+            assert_eq!(segments(bad), None, "{bad}");
+        }
     }
 
     #[test]

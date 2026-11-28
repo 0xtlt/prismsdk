@@ -891,7 +891,9 @@ impl WebApp {
             language: header(header::ACCEPT_LANGUAGE)
                 .and_then(prism_core::Locale::from_accept_language),
             tz: param("tz").and_then(|v| v.parse().ok()),
-            viewport: num("w").zip(num("h")),
+            viewport: num("w")
+                .zip(num("h"))
+                .and_then(|(w, h)| viewport_size(w, h)),
             scale: num("dpr").and_then(scale_factor),
             device: Some(crate::device_info::from_request(
                 header(header::USER_AGENT).unwrap_or(""),
@@ -1441,25 +1443,40 @@ pub(crate) fn time_zone(cookie_header: &str) -> Option<i32> {
         .filter(|v: &i32| v.abs() <= 14 * 3600)
 }
 
-/// The last viewport the page reported (`prism_vw=1280x800`, or
-/// `prism_vw=1280x800x2` with its pixel ratio).
+/// The last viewport the page reported (`prism_vw=1280x800`), if it is
+/// one [`viewport_size`] accepts.
 pub(crate) fn viewport_cookie(cookie_header: &str) -> Option<(f32, f32)> {
-    let mut parts = viewport_cookie_parts(cookie_header)?;
-    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    let (w, h) = cookie(cookie_header, "prism_vw")?.split_once('x')?;
+    viewport_size(w.parse().ok()?, h.parse().ok()?)
 }
 
-/// The pixel ratio of the last viewport the page reported
-/// (`prism_vw=1280x800x2`), if it is one [`scale_factor`] accepts.
+/// The pixel ratio the page last reported (`prism_dpr=2`), if it is one
+/// [`scale_factor`] accepts. Its own cookie: a server of an older version
+/// on the same domain (a rolling deploy) still reads `prism_vw`.
 pub(crate) fn scale_cookie(cookie_header: &str) -> Option<f32> {
-    let ratio = viewport_cookie_parts(cookie_header)?.nth(2)?;
-    scale_factor(ratio.parse().ok()?)
+    scale_factor(cookie(cookie_header, "prism_dpr")?.parse().ok()?)
 }
 
-fn viewport_cookie_parts(cookie_header: &str) -> Option<std::str::Split<'_, char>> {
-    let v = cookie_header
-        .split(';')
-        .find_map(|kv| kv.trim().strip_prefix("prism_vw="))?;
-    Some(v.split('x'))
+/// The value of cookie `name` in a `Cookie` header.
+fn cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
+    cookie_header.split(';').find_map(|kv| {
+        let (k, v) = kv.trim().split_once('=')?;
+        (k == name).then_some(v)
+    })
+}
+
+/// The largest side of a viewport the server takes from a page, in CSS
+/// pixels (`cx.viewport()`, `on_resize`): a larger one is clamped to it.
+/// The page's report is untrusted, and an app may allocate memory for it
+/// (a bitmap of `viewport × scale_factor`): a shared server must not
+/// follow `w=1e9`.
+pub(crate) const MAX_VIEWPORT: f32 = 16384.;
+
+/// A viewport the page reported, if it is one: finite and not negative,
+/// each side clamped to [`MAX_VIEWPORT`].
+pub(crate) fn viewport_size(w: f32, h: f32) -> Option<(f32, f32)> {
+    (w.is_finite() && h.is_finite() && w >= 0. && h >= 0.)
+        .then(|| (w.min(MAX_VIEWPORT), h.min(MAX_VIEWPORT)))
 }
 
 /// A pixel ratio the page reported (`devicePixelRatio`), if it is one: the

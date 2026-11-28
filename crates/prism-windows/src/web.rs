@@ -424,7 +424,12 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
         for json in pending {
             deliver(&state, core, &json);
         }
-        if state.borrow().config.loads {
+        // The blank page shown for no URL is not one the app loaded.
+        let reports = {
+            let st = state.borrow();
+            st.config.loads && !st.url.is_empty()
+        };
+        if reports {
             let url = core.Source()?.to_string();
             dispatch(UiEvent::WebLoad(id, url));
         }
@@ -676,10 +681,10 @@ fn bridge(state: &Rc<RefCell<State>>, core: &CoreWebView2) -> Result<()> {
     Ok(())
 }
 
+/// Loads `url`; no URL (none given, or one `web_view` refused) shows a
+/// blank page instead of the previous one, as an `<iframe>` without `src`.
 fn navigate(core: &CoreWebView2, url: &str) {
-    if url.is_empty() {
-        return;
-    }
+    let url = if url.is_empty() { "about:blank" } else { url };
     if let Err(e) = core.Navigate(&h(url)) {
         log!("web view: cannot load {url}: {e}");
     }

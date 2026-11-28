@@ -115,7 +115,8 @@ final class PrismWeb {
                 List<String> pending = new ArrayList<>(s.queue);
                 s.queue.clear();
                 for (String json : pending) deliver(view, s, json);
-                if (s.loads) {
+                // The blank page shown for no URL is not one the app loaded.
+                if (s.loads && !s.url.isEmpty()) {
                     JSONObject e = PrismHost.event("webload", id);
                     try {
                         e.put("url", url == null ? s.url : url);
@@ -150,18 +151,21 @@ final class PrismWeb {
         return w;
     }
 
-    /** The domain app schemes are served under (`prism_core::web_view::ENGINE_DOMAIN`). */
-    static final String SCHEME_DOMAIN = ".prism.invalid";
-
     /**
      * A request to an app scheme (#343): the app's answer. null (the WebView's own
      * loading) for any other URL.
      */
     static WebResourceResponse scheme(WebResourceRequest r) {
         Uri u = r.getUrl();
-        String host = u.getHost();
-        if (!"https".equalsIgnoreCase(u.getScheme()) || host == null
-                || !host.toLowerCase(Locale.ROOT).endsWith(SCHEME_DOMAIN)) return null;
+        switch (PrismLinks.appScheme(u.getScheme(), u.getHost())) {
+            case PrismLinks.NOT_APP:
+                return null;
+            case PrismLinks.REFUSE:
+                // Never the network: no host under prism.invalid exists.
+                return response(404, "Not Found", new HashMap<>(), new byte[0]);
+            default:
+                break;
+        }
         StringBuilder headers = new StringBuilder();
         Map<String, String> sent = r.getRequestHeaders();
         if (sent != null) {
@@ -283,8 +287,10 @@ final class PrismWeb {
         s.loadPending = true;
         PrismHost.main.post(() -> {
             s.loadPending = false;
-            if (states.get(n.id) != s || s.url.isEmpty()) return;
-            ((WebView) n.view).loadUrl(s.url);
+            if (states.get(n.id) != s) return;
+            // No URL (none given, or one web_view refused): a blank page, not the previous
+            // one, as an <iframe> without src.
+            ((WebView) n.view).loadUrl(s.url.isEmpty() ? "about:blank" : s.url);
         });
     }
 

@@ -77,6 +77,51 @@ fn with_state(f: impl FnOnce(&mut State)) {
     });
 }
 
+/// Runs `f` on the state unless it is borrowed (a platform callback during
+/// an update): `false` then, so the caller can try again. A torn-down
+/// state runs nothing and counts as done.
+fn try_with_state(f: impl FnOnce(&mut State)) -> bool {
+    STATE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut guard) => {
+            if let Some(state) = guard.as_mut() {
+                f(state);
+            }
+            true
+        }
+        Err(_) => false,
+    })
+}
+
+/// A picture's bytes arrived (main thread, #343): shown now, or once the
+/// state is free again. A completion skipped while the state is busy would
+/// leave its source loading forever (its nodes never show it), so it is
+/// posted again, a few milliseconds later, up to about a second.
+fn picture_ready(src: String, bytes: Option<Vec<u8>>, tries: u32) {
+    let mut payload = Some((src, bytes));
+    let done = try_with_state(|s| {
+        if let Some((src, bytes)) = payload.take() {
+            s.renderer.widgets.picture_loaded(&src, bytes);
+            s.renderer.mark_all_dirty();
+            s.relayout();
+        }
+    });
+    if done {
+        return;
+    }
+    let Some((src, bytes)) = payload else { return };
+    if tries >= 100 {
+        eprintln!(
+            "prism-macos: a loaded picture was dropped (the app stayed busy): {:?}",
+            prism_core::picture_source(&src).0
+        );
+        return;
+    }
+    let when = dispatch2::DispatchTime::try_from(std::time::Duration::from_millis(10))
+        .unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ =
+        dispatch2::DispatchQueue::main().after(when, move || picture_ready(src, bytes, tries + 1));
+}
+
 /// A text field of a selection group (#231), as a drag looks for it: its
 /// text view or field, and the view framing it.
 pub(crate) enum GroupField {
@@ -124,10 +169,11 @@ pub(crate) fn follow_anchors() {
 }
 
 /// The window moved to a screen with more or fewer pixels per point (#343):
-/// the app re-renders for it and is laid out again.
+/// the app hears it with the window's size (`relayout`) and is laid out
+/// again.
 fn sync_scale_factor() {
     with_state(|s| {
-        if s.sync_scale_factor() {
+        if s.backing_scale() != s.runtime.app.scale_factor() {
             s.relayout();
         }
     });
@@ -549,21 +595,16 @@ impl State {
         true
     }
 
-    /// Tells the app the window's pixels per point (`cx.scale_factor()`,
-    /// #343) if they changed. Returns whether they did.
-    fn sync_scale_factor(&mut self) -> bool {
-        let Some(window) = self.renderer.widgets.root.window() else {
-            return false;
-        };
-        let scale = window.backingScaleFactor() as f32;
-        if scale == self.runtime.app.scale_factor() {
-            return false;
-        }
-        let patches = self.runtime.set_scale_factor(scale);
-        if !patches.is_empty() {
-            self.renderer.apply(&patches);
-        }
-        true
+    /// The window's pixels per point (`cx.scale_factor()`, #343), or what
+    /// the app has while the view is in no window.
+    fn backing_scale(&self) -> f32 {
+        self.renderer
+            .widgets
+            .root
+            .window()
+            .map_or(self.runtime.app.scale_factor(), |w| {
+                w.backingScaleFactor() as f32
+            })
     }
 
     fn relayout(&mut self) {
@@ -582,16 +623,20 @@ impl State {
             bottom: i.bottom as f32,
             left: i.left as f32,
         };
+        // The size and the density together: `on_resize` runs once for a
+        // screen change that moves both, and a render for a new density
+        // sees the new viewport.
+        let scale = self.backing_scale();
         if w > 0.
-            && ((w, h) != self.runtime.app.window_size() || safe != self.runtime.app.safe_area())
+            && ((w, h) != self.runtime.app.window_size()
+                || safe != self.runtime.app.safe_area()
+                || scale != self.runtime.app.scale_factor())
         {
-            let patches = self.runtime.set_window(w, h, safe);
+            let patches = self.runtime.set_window_metrics(w, h, safe, scale);
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
             }
         }
-        // After the size: a render for a new density sees the new viewport.
-        self.sync_scale_factor();
         self.sync_window_chrome();
         // Fullscreen, another screen: `cx.device_info()`.
         if w > 0.
@@ -3085,13 +3130,7 @@ impl AppKit {
         let (src, sources) = (src.to_string(), self.image_sources.clone());
         std::thread::spawn(move || {
             let bytes = prism_native::images::load(&src, &sources);
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                with_state(|s| {
-                    s.renderer.widgets.picture_loaded(&src, bytes);
-                    s.renderer.mark_all_dirty();
-                    s.relayout();
-                })
-            });
+            dispatch2::DispatchQueue::main().exec_async(move || picture_ready(src, bytes, 0));
         });
     }
 
@@ -4459,6 +4498,7 @@ impl Widgets for AppKit {
             } else {
                 (paths.to_vec(), Vec::new())
             };
+            crate::vector::hold(view.id(), &drawing);
             *v.ivars().shape.borrow_mut() = shape;
             *v.ivars().drawing.borrow_mut() = drawing;
             v.setNeedsDisplay(true);
@@ -4468,6 +4508,7 @@ impl Widgets for AppKit {
     fn set_drawing_items(&mut self, view: &View, items: &[prism_core::shape::Item]) {
         if let View::Container(v) = view {
             v.ivars().shape.borrow_mut().clear();
+            crate::vector::hold(view.id(), items);
             *v.ivars().drawing.borrow_mut() = items.to_vec();
             v.setNeedsDisplay(true);
         }
@@ -4479,6 +4520,7 @@ impl Widgets for AppKit {
 
     fn destroy(&mut self, view: &View) {
         crate::scene::forget(view.id());
+        crate::vector::forget(view.id());
         crate::carets::forget(view.id());
         self.ix.select_events.remove(&view.id());
         self.ix.pending_selection.remove(&view.id());

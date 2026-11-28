@@ -1246,7 +1246,9 @@ test("window resizes are reported once settled", () => {
   assert.equal(timer.ms, 120);
   timer.fn();
   assert.deepEqual(lastSent(page), { t: "viewport", w: 390, h: 800, safe: [0, 0, 0, 0] });
-  assert.ok(page.document.cookies.some((c) => c.startsWith("prism_vw=390x800")));
+  // The size as older servers read it (`WxH`), the ratio in its own cookie.
+  assert.ok(page.document.cookies.some((c) => c.startsWith("prism_vw=390x800;")));
+  assert.ok(page.document.cookies.some((c) => /^prism_dpr=[0-9.]+;/.test(c)));
 });
 
 test("resizes report the safe-area insets (#28)", () => {

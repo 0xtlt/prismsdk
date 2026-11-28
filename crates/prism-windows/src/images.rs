@@ -68,9 +68,18 @@ impl Images {
         }
     }
 
-    /// Picture `id` is gone: its source is released.
+    /// Picture or shape `id` is gone: its sources are released.
     pub fn forget(&mut self, id: NodeId) {
         self.cache.forget(id);
+    }
+
+    /// Shape `id` draws `items` now: their images stay decoded while it
+    /// does, however large (#343), instead of being evicted, then decoded
+    /// (or downloaded) again, by another picture or the next paint.
+    pub fn hold(&mut self, id: NodeId, items: &[prism_core::shape::Item]) {
+        let mut sources = Vec::new();
+        crate::vector::sources(items, &mut sources);
+        self.cache.hold(id, sources);
     }
 
     /// Whether `src` is loading off the UI thread.
@@ -151,9 +160,11 @@ impl Images {
         self.cache.get(src)?.as_ref()
     }
 
-    /// The decoded bitmap of `src` and its generation (bumped per decode).
-    pub fn bitmap(&self, src: &str) -> Option<(u64, IWICBitmap)> {
-        self.decoded(src).map(|d| (d.generation, d.bitmap.clone()))
+    /// The decoded bitmap of `src` and its generation (bumped per decode),
+    /// made the most recently used: an image drawn now goes last.
+    pub fn bitmap(&mut self, src: &str) -> Option<(u64, IWICBitmap)> {
+        let d = self.cache.touch(src)?.as_ref()?;
+        Some((d.generation, d.bitmap.clone()))
     }
 
     /// Natural size in view units (one pixel per DIP, like CSS).

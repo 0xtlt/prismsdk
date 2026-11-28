@@ -244,17 +244,12 @@ pub fn relayout(s: &mut State) {
     let was = UPDATING.replace(true);
     let (w, h) = s.renderer.widgets.size;
     if w > 0. {
-        if (w, h) != s.runtime.app.viewport() {
-            let patches = s.runtime.set_viewport(w, h);
-            if !patches.is_empty() {
-                prism_core::Backend::apply(&mut s.renderer, &patches);
-            }
-        }
         // Another monitor's DPI, a simulated one (`cx.scale_factor()`, #343):
-        // the pixels per DIP XAML rasterizes at (`XamlRoot.RasterizationScale`).
+        // the pixels per DIP XAML rasterizes at (`XamlRoot.RasterizationScale`),
+        // with the size, which a new DPI changes too: `on_resize` runs once.
         let k = s.renderer.widgets.scale();
-        if k != s.runtime.app.scale_factor() {
-            let patches = s.runtime.set_scale_factor(k);
+        if (w, h) != s.runtime.app.viewport() || k != s.runtime.app.scale_factor() {
+            let patches = s.runtime.set_window_metrics(w, h, Default::default(), k);
             if !patches.is_empty() {
                 prism_core::Backend::apply(&mut s.renderer, &patches);
             }

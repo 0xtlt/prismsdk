@@ -6,6 +6,9 @@
 //!   bounded by bytes ([`UNSHOWN_BYTES`]): going back to a screen shows its
 //!   pictures again without decoding them, and an app that shows a new
 //!   `picture_data` after each gesture keeps a few images, not all of them.
+//! - A node may also hold several sources at once ([`hold`]: a drawing's
+//!   images), each counted as shown while it does: a drawing whose images
+//!   are larger than the pool is not decoded again at every paint.
 //! - Each node's current source is known, so a load that finishes after
 //!   the node moved on to another source never reaches it ([`loaded`]
 //!   names only the nodes still showing the source).
@@ -14,6 +17,7 @@
 //! showing a node's previous image until its new one is ready ([`Show`]).
 //!
 //! [`loaded`]: PictureCache::loaded
+//! [`hold`]: PictureCache::hold
 
 use std::collections::{HashMap, HashSet};
 
@@ -63,6 +67,9 @@ pub struct PictureCache<I> {
     entries: HashMap<String, Entry<I>>,
     /// Each node's current source.
     shown: HashMap<NodeId, String>,
+    /// The sources nodes hold while they show several (a drawing's
+    /// images), each counted as a viewer.
+    held: HashMap<NodeId, Vec<String>>,
     loading: HashSet<String>,
     /// Bytes of the entries no node shows.
     unshown: usize,
@@ -82,6 +89,7 @@ impl<I: Clone> PictureCache<I> {
         PictureCache {
             entries: HashMap::new(),
             shown: HashMap::new(),
+            held: HashMap::new(),
             loading: HashSet::new(),
             unshown: 0,
             budget,
@@ -125,12 +133,59 @@ impl<I: Clone> PictureCache<I> {
         show
     }
 
-    /// Node `node` is gone (or shows no picture any more): its source is
-    /// released.
+    /// Node `node` is gone (or shows no picture any more): its source, and
+    /// the ones it held, are released.
     pub fn forget(&mut self, node: NodeId) {
         if let Some(src) = self.shown.remove(&node) {
             self.release(&src);
         }
+        for src in self.held.remove(&node).into_iter().flatten() {
+            self.release(&src);
+        }
+    }
+
+    /// Node `node` shows all of `sources` now (a drawing's images), instead
+    /// of what it held before: they count as shown, so they are never
+    /// evicted while it does, however large. Nothing is loaded here: the
+    /// backend decodes them as it draws ([`insert`](Self::insert), or
+    /// [`start_load`](Self::start_load) then [`loaded`](Self::loaded)).
+    /// No sources releases what it held.
+    pub fn hold<'a>(&mut self, node: NodeId, sources: impl IntoIterator<Item = &'a str>) {
+        let mut sources: Vec<String> = sources
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        sources.sort();
+        sources.dedup();
+        let now = self.tick();
+        for src in &sources {
+            if let Some(e) = self.entries.get_mut(src) {
+                if e.viewers == 0 {
+                    self.unshown -= e.cost;
+                }
+                e.viewers += 1;
+                e.used = now;
+            }
+        }
+        let previous = if sources.is_empty() {
+            self.held.remove(&node)
+        } else {
+            self.held.insert(node, sources)
+        };
+        for src in previous.into_iter().flatten() {
+            self.release(&src);
+        }
+    }
+
+    /// How many nodes show or hold `src`.
+    fn viewers(&self, src: &str) -> usize {
+        self.shown.values().filter(|s| s.as_str() == src).count()
+            + self
+                .held
+                .values()
+                .filter(|h| h.iter().any(|s| s == src))
+                .count()
     }
 
     fn release(&mut self, src: &str) {
@@ -160,7 +215,8 @@ impl<I: Clone> PictureCache<I> {
             .map(|(n, _)| *n)
             .collect();
         if let Some((image, bytes)) = image {
-            self.store(src, image, bytes, nodes.len());
+            let viewers = self.viewers(src);
+            self.store(src, image, bytes, viewers);
         }
         nodes
     }
@@ -169,7 +225,7 @@ impl<I: Clone> PictureCache<I> {
     /// image decoded for something other than a node (a drawing's image).
     pub fn insert(&mut self, src: &str, image: I, bytes: usize) {
         self.loading.remove(src);
-        let viewers = self.shown.values().filter(|s| s.as_str() == src).count();
+        let viewers = self.viewers(src);
         self.store(src, image, bytes, viewers);
     }
 
@@ -278,6 +334,44 @@ mod tests {
         if c.show(node(n), src) == Show::Load {
             c.loaded(src, Some((src, bytes)));
         }
+    }
+
+    #[test]
+    fn a_drawing_keeps_all_its_images_while_it_holds_them() {
+        // Images larger than the pool, drawn by one node.
+        let mut c = PictureCache::new(10 * MB);
+        c.hold(node(1), ["a", "b", "c", "b"]);
+        for src in ["a", "b", "c"] {
+            c.insert(src, src, 20 * MB);
+        }
+        // All kept, though they are 60 MB with a 10 MB pool: none is
+        // decoded again at the next paint.
+        for src in ["a", "b", "c"] {
+            assert!(c.touch(src).is_some(), "{src}");
+        }
+        assert_eq!(c.unshown_bytes(), 0);
+        // Another picture coming and going does not evict them.
+        show_loaded(&mut c, 2, "d", 20 * MB);
+        c.forget(node(2));
+        assert!(c.get("d").is_none(), "d does not fit the pool");
+        assert_eq!(c.len(), 3);
+        // Decoded before the hold: counted as shown from then on.
+        c.insert("e", "e", 20 * MB);
+        assert!(c.get("e").is_none());
+        c.insert("e", "e", MB);
+        c.hold(node(1), ["a", "e"]);
+        assert_eq!(c.unshown_bytes(), 0, "b and c went, e is held");
+        assert!(c.get("b").is_none() && c.get("c").is_none());
+        // The drawing goes: its images join the pool, which keeps what fits.
+        c.forget(node(1));
+        assert!(c.get("a").is_none());
+        assert_eq!(c.get("e"), Some(&"e"));
+        assert!(c.unshown_bytes() <= 10 * MB);
+        // A node holding nothing more releases everything.
+        c.hold(node(3), ["e"]);
+        assert_eq!(c.unshown_bytes(), 0);
+        c.hold(node(3), []);
+        assert_eq!(c.unshown_bytes(), MB + 1);
     }
 
     #[test]
