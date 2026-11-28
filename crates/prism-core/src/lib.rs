@@ -161,7 +161,9 @@ pub use text_edit::{
     ClipboardContent, CopyEvent, PasteEvent, SelectionRectEvent, SpanClickEvent, edit_events,
 };
 pub use video::{EndedEvent, Video, VideoConfig, video};
-pub use web_view::{WebLoadEvent, WebMessageEvent, WebSandbox, WebView, web_view};
+pub use web_view::{
+    SchemeRequest, SchemeResponse, WebLoadEvent, WebMessageEvent, WebSandbox, WebView, web_view,
+};
 
 use std::sync::Arc;
 
@@ -1376,6 +1378,8 @@ pub mod prelude {
     pub use crate::{SceneTapEvent, scene3d};
     // Web views (#62).
     pub use crate::{WebLoadEvent, WebMessageEvent, WebSandbox, web_view};
+    // The app's own content in web views (#343).
+    pub use crate::{SchemeRequest, SchemeResponse};
     // Videos (#207).
     pub use crate::{EndedEvent, video};
 }

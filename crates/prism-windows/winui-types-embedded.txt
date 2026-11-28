@@ -23,6 +23,9 @@ Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequest
 Microsoft.Web.WebView2.Core.CoreWebView2WebResourceResponse
 Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext
 Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequestSourceKinds
+# App schemes (#343): the app's own content, answered from Rust
+Microsoft.Web.WebView2.Core.CoreWebView2CustomSchemeRegistration
+Microsoft.Web.WebView2.Core.CoreWebView2HttpRequestHeaders
 # Videos
 Microsoft.UI.Xaml.Controls.MediaPlayerElement
 Microsoft.UI.Xaml.Controls.MediaTransportControls

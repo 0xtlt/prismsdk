@@ -7,6 +7,10 @@
 // app's messages as `message` events on `window`. Only the allowed origins
 // (the config's, else the URL's own) are heard and posted to; a link to
 // another origin opens in the system browser.
+//
+// App schemes (#343): the schemes the app serves from Rust
+// (`Application::web_scheme`) get a `WKURLSchemeHandler` on each web view's
+// configuration; Rust answers each request on a background thread.
 import Foundation
 
 /// Implemented in Rust (prism-macos, prism-ios): kind 0 is a message (`a`:
@@ -45,6 +49,127 @@ func prismMessageScript(_ json: String, _ origin: String?) -> String {
     guard let data = try? JSONSerialization.data(withJSONObject: origin, options: [.fragmentsAllowed]),
           let literal = String(data: data, encoding: .utf8) else { return "" }
     return "if (location.protocol + \"//\" + location.host === \(literal)) \(dispatch)"
+}
+
+/// Implemented in Rust (prism-native, `apple::web`): the app's schemes,
+/// one per line, freed with `prism_web_string_free`.
+@_silgen_name("prism_web_schemes")
+func prismRustWebSchemes() -> UnsafeMutablePointer<CChar>?
+@_silgen_name("prism_web_string_free")
+func prismRustWebStringFree(_ p: UnsafeMutablePointer<CChar>?)
+
+/// The answer to request `task`: the status then one `Name: value` header
+/// per line, and the body. Called on a background thread; the pointers are
+/// valid during the call only.
+typealias PrismSchemeDone = @convention(c) (UInt64, UnsafePointer<CChar>?, UnsafePointer<UInt8>?, Int) -> Void
+
+/// Implemented in Rust: runs the app's handler for a request on a
+/// background thread, then calls `done` there.
+@_silgen_name("prism_web_scheme_request")
+func prismRustWebSchemeRequest(_ task: UInt64, _ method: UnsafePointer<CChar>, _ url: UnsafePointer<CChar>,
+                               _ headers: UnsafePointer<CChar>, _ body: UnsafePointer<UInt8>?, _ len: Int,
+                               _ done: PrismSchemeDone)
+
+/// The app's schemes (#343): one handler for all of them, on every web
+/// view's configuration. WebKit starts and stops tasks on the main thread;
+/// the answers come back there too, and a task WebKit stopped is never
+/// touched again (it would raise an exception).
+final class PrismSchemeHandler: NSObject, WKURLSchemeHandler {
+    static let shared = PrismSchemeHandler()
+
+    /// The schemes the app serves, read once: they are registered before
+    /// the first web view.
+    static let schemes: [String] = {
+        guard let p = prismRustWebSchemes() else { return [] }
+        defer { prismRustWebStringFree(p) }
+        return String(cString: p).split(separator: "\n").map(String.init)
+    }()
+
+    /// Running tasks by id, and their ids. Main thread only.
+    private var tasks: [UInt64: WKURLSchemeTask] = [:]
+    private var ids: [ObjectIdentifier: UInt64] = [:]
+    private var next: UInt64 = 0
+
+    /// Serves the app's schemes in web views made with `conf` (none: as
+    /// before).
+    static func install(_ conf: WKWebViewConfiguration) {
+        for scheme in schemes where !WKWebView.handlesURLScheme(scheme) {
+            conf.setURLSchemeHandler(shared, forURLScheme: scheme)
+        }
+    }
+
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        next += 1
+        let id = next
+        tasks[id] = task
+        ids[ObjectIdentifier(task)] = id
+        let request = task.request
+        let method = request.httpMethod ?? "GET"
+        let url = request.url?.absoluteString ?? ""
+        var headers = ""
+        for (name, value) in request.allHTTPHeaderFields ?? [:] {
+            let clean = value.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+            headers += "\(name): \(clean)\n"
+        }
+        let body = request.httpBody ?? PrismSchemeHandler.read(request.httpBodyStream)
+        body.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            method.withCString { m in
+                url.withCString { u in
+                    headers.withCString { h in
+                        prismRustWebSchemeRequest(id, m, u, h, bytes.baseAddress, bytes.count) { id, head, body, len in
+                            let text = head.map { String(cString: $0) } ?? "500"
+                            let data = body.map { Data(bytes: $0, count: len) } ?? Data()
+                            DispatchQueue.main.async { PrismSchemeHandler.shared.finish(id, text, data) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
+        if let id = ids.removeValue(forKey: ObjectIdentifier(task)) {
+            tasks[id] = nil
+        }
+    }
+
+    /// The handler's answer: sent to the task if WebKit still waits for it.
+    private func finish(_ id: UInt64, _ head: String, _ body: Data) {
+        guard let task = tasks.removeValue(forKey: id) else { return }
+        ids[ObjectIdentifier(task)] = nil
+        guard let url = task.request.url else { return }
+        var lines = head.components(separatedBy: "\n")
+        let status = Int(lines.removeFirst()) ?? 500
+        var fields: [String: String] = [:]
+        for line in lines {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = String(line[..<colon])
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            fields[name] = fields[name].map { "\($0), \(value)" } ?? value
+        }
+        fields["Content-Length"] = String(body.count)
+        guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",
+                                             headerFields: fields) else { return }
+        task.didReceive(response)
+        if !body.isEmpty { task.didReceive(body) }
+        task.didFinish()
+    }
+
+    /// A request body WebKit gave as a stream.
+    private static func read(_ stream: InputStream?) -> Data {
+        guard let stream = stream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let n = stream.read(&buffer, maxLength: buffer.count)
+            if n <= 0 { break }
+            data.append(buffer, count: n)
+        }
+        return data
+    }
 }
 
 /// The script message handler, held weakly (WebKit retains its handlers).
@@ -193,6 +318,7 @@ final class PrismWebHost: PrismWebBase, WKNavigationDelegate, WKUIDelegate {
     private func makeWebView() -> WKWebView {
         let conf = WKWebViewConfiguration()
         if ephemeral { conf.websiteDataStore = .nonPersistent() }
+        PrismSchemeHandler.install(conf)
         installBridge(conf.userContentController)
         let view = WKWebView(frame: bounds, configuration: conf)
         view.navigationDelegate = self

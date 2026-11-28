@@ -8,6 +8,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebMessage;
 import android.webkit.WebMessagePort;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -38,6 +39,12 @@ import org.json.JSONTokener;
  * allowed. `prismHost` is a script (SHIM) the main frame runs when its page
  * starts; it queues messages until the port arrives, after the page loads.
  * A navigation closes the port. Forms are not held back by the sandbox.
+ *
+ * App schemes (#343): Rust sends a page of the app's own scheme (`app://main/x`) as the
+ * https URL standing for it (`https://main.app.prism.invalid/x`, a host that never exists:
+ * Chromium's fetch only knows web schemes), and its allowed origins the same way. Every
+ * request to `*.prism.invalid` is answered by the app's handler (`PrismHost.webScheme`, on
+ * the WebView's own thread) and never reaches the network.
  */
 final class PrismWeb {
     private PrismWeb() {}
@@ -70,6 +77,11 @@ final class PrismWeb {
         w.setBackgroundColor(Color.TRANSPARENT);
         final long id = n.id;
         w.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest r) {
+                return scheme(r);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {
                 // The main frame stays on the allowed origins: a link
@@ -136,6 +148,89 @@ final class PrismWeb {
             }
         });
         return w;
+    }
+
+    /** The domain app schemes are served under (`prism_core::web_view::ENGINE_DOMAIN`). */
+    static final String SCHEME_DOMAIN = ".prism.invalid";
+
+    /**
+     * A request to an app scheme (#343): the app's answer. null (the WebView's own
+     * loading) for any other URL.
+     */
+    static WebResourceResponse scheme(WebResourceRequest r) {
+        Uri u = r.getUrl();
+        String host = u.getHost();
+        if (!"https".equalsIgnoreCase(u.getScheme()) || host == null
+                || !host.toLowerCase(Locale.ROOT).endsWith(SCHEME_DOMAIN)) return null;
+        StringBuilder headers = new StringBuilder();
+        Map<String, String> sent = r.getRequestHeaders();
+        if (sent != null) {
+            for (Map.Entry<String, String> h : sent.entrySet()) {
+                if (h.getKey() == null || h.getValue() == null) continue;
+                headers.append(h.getKey()).append(": ")
+                        .append(h.getValue().replace('\r', ' ').replace('\n', ' ')).append('\n');
+            }
+        }
+        byte[] answer = null;
+        try {
+            answer = PrismHost.webScheme(r.getMethod(), u.toString(), headers.toString());
+        } catch (Throwable ignored) {
+        }
+        // Never the network: a host under prism.invalid does not exist.
+        if (answer == null) return response(404, "Not Found", new HashMap<>(), new byte[0]);
+        int end = -1;
+        for (int i = 0; i + 1 < answer.length; i++) {
+            if (answer[i] == '\n' && answer[i + 1] == '\n') {
+                end = i;
+                break;
+            }
+        }
+        if (end < 0) return response(500, "Internal Server Error", new HashMap<>(), new byte[0]);
+        String[] lines = new String(answer, 0, end, java.nio.charset.StandardCharsets.UTF_8).split("\n");
+        String[] first = lines[0].split(" ", 2);
+        int status;
+        try {
+            status = Integer.parseInt(first[0]);
+        } catch (NumberFormatException e) {
+            status = 500;
+        }
+        String reason = first.length > 1 && !first[1].isEmpty() ? first[1] : "OK";
+        Map<String, String> fields = new HashMap<>();
+        for (int i = 1; i < lines.length; i++) {
+            int colon = lines[i].indexOf(':');
+            if (colon <= 0) continue;
+            String name = lines[i].substring(0, colon);
+            String value = lines[i].substring(colon + 1).trim();
+            String had = fields.get(name);
+            fields.put(name, had == null ? value : had + ", " + value);
+        }
+        byte[] body = java.util.Arrays.copyOfRange(answer, end + 2, answer.length);
+        return response(status, reason, fields, body);
+    }
+
+    /**
+     * A WebResourceResponse: its MIME type and charset from `Content-Type`. Android refuses
+     * redirects (3xx) there: they become 500s.
+     */
+    static WebResourceResponse response(int status, String reason, Map<String, String> fields, byte[] body) {
+        if (status < 100 || status > 599 || (status >= 300 && status < 400)) {
+            status = 500;
+            reason = "Internal Server Error";
+        }
+        String type = null;
+        for (Map.Entry<String, String> f : fields.entrySet()) {
+            if (f.getKey().equalsIgnoreCase("Content-Type")) type = f.getValue();
+        }
+        String mime = "application/octet-stream", charset = null;
+        if (type != null) {
+            String[] parts = type.split(";");
+            mime = parts[0].trim();
+            for (int i = 1; i < parts.length; i++) {
+                String p = parts[i].trim();
+                if (p.toLowerCase(Locale.ROOT).startsWith("charset=")) charset = p.substring(8).replace("\"", "");
+            }
+        }
+        return new WebResourceResponse(mime, charset, status, reason, fields, new java.io.ByteArrayInputStream(body));
     }
 
     /** `scheme://host[:port]`, lower-case, without the scheme's default port. */

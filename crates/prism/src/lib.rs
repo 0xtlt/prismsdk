@@ -151,6 +151,33 @@ pub struct Application {
     /// The app's own locale, or the ones it supports (#229).
     locale: Option<prism_core::Locale>,
     supported_locales: Vec<prism_core::Locale>,
+    /// The schemes the app serves to its web views (#343).
+    schemes: AppSchemes,
+}
+
+/// A scheme's handler ([`Application::web_scheme`]).
+type SchemeHandler = Arc<dyn Fn(&SchemeRequest) -> SchemeResponse + Send + Sync>;
+
+/// The schemes of [`Application::web_scheme`].
+#[derive(Clone, Default)]
+struct AppSchemes(Vec<(String, SchemeHandler)>);
+
+impl std::fmt::Debug for AppSchemes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(name, _)| name))
+            .finish()
+    }
+}
+
+impl AppSchemes {
+    /// Serves the schemes in every web view of the process.
+    fn register(&self) {
+        for (name, handler) in &self.0 {
+            let handler = handler.clone();
+            prism_core::web_view::register_web_scheme(name, move |r| handler(r));
+        }
+    }
 }
 
 /// The store of [`Application::store`].
@@ -317,6 +344,60 @@ impl Application {
         self
     }
 
+    /// Serves the app's own content to its web views (#343): pages,
+    /// `fetch()` answers, stylesheets, fonts and images of scheme `scheme`
+    /// come from `handler`, without a local server.
+    /// `web_view("app://main/index.html")` then loads from it, and so does
+    /// every URL of that page (relative ones, `fetch`, CSS, fonts, images).
+    ///
+    /// ```ignore
+    /// Application::new()
+    ///     .web_scheme("app", |req: &SchemeRequest| match req.path().as_str() {
+    ///         "/" | "/index.html" => SchemeResponse::html(include_str!("../web/index.html")),
+    ///         "/api/doc.json" if req.origin().as_deref() == Some("app://main") => {
+    ///             SchemeResponse::json(&load_document())
+    ///         }
+    ///         path => match ASSETS.get(path.trim_start_matches('/')) {
+    ///             Some(bytes) => SchemeResponse::file(path, bytes.to_vec()),
+    ///             None => SchemeResponse::not_found(),
+    ///         },
+    ///     })
+    ///     .run(|cx| cx.new_entity(Canvas::new));
+    /// ```
+    ///
+    /// The handler runs on a background thread, never the UI's; one that
+    /// panics answers `500` and the app goes on. Any frame inside the web
+    /// view can ask, a third-party frame the page embeds too: before
+    /// answering with private data, check [`SchemeRequest::origin`]. The
+    /// app's page reports messages from `app://main` and loads of
+    /// `app://main/…` on every platform; Android serves it at
+    /// `https://main.app.prism.invalid/…` (see
+    /// [`web_view`](prism_core::web_view#app-schemes)) and gives no
+    /// request bodies. On the web the handler is not called: the app
+    /// serves the scheme's pages with its own routes
+    /// (`WebApp::web_scheme_path`).
+    ///
+    /// # Panics
+    ///
+    /// If `scheme` is not one an app may serve (lower-case `a-z`, `0-9`,
+    /// `-`; not `http`, `https`, `file`, `data`, `about`… see
+    /// [`check_web_scheme`](prism_core::web_view::check_web_scheme)), or is
+    /// served twice.
+    pub fn web_scheme(
+        mut self,
+        scheme: &str,
+        handler: impl Fn(&SchemeRequest) -> SchemeResponse + Send + Sync + 'static,
+    ) -> Self {
+        if let Err(why) = prism_core::web_view::check_web_scheme(scheme) {
+            panic!("prism: Application::web_scheme: {why}");
+        }
+        if self.schemes.0.iter().any(|(name, _)| name == scheme) {
+            panic!("prism: Application::web_scheme: \"{scheme}\" is served twice");
+        }
+        self.schemes.0.push((scheme.to_string(), Arc::new(handler)));
+        self
+    }
+
     /// Web server port (default 3000, `PRISM_PORT` overrides).
     pub fn port(mut self, port: u16) -> Self {
         self.config.port = port;
@@ -356,6 +437,7 @@ impl Application {
         self,
         init: impl Fn(&mut App) -> Entity<V> + Send + Sync + 'static,
     ) -> prism_web::WebApp {
+        self.schemes.register();
         let breakpoints = self.breakpoints;
         let (locale, supported) = (self.locale.clone(), self.supported_locales.clone());
         let store = self.store.0.clone();
@@ -376,6 +458,7 @@ impl Application {
     /// Starts the backend selected at compile time. `init` creates the root
     /// entity; it runs once per window, or once per browser session on the web.
     pub fn run<V: Render>(self, init: impl Fn(&mut App) -> Entity<V> + Send + Sync + 'static) {
+        self.schemes.register();
         let breakpoints = self.breakpoints;
         let (locale, supported) = (self.locale.clone(), self.supported_locales.clone());
         let store = self.store.0.clone();
@@ -584,6 +667,34 @@ mod tests {
     fn describe_refuses_unknown_questions() {
         let (config, init) = app_with_surfaces();
         assert_eq!(describe("everything", &config, &init), None);
+    }
+
+    #[test]
+    fn web_schemes_are_served_once_the_app_starts() {
+        let app = Application::new().web_scheme("facade-test", |r| SchemeResponse::text(r.path()));
+        assert!(!prism_core::web_view::is_web_scheme("facade-test"));
+        app.schemes.register();
+        let r = prism_core::web_view::respond_web_request(&SchemeRequest::new(
+            "GET",
+            "facade-test://main/a",
+        ));
+        assert_eq!(r.body, b"/a");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "prism: Application::web_scheme: \"file\" is a scheme the web engines"
+    )]
+    fn an_engine_scheme_fails_at_startup() {
+        let _ = Application::new().web_scheme("file", |_| SchemeResponse::not_found());
+    }
+
+    #[test]
+    #[should_panic(expected = "\"app\" is served twice")]
+    fn a_scheme_served_twice_fails_at_startup() {
+        let _ = Application::new()
+            .web_scheme("app", |_| SchemeResponse::not_found())
+            .web_scheme("app", |_| SchemeResponse::not_found());
     }
 
     #[test]
