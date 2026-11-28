@@ -44,7 +44,10 @@
 //! (`{"t":"viewport","id":overlay,"w","h"}`). A web view reports its page's
 //! messages as `{"t":"webmsg","id","data","origin"}` (`data`: JSON text) and
 //! its loads as `{"t":"webload","id","url"}`; its `text` is the URL, its
-//! `config` a `prism_core::web_view::WebViewConfig`.
+//! `config` a `prism_core::web_view::WebViewConfig`. A URL or allowed
+//! origin of an app scheme (`app://main`, #343) goes to the host as the
+//! `https:` one standing for it (`https://main.app.prism.invalid`,
+//! `prism_core::web_view::engine_url`), and comes back as the app wrote it.
 //!
 //! Styles carry `tf`: `[x, y, scale, degrees]` (null: none). `style`, `frame`,
 //! `exit` and `repeat` may carry `anim`: `{d, delay, ease}` (seconds, cubic
@@ -204,6 +207,47 @@ pub fn change_value(v: &Value) -> Option<f64> {
     } else {
         v.as_f64()
     }
+}
+
+/// `url` as the app wrote it: an app scheme's (#343) for the `https:` URL
+/// standing for it, else unchanged.
+fn app_url(url: &str) -> String {
+    prism_core::web_view::app_url(url).unwrap_or_else(|| url.to_string())
+}
+
+/// A request the host's web view made to the `https:` URL standing for an
+/// app scheme (#343, Android's `shouldInterceptRequest`), as the app's
+/// handler sees it: its URL, `Origin` and `Referer` as the app writes them
+/// (`app://main/…`). `headers` are `Name: value` lines. `None` for a URL
+/// that stands for no app scheme.
+pub fn scheme_request(method: &str, url: &str, headers: &str) -> Option<prism_core::SchemeRequest> {
+    let url = prism_core::web_view::app_url(url)?;
+    let mut request = prism_core::SchemeRequest::new(method, url);
+    request.headers = prism_core::web_view::decode_header_lines(headers)
+        .into_iter()
+        .map(|(name, value)| {
+            let mapped =
+                if name.eq_ignore_ascii_case("origin") || name.eq_ignore_ascii_case("referer") {
+                    app_url(&value)
+                } else {
+                    value
+                };
+            (name, mapped)
+        })
+        .collect();
+    Some(request)
+}
+
+/// An app scheme's answer for the host: `<status> <reason>`, one
+/// `Name: value` line per header, an empty line, then the body.
+pub fn encode_scheme_response(r: &prism_core::SchemeResponse) -> Vec<u8> {
+    let mut out = format!("{} {}\n", r.status, r.reason()).into_bytes();
+    for (name, value) in r.header_list() {
+        out.extend_from_slice(format!("{name}: {value}\n").as_bytes());
+    }
+    out.push(b'\n');
+    out.extend_from_slice(&r.body);
+    out
 }
 
 /// The input events of #17 a host reports (`click` with a position,
@@ -395,14 +439,16 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
             v.get("at")?.as_u64()? as usize,
             Modifiers::from_bits(v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8),
         )),
+        // The page of an app scheme (#343) is reported as the app wrote it
+        // (`app://main`), not as the `https:` URL standing for it.
         "webmsg" => Some(prism_core::UiEvent::WebMessage(
             id?,
             v.get("data")?.as_str()?.to_string(),
-            v.get("origin")?.as_str()?.to_string(),
+            app_url(v.get("origin")?.as_str()?),
         )),
         "webload" => Some(prism_core::UiEvent::WebLoad(
             id?,
-            v.get("url")?.as_str()?.to_string(),
+            app_url(v.get("url")?.as_str()?),
         )),
         // Files dropped on a drop target (#111), copied where the app reads
         // them: `{"t":"drop","id","files":[{path,name,mime,size}]}`.
@@ -1133,6 +1179,13 @@ impl Widgets for RemoteWidgets {
 
     fn set_text(&mut self, id: &NodeId, text: &str) {
         self.texts.insert(*id, text.to_string());
+        // A page of an app scheme (#343) goes to the host as the `https:`
+        // URL standing for it: Chromium only fetches web schemes.
+        let text = match self.kinds.get(id) {
+            Some(NodeKind::WebView) => prism_core::web_view::engine_url(text),
+            _ => None,
+        }
+        .unwrap_or_else(|| text.to_string());
         self.ops
             .push(json!({ "op": "text", "id": id, "text": text }));
     }
@@ -1376,7 +1429,20 @@ impl Widgets for RemoteWidgets {
                 .push(json!({ "op": "runs", "id": id, "runs": runs_json(config) }));
             return;
         }
-        let mut op = json!({ "op": "config", "id": id, "config": config });
+        // A web view's allowed origins of an app scheme (#343): the
+        // `https:` ones the host's page shows.
+        let sent = if kind == NodeKind::WebView {
+            let mut c = prism_core::web_view::WebViewConfig::decode(config);
+            for o in &mut c.origins {
+                if let Some(engine) = prism_core::web_view::engine_url(o) {
+                    *o = engine;
+                }
+            }
+            c.encode()
+        } else {
+            config.to_string()
+        };
+        let mut op = json!({ "op": "config", "id": id, "config": sent });
         // A screen's bar buttons (#30): the glyph of each one's icon ("":
         // none), for hosts without SF Symbols.
         if kind == NodeKind::Screen {

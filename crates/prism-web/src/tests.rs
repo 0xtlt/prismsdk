@@ -2203,6 +2203,69 @@ fn a_session_follows_the_viewport_and_lifecycle() {
     op_with_text(&page.next()["p"], "narrow");
 }
 
+struct Density;
+impl Render for Density {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        text(format!("scale {}", cx.scale_factor()))
+    }
+}
+
+pub(crate) fn density_app(tag: &str) -> (WebApp, TempDir) {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Density);
+        cx.set_root(root);
+    });
+    web_app(init, tag)
+}
+
+/// A viewport report with a new size and ratio (browser zoom resizes the
+/// viewport in CSS pixels too) runs `on_resize` once, with both new.
+#[test]
+fn a_zoom_runs_resize_handlers_once_with_the_new_size() {
+    type Seen = Vec<((f32, f32), f32)>;
+    let seen: Arc<std::sync::Mutex<Seen>> = Arc::default();
+    let log = seen.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let root = cx.new_entity(|_| Density);
+        cx.set_root(root);
+        let log = log.clone();
+        cx.on_resize(move |size, cx| log.lock().unwrap().push((size, cx.scale_factor())));
+    });
+    let (app, _dir) = web_app(init, "dpr-resize");
+    let page = Page::open(&app, "/ws?w=1000&h=800&dpr=1");
+    op_with_text(&page.next()["p"], "scale 1");
+    seen.lock().unwrap().clear();
+    // Zoomed to 200 %: half the CSS pixels, twice the ratio.
+    page.send(json!({ "t": "viewport", "w": 500, "h": 400, "dpr": 2 }));
+    op_with_text(&page.next()["p"], "scale 2");
+    assert_eq!(*seen.lock().unwrap(), vec![((500., 400.), 2.)]);
+}
+
+#[test]
+fn a_session_follows_the_pixel_ratio() {
+    let (app, _dir) = density_app("dpr");
+    // 1 until the page reports.
+    let page = Page::open(&app, "/ws?w=400&h=800");
+    op_with_text(&page.next()["p"], "scale 1");
+    // The socket's query: the first tree has it.
+    let page = Page::open(&app, "/ws?w=400&h=800&dpr=2");
+    op_with_text(&page.next()["p"], "scale 2");
+    // Browser zoom, another screen: the viewport report carries it.
+    page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": 1.5 }));
+    op_with_text(&page.next()["p"], "scale 1.5");
+    // A report without it keeps it.
+    page.send(json!({ "t": "viewport", "w": 400, "h": 800 }));
+    page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": 3 }));
+    op_with_text(&page.next()["p"], "scale 3");
+    // The first paint reads the cookie the page wrote.
+    let mut headers = HeaderMap::new();
+    headers.insert("cookie", "prism_vw=1280x800; prism_dpr=2".parse().unwrap());
+    let mut req = Request::get("/").body(()).unwrap();
+    *req.headers_mut() = headers;
+    let html = String::from_utf8(app.handle(&req).body().clone()).unwrap();
+    assert!(html.contains("scale 2"), "{html}");
+}
+
 #[test]
 fn a_late_platform_authenticator_report_re_renders() {
     struct Auth;
@@ -2701,6 +2764,16 @@ fn cookies_and_urls_are_parsed_strictly() {
     );
     assert_eq!(viewport_cookie("prism_vw=1280x800"), Some((1280., 800.)));
     assert_eq!(viewport_cookie("prism_vw=1280"), None);
+    // Clamped, finite and not negative only (#343).
+    assert_eq!(viewport_cookie("prism_vw=1e9x800"), Some((16384., 800.)));
+    assert_eq!(viewport_cookie("prism_vw=NaNx800"), None);
+    assert_eq!(viewport_cookie("prism_vw=1280xinf"), None);
+    assert_eq!(viewport_cookie("prism_vw=-1x800"), None);
+    // Another cookie whose name ends the same is not it.
+    assert_eq!(
+        viewport_cookie("xprism_vw=1x1; prism_vw=2x3"),
+        Some((2., 3.))
+    );
     assert_eq!(time_zone("prism_tz=-18000"), Some(-18000));
     assert_eq!(time_zone("prism_tz=999999"), None, "out of range");
     let a = crate::app::new_session_id();

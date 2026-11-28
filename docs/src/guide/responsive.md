@@ -9,7 +9,7 @@ sidebar().visible_from(Breakpoint::Expanded)              // laptops and up
 
 // Structure: anything else.
 if cx.breakpoint() >= Breakpoint::Expanded { two_panes() } else { one_pane() }
-cx.on_resize(|(w, h), app| { … });                        // every size change
+cx.on_resize(|(w, h), app| { … });                        // every size change (and density change)
 ```
 
 | Breakpoint | Width | Typically |
@@ -49,6 +49,43 @@ content size.
 | Web | `env(safe-area-inset-*)`, reported by the page on connect and resize (zero unless the page is laid out under the notch with `viewport-fit=cover`) |
 | Linux | none: GTK windows have no system insets |
 | Windows | none: desktop windows have no system insets |
+
+## Pixel density
+
+```rust
+let (w, h) = cx.viewport();        // points (CSS pixels on the web)
+let scale = cx.scale_factor();     // pixels per point: 2 on a Retina Mac, 3 on most iPhones
+let png = render_canvas((w * scale).round() as u32, (h * scale).round() as u32);
+picture_data(png, "image/png").w(w).h(h)
+```
+
+Content the app rasterizes itself (a chart, a canvas, a document drawn with
+tiny-skia or resvg) is sharp when it is drawn at `size × cx.scale_factor()`
+pixels and shown at `size` points: a Retina screen gets its 2× bitmap, a 1×
+screen does not pay for one. It is 1 until the platform reports, and often
+fractional (Windows at 125 or 150 %, Android, Linux with fractional scaling,
+a zoomed browser). It changes when the window moves to another screen or the
+browser zooms: the app re-renders and `on_resize` handlers run once, with the
+new size and density (the same size if only the density changed).
+
+| Backend | Scale factor | Changes |
+|---|---|---|
+| macOS | the window's `backingScaleFactor` | the window moves to another screen (`viewDidChangeBackingProperties`) |
+| iOS, iPadOS, tvOS, visionOS | the trait collection's `displayScale` (times the TV zoom on tvOS) | an iPad's external display (trait changes) |
+| watchOS | `WKInterfaceDevice.screenScale` (times the watch's zoom) | never |
+| Android | `DisplayMetrics.density` (pixels per dp) | the display size setting, another display (configuration changes) |
+| Web | `devicePixelRatio`, sent with the socket's handshake, the viewport reports and the `prism_dpr` cookie (the server takes 0.25 to 8) | browser zoom, another screen (a `resolution` media query) |
+| Linux | the GDK surface's fractional `scale` on GTK 4.12 and later, else GTK's integer scale factor | another monitor, the desktop's scale (`notify::scale`, `notify::scale-factor`) |
+| Windows | the window's DPI ÷ 96: what XAML rasterizes at (`XamlRoot.RasterizationScale`) | another monitor, the display's scale (`WM_DPICHANGED`) |
+
+`cx.device_info().screen.scale` is the screen's own density, rounded up to
+1 on the web; `cx.scale_factor()` is the window's, the one to render at.
+
+On the web the viewport and the ratio come from the browser, so a modified
+page can send anything: the server clamps each side of `cx.viewport()` to
+16384 CSS pixels and takes ratios from 0.25 to 8. A bitmap of `viewport ×
+scale_factor` can still be 131072 pixels a side: cap the size you allocate
+(a chart rarely needs more than 4096 pixels a side).
 
 ## Your own breakpoints, any width
 

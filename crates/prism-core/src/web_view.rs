@@ -33,7 +33,31 @@
 //! | macOS, iOS, iPadOS, visionOS | `WKWebView` | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
 //! | Android | `android.webkit.WebView` | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
 //! | Windows | `WebView2` (WinUI, the Edge WebView2 Runtime) | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
-//! | tvOS, watchOS, Linux | none (`capabilities().web_view` is false): an empty box | – | – |
+//! | Linux, with prismsdk's `web-view` feature | `WebKitWebView` (WebKitGTK 6.0) | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
+//! | tvOS, watchOS, Linux without the feature | none (`capabilities().web_view` is false): an empty box | – | – |
+//!
+//! **The app's own content** (#343): a scheme the app serves from Rust,
+//! `Application::web_scheme("app", |req| …)`, loads `app://main/index.html`
+//! and everything that page asks for (relative URLs, `fetch`, CSS, fonts,
+//! images) from the handler, on a background thread, without a local
+//! server. See [`scheme`](self#app-schemes) below and [`SchemeRequest`].
+//!
+//! ```no_run
+//! use prism_core::web_view::{SchemeRequest, SchemeResponse, register_web_scheme};
+//!
+//! // What `Application::web_scheme("app", …)` does.
+//! register_web_scheme("app", |req: &SchemeRequest| match req.path().as_str() {
+//!     "/" | "/index.html" => SchemeResponse::html(r#"<link rel="stylesheet" href="app.css">
+//!         <script>fetch("data.json").then((r) => r.json()).then(console.log)</script>"#),
+//!     "/app.css" => SchemeResponse::file("app.css", "body { margin: 0 }"),
+//!     // Private data: only for the app's own page.
+//!     "/data.json" if req.origin().as_deref() == Some("app://main") => {
+//!         SchemeResponse::json(&[1, 2, 3])
+//!     }
+//!     _ => SchemeResponse::not_found(),
+//! });
+//! // In a render: `web_view("app://main/index.html")`.
+//! ```
 //!
 //! A page that runs in both kinds of hosts sends with:
 //!
@@ -57,9 +81,45 @@
 //! cannot be held back (it may navigate anywhere), only its messages are
 //! filtered.
 //!
+//! WebKitGTK does not say which frame a navigation is for: on Linux a click
+//! that would take an embedded frame to an origin the view does not allow
+//! opens in the system browser too.
+//!
 //! **Sandbox** ([`sandbox`](WebView::sandbox)): without it the page has the
 //! rights of its own origin, as in a browser tab. With it, only what the
 //! [`WebSandbox`] allows: scripts, forms, new windows, its origin's storage.
+//!
+//! # App schemes
+//!
+//! | Platform | The page of `web_view("app://main/x")` | How it is served |
+//! |---|---|---|
+//! | macOS, iOS, iPadOS, visionOS | `app://main/x` | `WKURLSchemeHandler` |
+//! | Windows | `app://main/x` | a WebView2 custom scheme (`CoreWebView2CustomSchemeRegistration`, `WebResourceRequested`) |
+//! | Linux, with prismsdk's `web-view` feature | `app://main/x` | a URI scheme of WebKitGTK's web context (`webkit_web_context_register_uri_scheme`) |
+//! | Android | `https://main.app.prism.invalid/x` ([`engine_url`]): Chromium's `fetch` only knows web schemes | `shouldInterceptRequest`; the request's body is not available |
+//! | Web | `<path>/main/x`, a path the app serves with its own routes (`WebApp::web_scheme_path("app", "<path>")`): the handler is not called | the app's HTTP server |
+//! | tvOS, watchOS, Linux without the feature | – (no web view) | – |
+//!
+//! Wherever the page really is, the app sees the URL it wrote:
+//! [`SchemeRequest::url`], [`WebLoadEvent::url`] (`app://main/x`) and
+//! [`WebMessageEvent::origin`] (`app://main`). The default allowed origin
+//! of the view is the URL's own, `app://main`, so the page posts with
+//! `prismHost` as any other. Use relative URLs in the page (`app.css`,
+//! `/fonts/a.woff2`): an absolute `app://…` link does not load on Android
+//! or the web.
+//!
+//! Any frame inside the web view can request the scheme, a third-party
+//! frame the page embeds too: a handler that hands out private data checks
+//! [`SchemeRequest::origin`] (the requesting page's, when the engine tells).
+//! No CORS header is added for it.
+
+mod scheme;
+
+pub use scheme::{
+    ENGINE_DOMAIN, SchemeRequest, SchemeResponse, app_url, check_web_scheme, content_type_of,
+    decode_header_lines, engine_url, is_web_scheme, reason_phrase, register_web_scheme,
+    respond_web_request, serve_web_request, web_schemes,
+};
 
 use crate::a11y::{Accessibility, Accessible};
 use crate::element::{Element, FluentBuilder, Handler, IntoElement, NodeKind, VNode};
@@ -114,8 +174,9 @@ pub struct WebSandbox {
     pub popups: bool,
     /// Keep its origin: cookies and storage. Without it the web treats the
     /// page as an opaque origin (its messages come from `"null"`), Apple
-    /// platforms give it a private, non-persistent store, Android turns
-    /// DOM storage off.
+    /// platforms give it a private, non-persistent store, Windows browses
+    /// InPrivate, Linux gives it an ephemeral network session, Android
+    /// turns DOM storage off.
     pub same_origin: bool,
 }
 
@@ -334,12 +395,13 @@ pub fn origin_of(url: &str) -> Option<String> {
 }
 
 /// Whether a web view may load `url` ([`web_view`]): an `http:`, `https:`
-/// or (natively) `file:` URL, or a path relative to the app's page. Other
+/// or (natively) `file:` URL, a URL of a scheme the app serves
+/// ([`register_web_scheme`]), or a path relative to the app's page. Other
 /// schemes are refused: a `javascript:` URL would run in the app's own
-/// page on the web, and `data:`, `blob:` or an app's custom scheme are not
-/// pages the app talks to. The scheme is read as browsers read it:
-/// surrounding spaces and control characters are ignored, and so are tabs
-/// and newlines inside (`java\tscript:`).
+/// page on the web, and `data:`, `blob:` or another app's custom scheme
+/// are not pages the app talks to. The scheme is read as browsers read
+/// it: surrounding spaces and control characters are ignored, and so are
+/// tabs and newlines inside (`java\tscript:`).
 pub fn is_web_view_url(url: &str) -> bool {
     let url: String = url
         .trim_matches(|c: char| c <= ' ')
@@ -363,18 +425,17 @@ pub fn is_web_view_url(url: &str) -> bool {
     if !is_scheme {
         return true;
     }
-    matches!(
-        scheme.to_ascii_lowercase().as_str(),
-        "http" | "https" | "file"
-    )
+    let scheme = scheme.to_ascii_lowercase();
+    matches!(scheme.as_str(), "http" | "https" | "file") || is_web_scheme(&scheme)
 }
 
 /// A web page shown inside the app (see the [module docs](self)). `url` is
 /// absolute; on the web a path (`/preview/1`) is relative to the app's page.
 /// Give it a size (`.flex_1()`, `.h(…)`): it has no natural one.
 ///
-/// Only `http:`, `https:` and (natively) `file:` URLs and relative paths
-/// are loaded ([`is_web_view_url`]); with any other the view stays blank.
+/// Only `http:`, `https:`, (natively) `file:` URLs, those of the app's
+/// own schemes (see [App schemes](self#app-schemes)) and relative paths are
+/// loaded ([`is_web_view_url`]); with any other the view stays blank.
 pub fn web_view(url: impl Into<String>) -> WebView {
     let mut node = VNode::new(NodeKind::WebView);
     let url = url.into();

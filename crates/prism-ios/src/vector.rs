@@ -12,7 +12,6 @@
 //! The macOS and iOS backends each have this file, with the same content.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::null;
 
@@ -25,6 +24,7 @@ use prism_core::shape::{
     Anchor, Baseline, Fit, Gradient, GradientShape, Group, Image, Item, Matrix, Path, Segment,
     Spread, Text, TextRun,
 };
+use prism_native::picture_cache::{PictureCache, decoded_bytes};
 
 /// A Core Foundation or Core Graphics object.
 type Ref = *mut c_void;
@@ -207,6 +207,12 @@ struct Bitmap(Ref);
 impl Drop for Bitmap {
     fn drop(&mut self) {
         unsafe { CGImageRelease(self.0) };
+    }
+}
+
+impl Clone for Bitmap {
+    fn clone(&self) -> Bitmap {
+        Bitmap(unsafe { CGImageRetain(self.0) })
     }
 }
 
@@ -1145,26 +1151,62 @@ fn line(run: &TextRun) -> Option<(Ref, f64)> {
 }
 
 thread_local! {
-    /// Decoded bitmaps by their `data:` URL (`None`: it does not decode).
-    static BITMAPS: RefCell<HashMap<String, Option<Bitmap>>> = RefCell::new(HashMap::new());
+    /// Decoded bitmaps by their `data:` URL (`None`: it does not decode),
+    /// [`UNSHOWN_BYTES`](prism_native::picture_cache::UNSHOWN_BYTES) of them
+    /// at most, the least recently drawn going first (#343).
+    static BITMAPS: RefCell<PictureCache<Option<Bitmap>>> = RefCell::default();
 }
 
-/// How many decoded bitmaps are kept.
-const MAX_BITMAPS: usize = 64;
+/// The drawing of node `id` shows `items` (#343): the bitmaps of their
+/// images stay decoded while it does, however large, instead of being
+/// evicted (and decoded again) while it paints.
+pub(crate) fn hold(id: prism_core::NodeId, items: &[Item]) {
+    let mut sources = Vec::new();
+    image_sources(items, &mut sources);
+    BITMAPS.with(|all| all.borrow_mut().hold(id, sources));
+}
+
+/// The drawing of node `id` is gone: its bitmaps join the pool.
+pub(crate) fn forget(id: prism_core::NodeId) {
+    BITMAPS.with(|all| all.borrow_mut().forget(id));
+}
+
+/// The image sources `items` draw, groups and masks included.
+fn image_sources<'a>(items: &'a [Item], out: &mut Vec<&'a str>) {
+    for item in items {
+        match item {
+            Item::Image(i) => out.push(&i.src),
+            Item::Group(g) => {
+                image_sources(&g.items, out);
+                if let Some(m) = &g.mask {
+                    image_sources(&m.items, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// The bitmap of a `data:` URL, decoded once.
 fn bitmap(src: &str) -> Option<Bitmap> {
-    BITMAPS.with(|all| {
-        let mut all = all.borrow_mut();
-        if !all.contains_key(src) {
-            if all.len() >= MAX_BITMAPS {
-                all.clear();
-            }
-            all.insert(src.to_string(), decode(src));
-        }
-        let image = all.get(src)?.as_ref()?;
-        Some(Bitmap(unsafe { CGImageRetain(image.0) }))
-    })
+    BITMAPS.with(|all| cached(&mut all.borrow_mut(), src, decode))
+}
+
+/// The bitmap of `src` from `all`, or decoded and kept there.
+fn cached(
+    all: &mut PictureCache<Option<Bitmap>>,
+    src: &str,
+    decode: impl FnOnce(&str) -> Option<Bitmap>,
+) -> Option<Bitmap> {
+    if let Some(bitmap) = all.touch(src) {
+        return bitmap.clone();
+    }
+    let bitmap = decode(src);
+    let bytes = bitmap.as_ref().map_or(0, |b| unsafe {
+        decoded_bytes(CGImageGetWidth(b.0) as f64, CGImageGetHeight(b.0) as f64)
+    });
+    all.insert(src, bitmap.clone(), bytes);
+    bitmap
 }
 
 fn decode(src: &str) -> Option<Bitmap> {
@@ -1378,6 +1420,67 @@ mod tests {
             w: 100.,
             h: 160.,
         }
+    }
+
+    /// A `w` × `h` pixels bitmap.
+    fn blank(w: f64, h: f64) -> Option<Bitmap> {
+        let space = Space::new()?;
+        Layer::new(space.0, w, h, 1.)?.image()
+    }
+
+    #[test]
+    fn drawn_bitmaps_are_kept_within_a_byte_budget() {
+        // 1000 × 1000 pixels: 4 MB each, three fit in 13 MB.
+        let mut all = PictureCache::new(13 << 20);
+        let mut decoded = 0;
+        let mut get = |all: &mut PictureCache<Option<Bitmap>>, src: &str| {
+            cached(all, src, |_| {
+                decoded += 1;
+                blank(1000., 1000.)
+            })
+            .is_some()
+        };
+        assert!(get(&mut all, "a"));
+        assert!(get(&mut all, "a"));
+        assert!(get(&mut all, "b"));
+        assert!(get(&mut all, "c"));
+        // `a` drawn again: `b` is now the least recently drawn.
+        assert!(get(&mut all, "a"));
+        assert!(get(&mut all, "d"));
+        assert_eq!(all.len(), 3);
+        assert!(all.get("b").is_none(), "the least recently drawn went");
+        assert!(all.unshown_bytes() <= 13 << 20);
+        drop(get);
+        assert_eq!(decoded, 4, "`a` was decoded once");
+    }
+
+    #[test]
+    fn a_shown_drawing_keeps_its_bitmaps_past_the_budget() {
+        // Three 4 MB bitmaps drawn by node 7, with room for one unshown.
+        let mut all = PictureCache::new(5 << 20);
+        let image = |src: &str| {
+            Item::Image(Image {
+                src: src.into(),
+                ..Default::default()
+            })
+        };
+        let items = vec![image("a"), image("b"), image("c")];
+        let mut sources = Vec::new();
+        image_sources(&items, &mut sources);
+        all.hold(7, sources);
+        let mut decoded = 0;
+        for _paint in 0..3 {
+            for src in ["a", "b", "c"] {
+                cached(&mut all, src, |_| {
+                    decoded += 1;
+                    blank(1000., 1000.)
+                });
+            }
+        }
+        assert_eq!(decoded, 3, "each decoded once, not at every paint");
+        // Gone: what fits stays for when it comes back.
+        all.forget(7);
+        assert_eq!(all.len(), 1);
     }
 
     #[test]

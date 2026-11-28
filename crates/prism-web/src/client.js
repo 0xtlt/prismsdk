@@ -7,6 +7,11 @@
   // The id of this page's request: the first socket sends it back, so the
   // live session takes that request over (`cx.page_request()`); reconnects don't.
   let pageId = (document.currentScript && document.currentScript.dataset.page) || "";
+  // Where the app serves its schemes' pages (#343, `WebApp::web_scheme_path`):
+  // `{"app": "/canvas"}`.
+  const SCHEMES = (() => {
+    try { return JSON.parse((document.currentScript && document.currentScript.dataset.prismSchemes) || "{}") || {}; } catch { return {}; }
+  })();
   // App paths keep their query string (`/analytics?period=7d`).
   const urlFor = (path) => {
     const q = path.indexOf("?");
@@ -43,11 +48,16 @@
     document.title = t && t !== baseTitle ? `${t} · ${baseTitle}` : baseTitle;
   }
   // Pictures lose their loading background once loaded (`prism.css`), so a
-  // transparent image shows its parent. `load` does not bubble: capture it.
+  // transparent image shows its parent. `load` and `error` do not bubble:
+  // capture them. A picture that fails gets the background back.
   const markLoaded = (img) => { if (img.naturalWidth) img.dataset.loaded = "1"; };
   document.addEventListener("load", (e) => {
     const img = e.target;
     if (img.tagName === "IMG" && img.classList.contains("prism-picture")) markLoaded(img);
+  }, true);
+  document.addEventListener("error", (e) => {
+    const img = e.target;
+    if (img.tagName === "IMG" && img.classList.contains("prism-picture")) delete img.dataset.loaded;
   }, true);
   // The first render's images may have loaded before this script ran.
   for (const img of document.querySelectorAll("img.prism-picture")) if (img.complete) markLoaded(img);
@@ -3969,10 +3979,14 @@
           return;
         }
         if (kind === "picture") {
-          // The server resolves asset URLs (hashed, maybe on a CDN).
+          // The server resolves asset URLs (hashed, maybe on a CDN). The
+          // browser keeps showing a loaded image until the new one is ready
+          // (and drops a load overtaken by a newer source), so a loaded
+          // picture keeps its mark meanwhile: no loading background flashes
+          // behind a transparent image (#343).
           const src = p.text;
           if (el.getAttribute("src") !== src) {
-            delete el.dataset.loaded;
+            if (!src || !el.complete || !el.naturalWidth) delete el.dataset.loaded;
             el.src = src;
           }
           return;
@@ -6557,11 +6571,64 @@
   /** Only web pages load in a frame: never `javascript:` (it would run in
    *  the app's page), `data:` or `blob:`. As `is_web_view_url` in prism-core. */
   const webPageUrl = (u) => { try { return ["http:", "https:"].includes(new URL(u, location.href).protocol); } catch { return false; } };
+  // App schemes (#343): `app://main/x?q` loads from the path the app serves
+  // it at (`/canvas/main/x?q`), as `schemes::rewrite` in prism-web writes the
+  // first paint. Only a declared scheme (the server lists those the app
+  // serves), a host of letters, digits, `-` and `.`, and a path that cannot
+  // leave the declared one: no `.` / `..` segment, escaped or not, no
+  // escaped `/` or `\`, no `\`, spaces or control characters.
+  const schemeParts = (url) => {
+    const m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)(.*)$/s.exec(url || "");
+    if (!m) return null;
+    const scheme = m[1].toLowerCase();
+    return Object.prototype.hasOwnProperty.call(SCHEMES, scheme) ? { scheme, host: m[2].toLowerCase(), rest: m[3] } : null;
+  };
+  const segmentsOk = (path) => path.split("/").every((seg) => {
+    let d;
+    try { d = decodeURIComponent(seg); } catch { d = seg; }
+    return d !== "." && d !== ".." && !d.includes("/") && !d.includes("\\");
+  });
+  /** The frame's path for the URL of a scheme with a declared path; null
+   *  if it could leave that path; undefined for any other URL (an app
+   *  scheme without a path then stays empty, as any non-web URL). */
+  function schemeSrc(url) {
+    const p = schemeParts(url);
+    if (!p) return undefined;
+    if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(p.host) || /[\u0000-\u0020\u007f\\]/.test(p.rest)) return null;
+    const cut = p.rest.search(/[?#]/);
+    const path = cut < 0 ? p.rest : p.rest.slice(0, cut);
+    if (!segmentsOk(path)) return null;
+    return `${SCHEMES[p.scheme]}/${p.host}${path || "/"}${cut < 0 ? "" : p.rest.slice(cut)}`;
+  }
+  /** A URL of this origin under an app scheme's path, as the app wrote it
+   *  (`/canvas/main/x` → `app://main/x`); null for any other. */
+  function schemeBack(href) {
+    let u;
+    try { u = new URL(href, location.href); } catch { return null; }
+    if (u.origin !== location.origin) return null;
+    for (const [scheme, prefix] of Object.entries(SCHEMES)) {
+      if (!u.pathname.startsWith(prefix + "/")) continue;
+      const after = u.pathname.slice(prefix.length + 1);
+      const slash = after.indexOf("/");
+      const host = slash < 0 ? after : after.slice(0, slash);
+      if (!host) continue;
+      return `${scheme}://${host}${slash < 0 ? "/" : after.slice(slash)}${u.search}${u.hash}`;
+    }
+    return null;
+  }
+  const schemeOrigin = (url) => { const p = schemeParts(url); return p ? `${p.scheme}://${p.host}` : null; };
+  /** The app scheme's origin the frame shows now (`app://main`), if any. */
+  function frameSchemeOrigin(el) {
+    try { return schemeOrigin(schemeBack(el.contentWindow.location.href)); } catch { return null; }
+  }
   function webViewSrc(el, src) {
     if (el._src === src) return;
     el._src = src;
     el._wloaded = false;
-    if (src && webPageUrl(src)) el.src = src;
+    const mapped = schemeSrc(src);
+    if (mapped === null) el.removeAttribute("src");
+    else if (mapped !== undefined) el.src = mapped;
+    else if (src && webPageUrl(src)) el.src = src;
     else el.removeAttribute("src");
   }
   function webViewConfig(el, config) {
@@ -6577,22 +6644,30 @@
     if (sandbox === undefined) el.removeAttribute("sandbox");
     else el.setAttribute("sandbox", sandbox.slice(8).split(",").map((n) => sandboxTokens[n]).filter(Boolean).join(" "));
   }
-  const webOrigins = (el) => (el._wcfg.origins.length ? el._wcfg.origins : [urlOrigin(el._src)].filter(Boolean));
-  /** The frame's page: readable on the app's own origin, else the URL given. */
+  const webOrigins = (el) => (el._wcfg.origins.length ? el._wcfg.origins : [schemeOrigin(el._src) || urlOrigin(el._src)].filter(Boolean));
+  /** The frame's page: readable on the app's own origin (as the app wrote
+   *  it for an app scheme's path), else the URL given. */
   function webUrl(el) {
     try {
       const href = el.contentWindow.location.href;
-      if (href && href !== "about:blank") return href;
+      if (href && href !== "about:blank") return schemeBack(href) || href;
     } catch { /* another origin */ }
-    return absUrl(el._src);
+    return schemeParts(el._src) ? el._src : absUrl(el._src);
   }
   function webDeliver(el, data) {
     const w = el.contentWindow;
     if (!w) return;
     const origins = webOrigins(el);
     if (origins.includes("*")) return w.postMessage(data, "*");
-    // The browser delivers it only if the frame shows that origin.
+    // The browser delivers it only if the frame shows that origin. An app
+    // scheme's (`app://main`) is this origin, while the frame shows a page
+    // under that scheme's path and host.
+    const shown = frameSchemeOrigin(el);
     for (const o of origins) {
+      if (schemeParts(o)) {
+        if (shown === o.toLowerCase()) w.postMessage(data, location.origin);
+        continue;
+      }
       try { w.postMessage(data, o); } catch { /* not an origin */ }
     }
   }
@@ -6603,7 +6678,11 @@
   function webReload(el) {
     el._wloaded = false;
     // Another origin's page cannot be reloaded from here: load the URL again.
-    try { el.contentWindow.location.reload(); } catch { if (el._src) el.src = el._src; }
+    try { el.contentWindow.location.reload(); } catch {
+      const mapped = schemeSrc(el._src);
+      if (mapped) el.src = mapped;
+      else if (el._src && mapped === undefined) el.src = el._src;
+    }
   }
   addEventListener("message", (e) => {
     if (!e.source) return;
@@ -6611,9 +6690,12 @@
       if (el.contentWindow !== e.source) continue;
       if (!el._wcfg || !el._wcfg.messages) return;
       const origins = webOrigins(el);
-      if (!origins.includes("*") && !origins.includes(e.origin)) return;
+      // A page under an app scheme's path speaks as that scheme's origin
+      // (`app://main`), as natively.
+      const origin = (e.origin === location.origin && frameSchemeOrigin(el)) || e.origin;
+      if (!origins.includes("*") && !origins.includes(origin)) return;
       try {
-        send({ t: "webmsg", id: Number(el.dataset.pid), data: e.data === undefined ? null : e.data, origin: e.origin });
+        send({ t: "webmsg", id: Number(el.dataset.pid), data: e.data === undefined ? null : e.data, origin });
       } catch { /* not JSON (a cycle, a BigInt) */ }
       return;
     }
@@ -7385,13 +7467,38 @@
     const s = getComputedStyle(safeProbe);
     return ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].map((k) => parseFloat(s[k]) || 0);
   };
+  // `cx.scale_factor()` (#343): device pixels per CSS pixel, which browser
+  // zoom and moving the window to another screen change.
+  const pixelRatio = () => {
+    const r = window.devicePixelRatio;
+    return r > 0 && isFinite(r) ? r : 1;
+  };
+  const viewportCookie = () => {
+    // The ratio in its own cookie: a server of an older version on the
+    // same domain (a rolling deploy) still reads `prism_vw=WxH`.
+    document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    document.cookie = `prism_dpr=${pixelRatio()}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  };
   let resizeTimer = null;
   const reportViewport = () => {
-    document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    send({ t: "viewport", w: innerWidth, h: innerHeight, safe: safeArea() });
+    viewportCookie();
+    send({ t: "viewport", w: innerWidth, h: innerHeight, safe: safeArea(), dpr: pixelRatio() });
   };
   addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(reportViewport, 120); });
-  document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  viewportCookie();
+  // A change of ratio without a resize (another screen of the same size in
+  // CSS pixels): a query that matches the current ratio stops matching.
+  const watchPixelRatio = () => {
+    if (!window.matchMedia) return;
+    const q = matchMedia(`(resolution: ${pixelRatio()}dppx)`);
+    const changed = () => {
+      if (q.removeEventListener) q.removeEventListener("change", changed); else q.removeListener(changed);
+      reportViewport();
+      watchPixelRatio();
+    };
+    if (q.addEventListener) q.addEventListener("change", changed); else q.addListener(changed);
+  };
+  watchPixelRatio();
 
   // Page visibility → app lifecycle (background tasks keep running server-side).
   const reportLifecycle = () => send({ t: "lifecycle", state: document.hidden ? "background" : document.hasFocus() ? "active" : "inactive" });
@@ -8281,7 +8388,7 @@
     const compress = inflate ? "&compress=deflate-raw" : "";
     const page = pageId ? `&page=${encodeURIComponent(pageId)}` : "";
     pageId = "";
-    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}${compress}${page}`);
+    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}&dpr=${pixelRatio()}${search}${compress}${page}`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (e) => onFrame(socket, e.data);
     ws.onclose = closed;

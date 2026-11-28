@@ -325,6 +325,111 @@ fn s3_connect_bounds_message_size_and_backlog() {
     wait_until("the permit is freed", || app.session_count() == 0);
 }
 
+// --- The page's pixel ratio (#343) ----------------------------------------------------------
+
+/// `devicePixelRatio` comes from the page: a ratio that is not finite, not
+/// positive or out of 0.25–8 never reaches `cx.scale_factor()`, from the
+/// socket's query, a viewport report or the cookie.
+#[test]
+fn an_invalid_pixel_ratio_is_ignored() {
+    use crate::app::{scale_cookie, scale_factor};
+    for bad in [
+        f32::NAN,
+        f32::INFINITY,
+        -f32::INFINITY,
+        -2.,
+        0.,
+        0.1,
+        8.5,
+        1e30,
+    ] {
+        assert_eq!(scale_factor(bad), None, "{bad}");
+    }
+    for good in [0.25, 1., 1.25, 2., 3., 8.] {
+        assert_eq!(scale_factor(good), Some(good));
+    }
+    assert_eq!(scale_cookie("prism_vw=1280x800; prism_dpr=2"), Some(2.));
+    for bad in [
+        "prism_vw=1280x800",
+        "prism_dpr=NaN",
+        "prism_dpr=inf",
+        "prism_dpr=-1",
+        "prism_dpr=1e9",
+        "prism_dpr=",
+        "prism_dpr=abc",
+        "xprism_dpr=2",
+    ] {
+        assert_eq!(scale_cookie(bad), None, "{bad}");
+    }
+
+    let (app, _dir) = crate::tests::density_app("dpr-bad");
+    for query in ["NaN", "inf", "-1", "0", "1e9", "9", "abc", ""] {
+        let page = crate::tests::Page::open(&app, &format!("/ws?w=400&h=800&dpr={query}"));
+        crate::tests::op_with_text(&page.next()["p"], "scale 1");
+        page.session.close();
+    }
+    let page = crate::tests::Page::open(&app, "/ws?w=400&h=800");
+    crate::tests::op_with_text(&page.next()["p"], "scale 1");
+    // None of these changes it: the next frame is the valid report's.
+    for dpr in [
+        json!(null),
+        json!("NaN"),
+        json!("2"),
+        json!(-2),
+        json!(0),
+        json!(1e30),
+        json!(9),
+        json!(0.1),
+        json!([2]),
+    ] {
+        page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": dpr }));
+    }
+    page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": 2 }));
+    crate::tests::op_with_text(&page.next()["p"], "scale 2");
+}
+
+/// The viewport comes from the page too, and an app may allocate memory
+/// for it (`viewport × scale_factor`): each side is clamped to 16384 CSS
+/// pixels, and one that is not finite or is negative is ignored, from the
+/// socket's query, a viewport report or the cookie.
+#[test]
+fn a_huge_viewport_is_clamped() {
+    use crate::app::{MAX_VIEWPORT, viewport_cookie, viewport_size};
+    struct Size;
+    impl prism_core::Render for Size {
+        fn render(&mut self, cx: &mut prism_core::Context<Self>) -> impl prism_core::IntoElement {
+            let (w, h) = cx.viewport();
+            prism_core::text(format!("viewport {w}x{h}"))
+        }
+    }
+    assert_eq!(MAX_VIEWPORT, 16384.);
+    assert_eq!(viewport_size(1e9, 1e30), Some((16384., 16384.)));
+    assert_eq!(viewport_size(400., 800.), Some((400., 800.)));
+    for (w, h) in [(f32::NAN, 1.), (1., f32::INFINITY), (-1., 1.), (1., -0.5)] {
+        assert_eq!(viewport_size(w, h), None, "{w}x{h}");
+    }
+    assert_eq!(viewport_cookie("prism_vw=1e9x1e9"), Some((16384., 16384.)));
+    assert_eq!(viewport_cookie("prism_vw=infx800"), None);
+
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut prism_core::App| {
+        let root = cx.new_entity(|_| Size);
+        cx.set_root(root);
+    });
+    let (app, _dir) = crate::tests::web_app(init, "viewport-huge");
+    // The socket's query.
+    let page = crate::tests::Page::open(&app, "/ws?w=1e9&h=99999999&dpr=8");
+    crate::tests::op_with_text(&page.next()["p"], "viewport 16384x16384");
+    // A viewport report (crossing breakpoints, so it re-renders):
+    // clamped; not finite or negative: ignored.
+    page.send(json!({ "t": "viewport", "w": 400, "h": 500 }));
+    crate::tests::op_with_text(&page.next()["p"], "viewport 400x500");
+    for (w, h) in [(json!(-1), json!(800)), (json!("1e9"), json!(800))] {
+        page.send(json!({ "t": "viewport", "w": w, "h": h }));
+    }
+    page.send(json!({ "t": "viewport", "w": 1e30, "h": 500 }));
+    crate::tests::op_with_text(&page.next()["p"], "viewport 16384x500");
+}
+
 // --- S6: pictures fetched by the server ------------------------------------------------------
 
 /// An upstream on a loopback port answering every request with `reply`:
@@ -1966,4 +2071,152 @@ fn s35_the_strict_policy_frames_as_configured_and_keeps_sandboxes() {
             );
         }
     }
+}
+
+// --- S36: app schemes on the web (#343) --------------------------------------------------------
+
+/// The first paint of a web view of `url`, its scheme `s36app` served at
+/// `/canvas`.
+fn s36_frame(url: &str) -> String {
+    use prism_core::{Backend, NodeKind, Patch};
+    let mut b = crate::html::HtmlBackend::default();
+    b.scheme_paths = vec![
+        ("s36app".into(), "/canvas".into()),
+        ("s36none".into(), "/none".into()),
+    ];
+    b.apply(&[
+        Patch::Create {
+            id: 1,
+            kind: NodeKind::WebView,
+        },
+        Patch::SetText {
+            id: 1,
+            text: url.into(),
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    b.to_html()
+}
+
+fn s36_src(url: &str) -> String {
+    let html = s36_frame(url);
+    let start = html.find(r#"data-src=""#).expect("a frame") + 10;
+    html[start..start + html[start..].find('"').unwrap()].to_string()
+}
+
+/// S36: a web view of the app's own scheme shows a path the app serves on
+/// its origin, and nothing in the URL leads out of the declared path or to
+/// another origin: no `..` (escaped or not), no escaped `/` or `\`, no
+/// odd host (user, port, empty), and only for a scheme the app serves.
+#[test]
+fn s36_an_app_scheme_page_stays_under_its_declared_path() {
+    prism_core::web_view::register_web_scheme("s36app", |_| {
+        prism_core::SchemeResponse::not_found()
+    });
+    for (url, src) in [
+        ("s36app://main/index.html", "/canvas/main/index.html"),
+        (
+            "S36APP://Main/a/b.css?v=1#top",
+            "/canvas/main/a/b.css?v=1#top",
+        ),
+        ("s36app://main", "/canvas/main/"),
+        ("s36app://main?x=../..", "/canvas/main/?x=../.."),
+        ("s36app://docs.v2/x%20y", "/canvas/docs.v2/x%20y"),
+        ("s36app://main/a&b", "/canvas/main/a&amp;b"),
+    ] {
+        assert_eq!(s36_src(url), src, "{url}");
+    }
+    for url in [
+        "s36app://main/../../secret",
+        "s36app://main/a/..",
+        "s36app://main/./x",
+        "s36app://main/a/%2e%2e/%2E%2e/x",
+        "s36app://main/.%2e/x",
+        "s36app://main/a%2F..%2F..%2Fx",
+        "s36app://main/a%2f",
+        "s36app://main/a%5c..",
+        "s36app://main/a\\..\\x",
+        "s36app://main/a b",
+        "s36app://main/a\tb",
+        "s36app://ma_in/x",
+        "s36app://..//evil.example/x",
+        "s36app:////evil.example/x",
+        "s36app://user@main/x",
+        "s36app://main:8080/x",
+        "s36app://evil.example%2f/x",
+        "s36app:///x",
+        "s36app://main./x",
+    ] {
+        assert_eq!(s36_src(url), "", "{url}");
+    }
+    // A declared scheme the app does not serve is never rewritten.
+    let paths = [("s36none".to_string(), "/none".to_string())];
+    assert_eq!(crate::schemes::rewrite(&paths, "s36none://main/x"), None);
+    assert_eq!(crate::schemes::script_attr(&paths), None);
+    // A path declared for a scheme only, on this origin.
+    for (scheme, path) in [
+        ("s36app", "//evil.example"),
+        ("s36app", "https://evil.example/"),
+        ("s36app", "/a/../b"),
+        ("s36app", "/a/%2E%2E"),
+        ("s36app", "/a%2fb"),
+        ("s36app", "/a\\b"),
+        ("s36app", "canvas"),
+        ("https", "/canvas"),
+        ("javascript", "/canvas"),
+    ] {
+        let declared = std::panic::catch_unwind(|| {
+            uploads_app(&TempDir::new("sec-s36-declare"), false)
+                .0
+                .web_scheme_path(scheme, path)
+        });
+        assert!(declared.is_err(), "{scheme} {path}");
+    }
+}
+
+/// S36: the first page shows the app scheme's view at its path, and tells
+/// the page script only the paths of schemes the app serves.
+#[test]
+fn s36_the_page_frames_the_declared_path_only() {
+    use prism_core::prelude::*;
+    prism_core::web_view::register_web_scheme("s36page", |_| {
+        prism_core::SchemeResponse::not_found()
+    });
+    struct Canvas;
+    impl Render for Canvas {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            web_view("s36page://main/index.html?a=1&b=2")
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Canvas);
+        cx.set_root(root);
+    });
+    let dir = TempDir::new("sec-s36-page");
+    let page = |app: crate::WebApp| {
+        let req = http::Request::get("/").body(()).unwrap();
+        String::from_utf8(app.handle(&req).into_body()).unwrap()
+    };
+    let new = || {
+        crate::WebApp::new(prism_core::AppConfig::default(), init.clone())
+            .data_dir(dir.to_path_buf())
+    };
+    let body = page(
+        new()
+            .web_scheme_path("s36page", "/canvas/")
+            .web_scheme_path("s36gone", "/gone"),
+    );
+    assert!(
+        body.contains(r#"data-src="/canvas/main/index.html?a=1&amp;b=2""#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"data-prism-schemes="{&quot;s36page&quot;:&quot;/canvas&quot;}""#),
+        "{body}"
+    );
+    assert!(!body.contains("s36gone"), "{body}");
+    // Without a declared path: an empty frame, and no paths for the script.
+    let body = page(new());
+    assert!(body.contains(r#"data-src="""#), "{body}");
+    assert!(!body.contains("data-prism-schemes"), "{body}");
 }

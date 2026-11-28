@@ -7,6 +7,80 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- `cx.scale_factor()`: the pixels per point of the screen the window is on
+  (per CSS pixel on the web), to rasterize content in Rust at the screen's
+  density (#343). macOS `backingScaleFactor`, the trait collection's
+  `displayScale` on iOS, iPadOS, tvOS and visionOS, `screenScale` on watchOS,
+  `DisplayMetrics.density` on Android, the window's DPI on Windows, GTK's
+  scale on Linux (fractional from GTK 4.12), `devicePixelRatio` on the web
+  (checked by the server: 0.25 to 8). It is 1 until the platform reports;
+  when it changes (another screen, browser zoom, Android's display size) the
+  app re-renders and `on_resize` handlers run, once with the new size and
+  density when both change. `Runtime::set_scale_factor`,
+  `Runtime::set_window_metrics` (size and density at once) and
+  `App::set_scale_factor` let backends and tests set it. On the web the
+  server now clamps each side of the reported viewport to 16384 CSS pixels.
+- Web views on Linux (#343): `web_view` shows its page with WebKitGTK 6.0,
+  with the same messages as the other platforms (`prismHost.postMessage`
+  in the main frame, `message` events from the app, only from and to the
+  allowed origins), links to other origins and popups in the system
+  browser, and the sandbox (scripts, forms, popups, an ephemeral session
+  without `same_origin`). Behind prismsdk's new `web-view` feature, so
+  apps without web views do not link libwebkitgtk-6.0; without it a web
+  view is an empty box, as before. The Docker image has
+  `libwebkitgtk-6.0-dev`, and a `.deb` of an app with the feature depends
+  on `libwebkitgtk-6.0-4`.
+- The app's own pages in web views (#343): `Application::web_scheme("app",
+  handler)` serves `web_view("app://main/index.html")` and every request
+  of its page (scripts, styles, fonts, images, `fetch`, POST bodies) from
+  Rust. The handler gets a `SchemeRequest` (method, URL, headers, body,
+  the requesting `origin()`, a `path()` that never goes above `/` and
+  `path_segments()` for a lookup in a folder, `None` for a path with `..`
+  or an escaped `/`) and returns a `SchemeResponse` (`html`,
+  `text`, `json`, `file`, `not_found`, any status and headers); it runs
+  off the main thread, and a panic answers 500. Scheme names are checked
+  and an engine's own (`http`, `file`, `javascript`, …) or a scheme served
+  twice fails at startup. A `WKURLSchemeHandler` on Apple platforms,
+  `shouldInterceptRequest` on Android (the page is at
+  `https://main.app.prism.invalid`), a WebView2 custom scheme on Windows,
+  a URI scheme of the web context with WebKitGTK on Linux (the `web-view`
+  feature).
+  The app sees `app://main` as the URL and origin everywhere. No CORS
+  header is added. On the web, `WebApp::web_scheme_path("app", "/canvas")`
+  shows the page from a path the app serves with its own routes (the
+  handler is not called there), and the rewrite never leaves that path.
+  Apps that register no scheme are unchanged. See
+  [Web views](https://prismsdk.dev/guide/web-views.html#the-apps-own-pages).
+
+### Fixed
+
+- Pictures no longer stay in memory forever (#343). macOS, iOS and Windows
+  kept every decoded picture by its source, so an app showing a new
+  `picture_data` after each gesture grew by one decoded image each time
+  (about 20 MB for 2880×1800, past 2 GB after 57 images). A decoded picture
+  now stays while a node shows it; once none does, it waits in a pool of
+  at most 64 MB, the least recently used going first, so going back to a
+  screen still shows its pictures at once. The bitmaps of `svg()` images on
+  macOS and iOS are bounded the same way (they were 64 at most, whatever
+  their size); the images of a drawing on screen stay decoded however
+  large, on Windows too, instead of being decoded again at each paint. In a test app swapping a 2880×1800 `picture_data` every
+  100 ms on macOS, memory stays at about 170 MB instead of reaching 4 GB
+  after 200 images.
+- Changing a picture's source no longer flashes the background (#343): the
+  picture keeps its image until the new one is ready, like `<img>`, on
+  macOS, iOS, Windows and Linux (remote pictures), as it already did on
+  Android and the web. A load that finishes after the picture moved on to
+  another source is dropped (macOS could show an older picture over a
+  newer one, Linux a remote picture over a newer local one). A source that
+  fails to load, or an empty one, shows nothing instead of the previous
+  picture (Linux and Android kept it). On the web a loaded picture keeps
+  no loading background while its next source loads.
+- A web view whose URL becomes empty, or one `web_view` refuses
+  (`javascript:`), shows a blank page on Apple platforms, Android and
+  Windows, as on the web, instead of keeping the previous page (#343).
+
 ## 0.7.0 (2026-11-27)
 
 `svg(markup)` (and `picture_data(bytes, "image/svg+xml")`) now draws full

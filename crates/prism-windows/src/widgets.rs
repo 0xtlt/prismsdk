@@ -518,11 +518,16 @@ impl Win {
         }
     }
 
-    /// A picture's bitmap, once decoded.
+    /// A picture's bitmap, once decoded. While a new source loads the
+    /// previous image stays (#343); a source that failed, or none, shows
+    /// nothing.
     pub fn show_picture(&mut self, id: NodeId) {
         let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) else {
             return;
         };
+        if self.images.is_loading(&n.text) {
+            return;
+        }
         let bitmap = self.images.bitmap(&n.text).map(|(_, b)| b);
         if let Err(e) = controls::set_picture(&v.content, bitmap.as_ref()) {
             log!("picture {:?}: {e}", n.text);
@@ -684,7 +689,7 @@ impl Widgets for Win {
         match kind {
             NodeKind::Picture => {
                 let wic = self.wic.clone();
-                self.images.request(&wic, text, self.hwnd);
+                self.images.show(&wic, id, text, self.hwnd);
                 self.show_picture(id);
             }
             NodeKind::WebView => self.show_web(id),
@@ -799,6 +804,7 @@ impl Widgets for Win {
             p.children.retain(|c| *c != id);
         }
         self.measurer.forget(id);
+        self.images.forget(id);
         crate::defer::forget(id);
         crate::pointer::forget(id);
         crate::keyview::forget(id);
@@ -1097,6 +1103,8 @@ impl Widgets for Win {
         if let Some(n) = self.scene.get_mut(*view) {
             n.drawing = paths.iter().cloned().map(Item::Path).collect();
         }
+        // Paths only: whatever images it drew before are released.
+        self.images.hold(*view, &[]);
         self.draw_shape(*view);
     }
 
@@ -1104,6 +1112,7 @@ impl Widgets for Win {
         if let Some(n) = self.scene.get_mut(*view) {
             n.drawing = items.to_vec();
         }
+        self.images.hold(*view, items);
         self.draw_shape(*view);
     }
 

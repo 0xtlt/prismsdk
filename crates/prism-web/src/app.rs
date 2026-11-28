@@ -127,6 +127,9 @@ pub(crate) struct Inner {
     /// Sites that may show the app's pages in a frame, besides the app's
     /// own origin (`frame_ancestor`).
     pub frame_ancestors: Vec<String>,
+    /// Where the app serves its schemes' pages itself (#343,
+    /// `web_scheme_path`): scheme → path.
+    pub scheme_paths: Vec<(String, String)>,
 }
 
 /// `client.js` with what it takes from prism-core: the glyph table and the
@@ -237,6 +240,7 @@ impl WebApp {
                 handoffs: Default::default(),
                 frame_origins: Vec::new(),
                 frame_ancestors: Vec::new(),
+                scheme_paths: Vec::new(),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {
@@ -640,6 +644,7 @@ impl WebApp {
                 .and_then(prism_core::Locale::from_accept_language),
             tz: cookies.and_then(time_zone),
             viewport,
+            scale: cookies.and_then(scale_cookie),
             device: Some(crate::device_info::from_request(user_agent, cookies)),
         };
         // The live session of a GET takes this request over (`cx.page_request()`).
@@ -728,10 +733,15 @@ impl WebApp {
         &self,
         request: prism_core::WebRequest,
         page_request: Option<prism_core::WebRequest>,
+        scale: Option<f32>,
     ) -> AppInit {
         let init = self.inner.init.clone();
         Arc::new(move |app: &mut prism_core::App| {
             app.set_request(request.clone());
+            // The page's pixel ratio, so the first render has it (#343).
+            if let Some(scale) = scale {
+                app.set_scale_factor(scale);
+            }
             if let Some(page) = &page_request {
                 app.set_page_request(page.clone());
             }
@@ -770,12 +780,13 @@ impl WebApp {
         let sid = visitor.sid;
         let asset_urls = self.session_asset_urls(sid);
         let mut runtime = Runtime::with_options(
-            &self.init_with(request, None),
+            &self.init_with(request, None, visitor.scale),
             self.options(visitor, path.into()),
         );
         let mut html = HtmlBackend::default();
         html.asset_urls = Some(asset_urls);
         html.base.clone_from(&self.inner.base);
+        html.scheme_paths.clone_from(&self.inner.scheme_paths);
         html.apply(&runtime.render_settled(self.inner.first_paint_wait));
         // Run-time fonts (by URL) and stylesheets of the first paint; the
         // live page registers them again (`client.js` keeps these).
@@ -829,7 +840,7 @@ impl WebApp {
 <div id="prism-toasts" role="status" aria-live="polite"></div>
 <div id="prism-layers" popover="manual">{layers}</div>
 <div id="prism-connection" role="status" aria-live="polite" hidden>{reconnecting}</div>
-<script src="{prefix}/{js}" data-base="{base}"{page}{n}></script>
+<script src="{prefix}/{js}" data-base="{base}"{page}{schemes}{n}></script>
 </body>
 </html>"#,
             n = crate::host::nonce_attr(nonce),
@@ -853,6 +864,10 @@ impl WebApp {
                 r#" data-page="{}""#,
                 html::escape(id)
             )),
+            schemes = crate::schemes::script_attr(&self.inner.scheme_paths).map_or(
+                String::new(),
+                |json| format!(r#" data-prism-schemes="{}""#, html::escape(&json))
+            ),
         );
         (page, code)
     }
@@ -876,7 +891,10 @@ impl WebApp {
             language: header(header::ACCEPT_LANGUAGE)
                 .and_then(prism_core::Locale::from_accept_language),
             tz: param("tz").and_then(|v| v.parse().ok()),
-            viewport: num("w").zip(num("h")),
+            viewport: num("w")
+                .zip(num("h"))
+                .and_then(|(w, h)| viewport_size(w, h)),
+            scale: num("dpr").and_then(scale_factor),
             device: Some(crate::device_info::from_request(
                 header(header::USER_AGENT).unwrap_or(""),
                 cookies,
@@ -1157,6 +1175,58 @@ impl WebApp {
         self.configure(|i| i.public_scenes = public)
     }
 
+    /// Where the app serves the pages of its scheme `scheme` on the web
+    /// (#343): `web_scheme_path("app", "/canvas")` shows
+    /// `web_view("app://main/x?q")` as an `<iframe>` of `/canvas/main/x?q`
+    /// (the URL's host, then its path and query). The app serves that path
+    /// with its own routes, next to [`router`](Self::router):
+    ///
+    /// ```ignore
+    /// let prism = Application::new()
+    ///     .web_scheme("app", serve) // natively
+    ///     .web(|w| w.web_scheme_path("app", "/canvas"))
+    ///     .web_app(|cx| cx.new_entity(Canvas::new));
+    /// let app = axum::Router::new()
+    ///     .route("/canvas/main/{*path}", get(canvas_files))
+    ///     .merge(prism.router());
+    /// ```
+    ///
+    /// `Application::web_scheme`'s handler is not called on the web: those
+    /// routes are the app's own HTTP endpoints, public like any other, so
+    /// they check who asks (the session's cookie, its user) before
+    /// answering with private data. The page is on the app's origin, which
+    /// it can reach (the app's page, its cookies): serve only the app's own
+    /// content there.
+    ///
+    /// The app still sees the URL it wrote: the view's messages come from
+    /// `app://main`, its loads are `app://main/x`, and messages to it go to
+    /// the frame while it shows a page under `/canvas/main/`. A path is
+    /// from the server's root as the browser sees it (not under
+    /// [`base_path`](Self::base_path)). Only schemes the app serves
+    /// (`Application::web_scheme`) are rewritten, and no URL can leave the
+    /// declared path (`..`, escaped `/` or `\` refuse the URL). Without a
+    /// path, the web view of such a URL stays empty (said once on stderr).
+    ///
+    /// # Panics
+    ///
+    /// If `scheme` is not a scheme an app may serve
+    /// ([`check_web_scheme`](prism_core::web_view::check_web_scheme)) or
+    /// `path` is not an absolute path on the app's origin (`/canvas`: no
+    /// `//` at its start, `\`, `?`, `#`, spaces, `.` or `..` segments).
+    pub fn web_scheme_path(self, scheme: &str, path: &str) -> Self {
+        if let Err(why) = prism_core::web_view::check_web_scheme(scheme) {
+            panic!("prism-web: web_scheme_path: {why}");
+        }
+        let path = match crate::schemes::check_path(path) {
+            Ok(path) => path,
+            Err(why) => panic!("prism-web: web_scheme_path: {why}"),
+        };
+        self.configure(|i| {
+            i.scheme_paths.retain(|(s, _)| s != scheme);
+            i.scheme_paths.push((scheme.to_string(), path));
+        })
+    }
+
     /// Live sessions right now.
     pub fn session_count(&self) -> usize {
         self.inner
@@ -1216,6 +1286,8 @@ pub(crate) struct Visitor<'a> {
     /// UTC offset in seconds.
     pub tz: Option<i32>,
     pub viewport: Option<(f32, f32)>,
+    /// The page's `devicePixelRatio` (`cx.scale_factor()`), checked.
+    pub scale: Option<f32>,
     pub device: Option<prism_core::DeviceInfo>,
 }
 
@@ -1223,6 +1295,7 @@ pub(crate) struct VisitorOwned {
     pub language: Option<prism_core::Locale>,
     pub tz: Option<i32>,
     pub viewport: Option<(f32, f32)>,
+    pub scale: Option<f32>,
     pub device: Option<prism_core::DeviceInfo>,
 }
 
@@ -1233,6 +1306,7 @@ impl VisitorOwned {
             language: self.language,
             tz: self.tz,
             viewport: self.viewport,
+            scale: self.scale,
             device: self.device,
         }
     }
@@ -1369,13 +1443,47 @@ pub(crate) fn time_zone(cookie_header: &str) -> Option<i32> {
         .filter(|v: &i32| v.abs() <= 14 * 3600)
 }
 
-/// The last viewport the page reported (`prism_vw=1280x800`).
+/// The last viewport the page reported (`prism_vw=1280x800`), if it is
+/// one [`viewport_size`] accepts.
 pub(crate) fn viewport_cookie(cookie_header: &str) -> Option<(f32, f32)> {
-    let v = cookie_header
-        .split(';')
-        .find_map(|kv| kv.trim().strip_prefix("prism_vw="))?;
-    let (w, h) = v.split_once('x')?;
-    Some((w.parse().ok()?, h.parse().ok()?))
+    let (w, h) = cookie(cookie_header, "prism_vw")?.split_once('x')?;
+    viewport_size(w.parse().ok()?, h.parse().ok()?)
+}
+
+/// The pixel ratio the page last reported (`prism_dpr=2`), if it is one
+/// [`scale_factor`] accepts. Its own cookie: a server of an older version
+/// on the same domain (a rolling deploy) still reads `prism_vw`.
+pub(crate) fn scale_cookie(cookie_header: &str) -> Option<f32> {
+    scale_factor(cookie(cookie_header, "prism_dpr")?.parse().ok()?)
+}
+
+/// The value of cookie `name` in a `Cookie` header.
+fn cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
+    cookie_header.split(';').find_map(|kv| {
+        let (k, v) = kv.trim().split_once('=')?;
+        (k == name).then_some(v)
+    })
+}
+
+/// The largest side of a viewport the server takes from a page, in CSS
+/// pixels (`cx.viewport()`, `on_resize`): a larger one is clamped to it.
+/// The page's report is untrusted, and an app may allocate memory for it
+/// (a bitmap of `viewport × scale_factor`): a shared server must not
+/// follow `w=1e9`.
+pub(crate) const MAX_VIEWPORT: f32 = 16384.;
+
+/// A viewport the page reported, if it is one: finite and not negative,
+/// each side clamped to [`MAX_VIEWPORT`].
+pub(crate) fn viewport_size(w: f32, h: f32) -> Option<(f32, f32)> {
+    (w.is_finite() && h.is_finite() && w >= 0. && h >= 0.)
+        .then(|| (w.min(MAX_VIEWPORT), h.min(MAX_VIEWPORT)))
+}
+
+/// A pixel ratio the page reported (`devicePixelRatio`), if it is one: the
+/// browser's value is untrusted, so only finite ratios from 0.25 to 8 (a
+/// zoomed-out 1× screen to an 8K phone zoomed in) are taken.
+pub(crate) fn scale_factor(ratio: f32) -> Option<f32> {
+    (ratio.is_finite() && (0.25..=8.).contains(&ratio)).then_some(ratio)
 }
 
 /// The browser's environment: `Accept-Language` (`PRISM_LOCALE` overrides it).

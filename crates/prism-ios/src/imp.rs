@@ -30,6 +30,7 @@ use prism_core::{
     Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
     Role, Runtime, Style, TextAlign, UiEvent,
 };
+use prism_native::picture_cache::{PictureCache, Show, decoded_bytes};
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 static APP: OnceLock<(AppConfig, AppInit)> = OnceLock::new();
@@ -126,6 +127,51 @@ fn with_state(f: impl FnOnce(&mut State)) {
             f(state)
         }
     });
+}
+
+/// Runs `f` on the state unless it is borrowed (a platform callback during
+/// an update): `false` then, so the caller can try again. A torn-down
+/// state runs nothing and counts as done.
+fn try_with_state(f: impl FnOnce(&mut State)) -> bool {
+    STATE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut guard) => {
+            if let Some(state) = guard.as_mut() {
+                f(state);
+            }
+            true
+        }
+        Err(_) => false,
+    })
+}
+
+/// A picture's bytes arrived (main thread, #343): shown now, or once the
+/// state is free again. A completion skipped while the state is busy would
+/// leave its source loading forever (its nodes never show it), so it is
+/// posted again, a few milliseconds later, up to about a second.
+fn picture_ready(src: String, bytes: Option<Vec<u8>>, tries: u32) {
+    let mut payload = Some((src, bytes));
+    let done = try_with_state(|s| {
+        if let Some((src, bytes)) = payload.take() {
+            s.renderer.widgets.picture_loaded(&src, bytes);
+            s.renderer.mark_all_dirty();
+            s.relayout();
+        }
+    });
+    if done {
+        return;
+    }
+    let Some((src, bytes)) = payload else { return };
+    if tries >= 100 {
+        eprintln!(
+            "prism-ios: a loaded picture was dropped (the app stayed busy): {:?}",
+            prism_core::picture_source(&src).0
+        );
+        return;
+    }
+    let when = dispatch2::DispatchTime::try_from(std::time::Duration::from_millis(10))
+        .unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ =
+        dispatch2::DispatchQueue::main().after(when, move || picture_ready(src, bytes, tries + 1));
 }
 
 /// Overlays anchored at a caret (#328) or a chip (#327) follow it: called
@@ -383,14 +429,37 @@ impl State {
             bottom: i.bottom / zoom,
             left: i.left / zoom,
         };
-        if (w, h) != self.runtime.app.window_size() || safe != self.runtime.app.safe_area() {
-            let patches = self.runtime.set_window(w, h, safe);
+        // The size and the density together: `on_resize` runs once for a
+        // change that moves both, and a render for a new density sees the
+        // new viewport.
+        let scale = self.scale_factor();
+        if (w, h) != self.runtime.app.window_size()
+            || safe != self.runtime.app.safe_area()
+            || scale != self.runtime.app.scale_factor()
+        {
+            let patches = self.runtime.set_window_metrics(w, h, safe, scale);
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
                 self.window_rerendered = true;
             }
         }
         Some((w, h))
+    }
+
+    /// The pixels per Prism point of the screen the window is on
+    /// (`cx.scale_factor()`, #343): the trait collection's display scale
+    /// (visionOS has no `UIScreen`), times the TV zoom; what the app has
+    /// while the view is in no window.
+    fn scale_factor(&self) -> f32 {
+        use objc2_ui_kit::UITraitEnvironment;
+        let traits = self.renderer.widgets.root.traitCollection();
+        // SAFETY: a plain property read on the main thread.
+        let display = unsafe { traits.displayScale() } as f32;
+        // 0 until the view is in a window.
+        if display <= 0. {
+            return self.runtime.app.scale_factor();
+        }
+        display * self.renderer.zoom()
     }
 
     fn layout_root(&mut self, size: CGSize) {
@@ -1051,6 +1120,11 @@ define_class!(
             // later, at their next layout (#36).
             let traits: Retained<UITraitCollection> = unsafe { msg_send![self, traitCollection] };
             crate::decor::appearance_changed(&traits);
+            // Another screen (an iPad's external display): `cx.scale_factor()`
+            // (#343), told at the next layout, now.
+            if previous.is_some_and(|p| unsafe { p.displayScale() != traits.displayScale() }) {
+                relayout();
+            }
         }
 
         #[unsafe(method(canBecomeFirstResponder))]
@@ -1431,7 +1505,21 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
             }
             runtime
         }
-        None => make_runtime(init, path, &services),
+        None => {
+            // `cx.scale_factor()` (#343) before the first render, so the
+            // first layout does not report it again: the scene's display
+            // scale (0 if unknown: told at that layout), times the TV zoom.
+            // SAFETY: a plain property read on the main thread.
+            let display = unsafe { scene.traitCollection().displayScale() } as f32;
+            #[cfg(target_os = "tvos")]
+            let display = display * crate::tv::zoom();
+            if display > 0. {
+                let init = prism_native::with_scale_factor(init, display);
+                make_runtime(&init, path, &services)
+            } else {
+                make_runtime(init, path, &services)
+            }
+        }
     };
     #[allow(unused_mut)]
     let mut renderer = NativeRenderer::new(UiKit {
@@ -1448,7 +1536,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         menus: HashMap::new(),
         presented: Vec::new(),
         pictures: HashMap::new(),
-        image_cache: HashMap::new(),
+        image_cache: PictureCache::default(),
         image_sources: image_sources(_config.assets.as_deref(), &_config.embedded_assets),
         semantic: None,
         disclosure_words: ("Expanded".into(), "Collapsed".into()),
@@ -1642,10 +1730,10 @@ pub struct UiKit {
     timer_after: HashMap<NodeId, String>,
     /// Context menus by view id (read by the interaction delegate).
     menus: HashMap<NodeId, prism_core::menu::MenuSpec>,
-    /// Pictures waiting for their image, by source.
-    pictures: HashMap<String, Vec<(NodeId, Retained<UIImageView>)>>,
-    /// Decoded images by source.
-    image_cache: HashMap<String, Retained<UIImage>>,
+    /// Picture views by node (a load names the nodes it reaches).
+    pictures: HashMap<NodeId, Retained<UIImageView>>,
+    /// Decoded images, kept while a node shows them (#343).
+    image_cache: PictureCache<Retained<UIImage>>,
     image_sources: prism_native::images::ImageSources,
     /// Requested corner radius by node (clamped to the frame).
     radii: HashMap<NodeId, f64>,
@@ -1837,49 +1925,56 @@ fn refocus(v: &UIImageView) {
 }
 
 impl UiKit {
-    /// Shows `src` in `view`: from memory, or loaded on a background thread.
+    /// Shows `src` in `view`: from memory, or loaded on a background thread
+    /// while the view keeps its previous image (#343).
     fn load_picture(&mut self, id: NodeId, view: &Retained<UIImageView>, src: &str) {
-        if let Some(img) = self.image_cache.get(src) {
-            view.setImage(Some(img));
-            refocus(view);
-            return;
-        }
-        view.setImage(None);
-        let waiting = self.pictures.entry(src.to_string()).or_default();
-        waiting.retain(|(i, _)| *i != id);
-        waiting.push((id, view.clone()));
-        if waiting.len() > 1 {
-            return; // already loading
-        }
+        self.pictures.insert(id, view.clone());
+        let image = match self.image_cache.show(id, src) {
+            Show::Ready(img) => Some(img),
+            Show::Clear => None,
+            Show::Wait => return,
+            Show::Load => {
+                self.spawn_picture_load(src);
+                return;
+            }
+        };
+        view.setImage(image.as_deref());
+        refocus(view);
+    }
+
+    fn spawn_picture_load(&self, src: &str) {
         let (src, sources) = (src.to_string(), self.image_sources.clone());
         std::thread::spawn(move || {
             let bytes = prism_native::images::load(&src, &sources);
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                with_state(|s| {
-                    s.renderer.widgets.picture_loaded(&src, bytes);
-                    s.renderer.mark_all_dirty();
-                    s.relayout();
-                })
-            });
+            dispatch2::DispatchQueue::main().exec_async(move || picture_ready(src, bytes, 0));
         });
     }
 
+    /// A load finished: the nodes still showing `src` show its image, or
+    /// nothing if it could not be decoded; nodes that moved on to another
+    /// source keep theirs.
     fn picture_loaded(&mut self, src: &str, bytes: Option<Vec<u8>>) {
-        let waiting = self.pictures.remove(src).unwrap_or_default();
-        let Some(img) =
-            bytes.and_then(|b| UIImage::imageWithData(&objc2_foundation::NSData::from_vec(b)))
-        else {
+        let img =
+            bytes.and_then(|b| UIImage::imageWithData(&objc2_foundation::NSData::from_vec(b)));
+        if img.is_none() {
             eprintln!(
                 "prism-ios: could not load image {:?}",
                 prism_core::picture_source(src).0
             );
-            return;
-        };
-        for (_, view) in waiting {
-            view.setImage(Some(&img));
-            refocus(&view);
         }
-        self.image_cache.insert(src.to_string(), img);
+        let stored = img.as_ref().map(|i| {
+            let (size, scale) = unsafe { (i.size(), i.scale()) };
+            (
+                i.clone(),
+                decoded_bytes(size.width * scale, size.height * scale),
+            )
+        });
+        for id in self.image_cache.loaded(src, stored) {
+            if let Some(view) = self.pictures.get(&id) {
+                view.setImage(img.as_deref());
+                refocus(view);
+            }
+        }
     }
 
     fn present_sheets(&mut self, sheets: &[View]) {
@@ -2801,6 +2896,7 @@ impl Widgets for UiKit {
     }
 
     fn set_drawing_items(&mut self, view: &View, items: &[prism_core::shape::Item]) {
+        crate::vector::hold(view.id(), items);
         SHAPES.with(|s| s.borrow_mut().insert(view.id(), items.to_vec()));
         view.ui().setNeedsDisplay();
     }
@@ -2811,6 +2907,7 @@ impl Widgets for UiKit {
 
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        crate::vector::forget(id);
         crate::forms::forget_selection(id);
         #[cfg(not(target_os = "tvos"))]
         crate::carets::forget(id);
@@ -2844,10 +2941,9 @@ impl Widgets for UiKit {
         self.a11y_hidden.remove(&id);
         self.layers.retain(|l| l.tag() as NodeId != id);
         crate::interaction::forget(id);
-        self.pictures.retain(|_, ids| {
-            ids.retain(|(i, _)| *i != id);
-            !ids.is_empty()
-        });
+        if self.pictures.remove(&id).is_some() {
+            self.image_cache.forget(id);
+        }
         view.ui().removeFromSuperview();
     }
 

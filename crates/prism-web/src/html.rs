@@ -84,6 +84,9 @@ pub struct HtmlBackend {
     /// While [`to_html`](HtmlBackend::to_html) runs: the nodes another one
     /// controls (`aria-controls`, #291), which get an `id`.
     controlled: std::cell::RefCell<std::collections::HashSet<NodeId>>,
+    /// Where the app serves its schemes' pages (#343,
+    /// `WebApp::web_scheme_path`): a web view's `data-src`.
+    pub(crate) scheme_paths: Vec<(String, String)>,
 }
 
 /// The first paint's styles as rules: one per distinct declaration set,
@@ -794,10 +797,20 @@ impl HtmlBackend {
                     Some(label) => format!(r#" title="{}""#, escape(label)),
                     None => String::new(),
                 };
+                // A page of an app scheme (#343): the path the app serves
+                // it from, or none.
+                let src = match crate::schemes::rewrite(&self.scheme_paths, &n.text) {
+                    Some(path) => path,
+                    None if is_app_scheme_url(&n.text) => {
+                        crate::schemes::unserved(&n.text);
+                        String::new()
+                    }
+                    None => n.text.clone(),
+                };
                 let _ = write!(
                     out,
                     r#"<iframe {attrs} class="prism-web-view" data-src="{}"{title}{sandbox}></iframe>"#,
-                    escape(&n.text)
+                    escape(&src)
                 );
             }
             // In the first paint like text (#285): an `<svg>` drawn at the
@@ -1675,4 +1688,11 @@ pub fn picture_url(src: &str) -> String {
     } else {
         format!("/assets/{src}")
     }
+}
+
+/// Whether `url` is of a scheme the app serves (#343).
+fn is_app_scheme_url(url: &str) -> bool {
+    url.split_once(':').is_some_and(|(scheme, _)| {
+        prism_core::web_view::is_web_scheme(&scheme.trim().to_ascii_lowercase())
+    })
 }

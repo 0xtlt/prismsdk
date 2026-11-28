@@ -17,12 +17,25 @@ pub mod fonts;
 pub mod gl3d;
 pub mod images;
 mod leftovers;
+pub mod picture_cache;
 pub mod remote;
 pub mod save;
 pub mod table;
 pub mod text;
 
 pub use extras::Sticky;
+
+/// `init` with the screen's pixels per point set first
+/// (`cx.scale_factor()`, #343): the app's first render has it, and its
+/// `on_resize` handlers don't run for it. Later changes go through
+/// `Runtime::set_scale_factor`.
+pub fn with_scale_factor(init: &prism_core::AppInit, scale: f32) -> prism_core::AppInit {
+    let init = init.clone();
+    std::sync::Arc::new(move |app: &mut prism_core::App| {
+        app.set_scale_factor(scale);
+        init(app)
+    })
+}
 
 #[cfg(test)]
 mod bench;

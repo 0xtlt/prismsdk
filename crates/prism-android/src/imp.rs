@@ -207,8 +207,10 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeReady(
     // A new Activity: the density or the text size may have changed.
     forget_measures();
     let services = crate::services::AndroidServices::new(&info);
+    // `cx.scale_factor()` (#343): pixels per dp, a Prism point.
+    let init = prism_native::with_scale_factor(init, density);
     let mut runtime = make_runtime(
-        init,
+        &init,
         &info,
         &services,
         Some((width / density, height / density)),
@@ -388,8 +390,14 @@ fn relayout(s: &mut State) {
         bottom: i.bottom / zoom,
         left: i.left / zoom,
     };
-    if full != s.runtime.app.window_size() || safe != s.runtime.app.safe_area() {
-        let patches = s.runtime.set_window(full.0, full.1, safe);
+    // Pixels per dp (`cx.scale_factor()`, #343): the zoom, with the
+    // viewport, which a new density resizes too: `on_resize` runs once,
+    // and a render for a new density sees its new size.
+    if full != s.runtime.app.window_size()
+        || safe != s.runtime.app.safe_area()
+        || zoom != s.runtime.app.scale_factor()
+    {
+        let patches = s.runtime.set_window_metrics(full.0, full.1, safe, zoom);
         if !patches.is_empty() {
             s.renderer.apply(&patches);
         }
@@ -513,6 +521,45 @@ pub extern "system" fn Java_dev_prism_PrismHost_sceneBlob(
     unsafe {
         let e = (**env).v1_6;
         // Null with an OutOfMemoryError pending: Java sees the error.
+        let array = (e.NewByteArray)(env, len);
+        if !array.is_null() {
+            (e.SetByteArrayRegion)(env, array, 0, len, bytes.as_ptr().cast());
+        }
+        array
+    }
+}
+
+/// `PrismHost.webScheme(method, url, headers)`: a web view's page asked
+/// for the `https:` URL standing for an app scheme (#343,
+/// `shouldInterceptRequest`). The app's handler answers on this thread (a
+/// WebView thread, never the UI's; a panic is a `500`):
+/// `<status> <reason>`, header lines, an empty line, the body. Null when
+/// the URL stands for no app scheme. `headers` are `Name: value` lines.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_webScheme(
+    env: *mut JNIEnv,
+    _class: jclass,
+    method: jstring,
+    url: jstring,
+    headers: jstring,
+) -> jbyteArray {
+    let (method, url, headers) = unsafe {
+        (
+            jni::rust_string(env, method),
+            jni::rust_string(env, url),
+            jni::rust_string(env, headers),
+        )
+    };
+    let Some(request) = prism_native::remote::scheme_request(&method, &url, &headers) else {
+        return std::ptr::null_mut();
+    };
+    let response = prism_core::web_view::respond_web_request(&request);
+    let bytes = prism_native::remote::encode_scheme_response(&response);
+    let Ok(len) = jsize::try_from(bytes.len()) else {
+        return std::ptr::null_mut();
+    };
+    unsafe {
+        let e = (**env).v1_6;
         let array = (e.NewByteArray)(env, len);
         if !array.is_null() {
             (e.SetByteArrayRegion)(env, array, 0, len, bytes.as_ptr().cast());
@@ -893,6 +940,18 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeEvent(
                 };
                 s.pad = edges("pad");
                 s.safe = edges("safe");
+                // The screen's density changed (display size setting, another
+                // display; the Activity stays): dp, Prism points, are that
+                // many pixels now. The relayout below tells the app the new
+                // viewport, then `cx.scale_factor()` (#343).
+                if let Some(d) = num("density")
+                    && d.is_finite()
+                    && d >= 0.5
+                    && d != s.renderer.zoom()
+                {
+                    forget_measures();
+                    s.renderer.set_zoom(d);
+                }
                 Vec::new()
             }
             // A video's size, once its player knows it (#207).

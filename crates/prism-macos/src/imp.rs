@@ -34,6 +34,7 @@ use prism_core::{
 use prism_core::{DragEvent, DragPhase, Point, PointerEvent, PointerPhase};
 
 use crate::interact::{MacOverlay, MacRadios};
+use prism_native::picture_cache::{PictureCache, Show, decoded_bytes};
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 // ---------------------------------------------------------------------------
@@ -74,6 +75,51 @@ fn with_state(f: impl FnOnce(&mut State)) {
             f(state)
         }
     });
+}
+
+/// Runs `f` on the state unless it is borrowed (a platform callback during
+/// an update): `false` then, so the caller can try again. A torn-down
+/// state runs nothing and counts as done.
+fn try_with_state(f: impl FnOnce(&mut State)) -> bool {
+    STATE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut guard) => {
+            if let Some(state) = guard.as_mut() {
+                f(state);
+            }
+            true
+        }
+        Err(_) => false,
+    })
+}
+
+/// A picture's bytes arrived (main thread, #343): shown now, or once the
+/// state is free again. A completion skipped while the state is busy would
+/// leave its source loading forever (its nodes never show it), so it is
+/// posted again, a few milliseconds later, up to about a second.
+fn picture_ready(src: String, bytes: Option<Vec<u8>>, tries: u32) {
+    let mut payload = Some((src, bytes));
+    let done = try_with_state(|s| {
+        if let Some((src, bytes)) = payload.take() {
+            s.renderer.widgets.picture_loaded(&src, bytes);
+            s.renderer.mark_all_dirty();
+            s.relayout();
+        }
+    });
+    if done {
+        return;
+    }
+    let Some((src, bytes)) = payload else { return };
+    if tries >= 100 {
+        eprintln!(
+            "prism-macos: a loaded picture was dropped (the app stayed busy): {:?}",
+            prism_core::picture_source(&src).0
+        );
+        return;
+    }
+    let when = dispatch2::DispatchTime::try_from(std::time::Duration::from_millis(10))
+        .unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ =
+        dispatch2::DispatchQueue::main().after(when, move || picture_ready(src, bytes, tries + 1));
 }
 
 /// A text field of a selection group (#231), as a drag looks for it: its
@@ -120,6 +166,17 @@ pub(crate) fn dispatch(event: UiEvent) {
 /// as soon as a field's text, selection or scrolling changes.
 pub(crate) fn follow_anchors() {
     with_state(|s| s.renderer.widgets.ix.follow_anchors());
+}
+
+/// The window moved to a screen with more or fewer pixels per point (#343):
+/// the app hears it with the window's size (`relayout`) and is laid out
+/// again.
+fn sync_scale_factor() {
+    with_state(|s| {
+        if s.backing_scale() != s.runtime.app.scale_factor() {
+            s.relayout();
+        }
+    });
 }
 
 /// Lays everything out again, measures included (a video's size became
@@ -538,6 +595,18 @@ impl State {
         true
     }
 
+    /// The window's pixels per point (`cx.scale_factor()`, #343), or what
+    /// the app has while the view is in no window.
+    fn backing_scale(&self) -> f32 {
+        self.renderer
+            .widgets
+            .root
+            .window()
+            .map_or(self.runtime.app.scale_factor(), |w| {
+                w.backingScaleFactor() as f32
+            })
+    }
+
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.frame().size;
         // Responsive layouts: tell the app its window size and what covers
@@ -554,10 +623,16 @@ impl State {
             bottom: i.bottom as f32,
             left: i.left as f32,
         };
+        // The size and the density together: `on_resize` runs once for a
+        // screen change that moves both, and a render for a new density
+        // sees the new viewport.
+        let scale = self.backing_scale();
         if w > 0.
-            && ((w, h) != self.runtime.app.window_size() || safe != self.runtime.app.safe_area())
+            && ((w, h) != self.runtime.app.window_size()
+                || safe != self.runtime.app.safe_area()
+                || scale != self.runtime.app.scale_factor())
         {
-            let patches = self.runtime.set_window(w, h, safe);
+            let patches = self.runtime.set_window_metrics(w, h, safe, scale);
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
             }
@@ -733,12 +808,20 @@ define_class!(
         }
 
         /// Another screen, with more or fewer pixels per point: a drawing's
-        /// picture (#342) is made again for them.
+        /// picture (#342) is made again for them, and the app hears it
+        /// (`cx.scale_factor()`, #343).
         #[unsafe(method(viewDidChangeBackingProperties))]
         fn view_did_change_backing_properties(&self) {
             let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
             if !self.ivars().drawing.borrow().is_empty() {
                 self.setNeedsDisplay(true);
+            }
+            if self
+                .window()
+                .and_then(|w| w.contentView())
+                .is_some_and(|c| *c == *self.as_super())
+            {
+                on_main_after(std::time::Duration::ZERO, sync_scale_factor);
             }
         }
 
@@ -2928,10 +3011,10 @@ pub struct AppKit {
     timer_after: HashMap<NodeId, String>,
     /// Presented sheets.
     sheets: Vec<Rc<MacSheet>>,
-    /// Pictures waiting for their image, by source.
-    pictures: HashMap<String, Vec<(NodeId, Retained<PrismView>)>>,
-    /// Decoded images by source.
-    image_cache: HashMap<String, Retained<NSImage>>,
+    /// Picture views by node (a load names the nodes it reaches).
+    pictures: HashMap<NodeId, Retained<PrismView>>,
+    /// Decoded images, kept while a node shows them (#343).
+    image_cache: PictureCache<Retained<NSImage>>,
     image_sources: prism_native::images::ImageSources,
     /// Right-to-left language: header buttons swap sides.
     rtl: bool,
@@ -2962,6 +3045,20 @@ pub struct AppKit {
 fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
     let f = |t: objc2_quartz_core::CATransform3D| [t.m11, t.m12, t.m21, t.m22, t.m41, t.m42];
     f(a) == f(b)
+}
+
+/// The bytes a decoded image takes: its largest representation's pixels.
+fn image_bytes(img: &NSImage) -> usize {
+    let (w, h) = img
+        .representations()
+        .iter()
+        .map(|r| (r.pixelsWide().max(0) as f64, r.pixelsHigh().max(0) as f64))
+        .fold((0., 0.), |a, b| if b.0 * b.1 > a.0 * a.1 { b } else { a });
+    if w * h > 0. {
+        return decoded_bytes(w, h);
+    }
+    let size = img.size();
+    decoded_bytes(size.width, size.height)
 }
 
 /// The node a Prism view shows.
@@ -3012,51 +3109,50 @@ impl AppKit {
         }
     }
 
-    /// Shows `src` in `view`: from memory, or loaded on a background thread.
+    /// Shows `src` in `view`: from memory, or loaded on a background thread
+    /// while the view keeps its previous image (#343).
     fn load_picture(&mut self, id: NodeId, view: &Retained<PrismView>, src: &str) {
-        if let Some(img) = self.image_cache.get(src) {
-            *view.ivars().image.borrow_mut() = Some(img.clone());
-            view.setNeedsDisplay(true);
-            return;
-        }
-        *view.ivars().image.borrow_mut() = None;
+        self.pictures.insert(id, view.clone());
+        let image = match self.image_cache.show(id, src) {
+            Show::Ready(img) => Some(img),
+            Show::Clear => None,
+            Show::Wait => return,
+            Show::Load => {
+                self.spawn_picture_load(src);
+                return;
+            }
+        };
+        *view.ivars().image.borrow_mut() = image;
         view.setNeedsDisplay(true);
-        let waiting = self.pictures.entry(src.to_string()).or_default();
-        waiting.retain(|(i, _)| *i != id);
-        waiting.push((id, view.clone()));
-        if waiting.len() > 1 {
-            return; // already loading
-        }
+    }
+
+    fn spawn_picture_load(&self, src: &str) {
         let (src, sources) = (src.to_string(), self.image_sources.clone());
         std::thread::spawn(move || {
             let bytes = prism_native::images::load(&src, &sources);
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                with_state(|s| {
-                    s.renderer.widgets.picture_loaded(&src, bytes);
-                    s.renderer.mark_all_dirty();
-                    s.relayout();
-                })
-            });
+            dispatch2::DispatchQueue::main().exec_async(move || picture_ready(src, bytes, 0));
         });
     }
 
+    /// A load finished: the nodes still showing `src` show its image, or
+    /// nothing if it could not be decoded; nodes that moved on to another
+    /// source keep theirs.
     fn picture_loaded(&mut self, src: &str, bytes: Option<Vec<u8>>) {
-        let waiting = self.pictures.remove(src).unwrap_or_default();
         let data = bytes.map(objc2_foundation::NSData::from_vec);
-        let Some(img) =
-            data.and_then(|d| NSImage::initWithData(objc2::AllocAnyThread::alloc(), &d))
-        else {
+        let img = data.and_then(|d| NSImage::initWithData(objc2::AllocAnyThread::alloc(), &d));
+        if img.is_none() {
             eprintln!(
                 "prism-macos: could not load image {:?}",
                 prism_core::picture_source(src).0
             );
-            return;
-        };
-        for (_, view) in waiting {
-            *view.ivars().image.borrow_mut() = Some(img.clone());
-            view.setNeedsDisplay(true);
         }
-        self.image_cache.insert(src.to_string(), img);
+        let stored = img.as_ref().map(|i| (i.clone(), image_bytes(i)));
+        for id in self.image_cache.loaded(src, stored) {
+            if let Some(view) = self.pictures.get(&id) {
+                *view.ivars().image.borrow_mut() = img.clone();
+                view.setNeedsDisplay(true);
+            }
+        }
     }
 
     fn tick(&self) {
@@ -4402,6 +4498,7 @@ impl Widgets for AppKit {
             } else {
                 (paths.to_vec(), Vec::new())
             };
+            crate::vector::hold(view.id(), &drawing);
             *v.ivars().shape.borrow_mut() = shape;
             *v.ivars().drawing.borrow_mut() = drawing;
             v.setNeedsDisplay(true);
@@ -4411,6 +4508,7 @@ impl Widgets for AppKit {
     fn set_drawing_items(&mut self, view: &View, items: &[prism_core::shape::Item]) {
         if let View::Container(v) = view {
             v.ivars().shape.borrow_mut().clear();
+            crate::vector::hold(view.id(), items);
             *v.ivars().drawing.borrow_mut() = items.to_vec();
             v.setNeedsDisplay(true);
         }
@@ -4422,6 +4520,7 @@ impl Widgets for AppKit {
 
     fn destroy(&mut self, view: &View) {
         crate::scene::forget(view.id());
+        crate::vector::forget(view.id());
         crate::carets::forget(view.id());
         self.ix.select_events.remove(&view.id());
         self.ix.pending_selection.remove(&view.id());
@@ -4461,11 +4560,8 @@ impl Widgets for AppKit {
                 self.timer_after.remove(&view.id());
             }
             View::Picture(_) => {
-                let id = view.id();
-                self.pictures.retain(|_, ids| {
-                    ids.retain(|(i, _)| *i != id);
-                    !ids.is_empty()
-                });
+                self.pictures.remove(&view.id());
+                self.image_cache.forget(view.id());
             }
             View::Tab(_) => {
                 self.titles.remove(&view.id());
@@ -5738,6 +5834,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         config.title.clone(),
     );
     let capabilities = prism_core::PlatformServices::capabilities(&services);
+    // The screen's pixels per point (#343), before the first render.
+    let init = prism_native::with_scale_factor(&init, window.backingScaleFactor() as f32);
     let mut runtime = Runtime::with_options(
         &init,
         prism_core::RuntimeOptions {
@@ -5780,7 +5878,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         timer_after: HashMap::new(),
         sheets: Vec::new(),
         pictures: HashMap::new(),
-        image_cache: HashMap::new(),
+        image_cache: PictureCache::default(),
         image_sources: image_sources(config.assets.as_deref(), &config.embedded_assets),
         rtl: false,
         chrome: ("Back".into(), "Close".into()),

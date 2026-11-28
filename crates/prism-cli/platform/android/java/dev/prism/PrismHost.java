@@ -78,6 +78,12 @@ public final class PrismHost {
     static native void nativeWidgetRefresh(String task, String kind, String info);
     /** A 3D scene's blob by id (prism-core `scene3d::blobs`), null once gone; any thread (PrismScene's loader). */
     static native byte[] sceneBlob(String id);
+    /**
+     * An app scheme's answer (#343) for a request to the https URL standing for it
+     * (`https://main.app.prism.invalid/…`): `<status> <reason>`, header lines, an empty
+     * line, the body. null: no app scheme. Any thread (the app's handler runs on it).
+     */
+    static native byte[] webScheme(String method, String url, String headers);
 
     /** The application (also set when a background job starts without the Activity). */
     static android.content.Context context;
@@ -1779,8 +1785,17 @@ public final class PrismHost {
 
     // --- Pictures ---------------------------------------------------------------------------
 
+    /**
+     * Shows `src` in `view`. The previous image stays until the new one is
+     * ready (#343); a download that ends after the view moved on to another
+     * source is dropped; no source, or one that fails, shows nothing.
+     */
     static void loadPicture(ImageView view, String src) {
         view.setTag(src); // the source shown now (a late download checks it)
+        if (src.isEmpty()) {
+            view.setImageBitmap(null);
+            return;
+        }
         bitmap(src, b -> {
             if (!src.equals(view.getTag())) return;
             view.setImageBitmap(b);
@@ -1822,7 +1837,7 @@ public final class PrismHost {
      * Reads a picture source (main thread): an app asset, a file path, an
      * http(s) URL (then one `name: value` header per line) or a `data:` URL.
      * `done` gets the image (null if undecodable) at once, or later on the
-     * main thread for downloads; not at all if the source can't be read.
+     * main thread for downloads; null too if the source can't be read.
      */
     static void bitmap(String src, java.util.function.Consumer<Bitmap> done) {
         if (src.startsWith("data:")) {
@@ -1837,6 +1852,7 @@ public final class PrismHost {
                 done.accept(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
             } catch (Exception e) {
                 android.util.Log.w("prism", "picture data: URL", e);
+                done.accept(null);
             }
             return;
         }
@@ -1863,6 +1879,7 @@ public final class PrismHost {
                 } catch (Exception e) {
                     // Never log the headers: they hold tokens.
                     android.util.Log.w("prism", "picture " + url, e);
+                    main.post(() -> done.accept(null));
                 }
             }).start();
             return;
@@ -1879,6 +1896,7 @@ public final class PrismHost {
             done.accept(b);
         } catch (Exception e) {
             android.util.Log.w("prism", "picture " + src, e);
+            done.accept(null);
         }
     }
 }

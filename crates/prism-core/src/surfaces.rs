@@ -84,7 +84,8 @@ pub struct Capabilities {
     pub web_auth: bool,
     /// Remote pushes (`register_for_push`), and the service they use.
     pub push: Option<crate::push::PushService>,
-    /// Web views (`web_view`) show their page (an empty box otherwise).
+    /// Web views (`web_view`) show their page (an empty box otherwise). On
+    /// Linux, only with prismsdk's `web-view` feature (WebKitGTK).
     pub web_view: bool,
     /// Files can be dropped on a drop target (`on_drop_files`, #111).
     pub drop_files: bool,

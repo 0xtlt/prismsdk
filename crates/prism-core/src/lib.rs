@@ -161,7 +161,9 @@ pub use text_edit::{
     ClipboardContent, CopyEvent, PasteEvent, SelectionRectEvent, SpanClickEvent, edit_events,
 };
 pub use video::{EndedEvent, Video, VideoConfig, video};
-pub use web_view::{WebLoadEvent, WebMessageEvent, WebSandbox, WebView, web_view};
+pub use web_view::{
+    SchemeRequest, SchemeResponse, WebLoadEvent, WebMessageEvent, WebSandbox, WebView, web_view,
+};
 
 use std::sync::Arc;
 
@@ -1236,6 +1238,34 @@ impl Runtime {
         self.poll()
     }
 
+    /// The screen's pixels per point (`cx.scale_factor()`): the window
+    /// moved to another screen, the browser zoomed. Re-renders everything
+    /// and runs the `on_resize` handlers when it changes; a value that is
+    /// not finite and positive is ignored. Returns the resulting patches.
+    /// When the size may change with it, [`set_window_metrics`](Self::set_window_metrics)
+    /// runs the handlers once for both.
+    pub fn set_scale_factor(&mut self, scale: f32) -> Vec<Patch> {
+        self.app.set_scale_factor(scale);
+        self.poll()
+    }
+
+    /// [`set_window`](Self::set_window) and [`set_scale_factor`](Self::set_scale_factor)
+    /// at once: a new density (another screen, the system's display size)
+    /// often resizes the window in points too, and the `on_resize`
+    /// handlers then run once, with the new size and density. Returns the
+    /// resulting patches.
+    pub fn set_window_metrics(
+        &mut self,
+        width: f32,
+        height: f32,
+        safe_area: style::Edges,
+        scale: f32,
+    ) -> Vec<Patch> {
+        self.app
+            .set_window_metrics((width, height), safe_area, scale);
+        self.poll()
+    }
+
     /// The window entered or left full screen, or its buttons moved
     /// (`cx.is_fullscreen()`, `cx.window_controls()`). Re-renders
     /// everything if anything differs. Returns the resulting patches.
@@ -1376,6 +1406,8 @@ pub mod prelude {
     pub use crate::{SceneTapEvent, scene3d};
     // Web views (#62).
     pub use crate::{WebLoadEvent, WebMessageEvent, WebSandbox, web_view};
+    // The app's own content in web views (#343).
+    pub use crate::{SchemeRequest, SchemeResponse};
     // Videos (#207).
     pub use crate::{EndedEvent, video};
 }

@@ -92,6 +92,9 @@ pub enum View {
     Overlay(NodeId, Rc<OverlayView>),
     /// A video (#207): GTK's player (GStreamer) with its own controls.
     Video(NodeId, gtk::Video),
+    /// A web view (#343): WebKitGTK, with the `web-view` feature.
+    #[cfg(feature = "web-view")]
+    Web(NodeId, Rc<crate::web::Web>),
 }
 
 thread_local! {
@@ -138,6 +141,8 @@ impl View {
             | View::Radio(id, _)
             | View::Overlay(id, _)
             | View::Video(id, _) => *id,
+            #[cfg(feature = "web-view")]
+            View::Web(id, _) => *id,
         }
     }
 
@@ -166,6 +171,8 @@ impl View {
             View::Radio(_, r) => r.root.clone().upcast(),
             View::Overlay(_, o) => o.anchor.clone().upcast(),
             View::Video(_, v) => v.clone().upcast(),
+            #[cfg(feature = "web-view")]
+            View::Web(_, w) => w.root.clone().upcast(),
         }
     }
 }
@@ -793,6 +800,15 @@ fn node_of(w: &gtk::Widget) -> Option<NodeId> {
         .find_map(|c| c.strip_prefix('p').and_then(|n| n.parse::<NodeId>().ok()))
 }
 
+/// Whether `w` is a web view's page (#343): typing there is the page's,
+/// as in a text field.
+fn is_web_page(_w: &gtk::Widget) -> bool {
+    #[cfg(feature = "web-view")]
+    return crate::web::is_page(_w);
+    #[cfg(not(feature = "web-view"))]
+    false
+}
+
 /// Reports key presses in `window` (`UiEvent::Key`): to the focused node's
 /// nearest ancestor with `on_key_down`, and to global listeners. Typing in
 /// a text field only reaches local listeners.
@@ -846,7 +862,7 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
             .and_then(|w| GtkWindowExt::focus(&w));
         let editing = focus
             .as_ref()
-            .is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::TextView>());
+            .is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::TextView>() || is_web_page(f));
         // In a text field: its selection before the key (#86).
         // And where its caret is (#211).
         let (selection, edges) = match focus.as_ref() {
@@ -1416,6 +1432,35 @@ fn load_font(s: &mut State, face: prism_core::FontFace) {
     }
 }
 
+/// The window's pixels per point: its surface's fractional scale when the
+/// running GTK has one (4.12 and later, `scale`), else the integer scale
+/// factor GTK 4.8 has.
+fn window_scale(window: &gtk::ApplicationWindow) -> f32 {
+    if let Some(surface) = window.surface()
+        && surface.find_property("scale").is_some()
+    {
+        let scale = surface.property::<f64>("scale") as f32;
+        if scale > 0. {
+            return scale;
+        }
+    }
+    window.scale_factor().max(1) as f32
+}
+
+/// The window's scale changed (another monitor, the desktop's setting):
+/// the app hears it (`cx.scale_factor()`, #343), outside GTK's notify.
+fn scale_changed() {
+    glib::idle_add_local_once(|| {
+        with_state(|s| {
+            let scale = window_scale(&s.renderer.widgets.window);
+            if scale != s.runtime.app.scale_factor() {
+                let patches = s.runtime.set_scale_factor(scale);
+                commit(s, patches);
+            }
+        })
+    });
+}
+
 fn relayout(s: &mut State) {
     // GTK before 4.12: names from content, no type names (`names.rs`).
     crate::names::schedule();
@@ -1423,8 +1468,13 @@ fn relayout(s: &mut State) {
     if w <= 0. {
         return;
     }
-    if (w, h) != s.runtime.app.viewport() {
-        let patches = s.runtime.set_viewport(w, h);
+    // With the window's scale (`cx.scale_factor()`, #343): a size and a
+    // scale that change together run `on_resize` once.
+    let scale = window_scale(&s.renderer.widgets.window);
+    if (w, h) != s.runtime.app.viewport() || scale != s.runtime.app.scale_factor() {
+        let patches = s
+            .runtime
+            .set_window_metrics(w, h, Default::default(), scale);
         if !patches.is_empty() {
             s.renderer.apply(&patches);
             s.renderer.widgets.flush_css();
@@ -2255,8 +2305,12 @@ impl Widgets for Gtk {
                 });
                 View::Sheet(id, sheet)
             }
-            // No web view on Linux yet (#62): an empty box sized by its
-            // style (`capabilities().web_view` is false).
+            // A web view (#343): WebKitGTK, with the `web-view` feature.
+            #[cfg(feature = "web-view")]
+            NodeKind::WebView => View::Web(id, Rc::new(crate::web::Web::new(id, &self.app_title))),
+            // Without it, an empty box sized by its style
+            // (`capabilities().web_view` is false).
+            #[cfg(not(feature = "web-view"))]
             NodeKind::WebView => View::Container(id, kind, layout::container()),
             NodeKind::Video => View::Video(id, video_widget(id)),
             NodeKind::Checkbox => View::Check(id, controls::checkbox(id)),
@@ -2505,11 +2559,24 @@ impl Widgets for Gtk {
                         gtk::Overflow::Visible
                     })
             }
+            // A web page inside its rounded corners (#343).
+            #[cfg(feature = "web-view")]
+            View::Web(_, w) => w.root.set_overflow(if s.corner_radius > 0. || s.clip {
+                gtk::Overflow::Hidden
+            } else {
+                gtk::Overflow::Visible
+            }),
             _ => {}
         }
     }
 
     fn set_text(&mut self, view: &View, text: &str) {
+        if let View::Picture(_, p) = view {
+            // The source shown now: a remote load that ends after the
+            // picture moved on to another source leaves it alone (#343).
+            // SAFETY: the key only ever holds a `String`.
+            unsafe { p.set_data("prism-src", text.to_string()) };
+        }
         match view {
             View::Text(id, l) => {
                 let state = self.labels.entry(*id).or_default();
@@ -2536,18 +2603,23 @@ impl Widgets for Gtk {
                 let takes = field_takes(*id, text, &t.text());
                 t.set_text(text, takes);
             }
+            // No source: nothing, at once.
+            View::Picture(_, p) if text.is_empty() => p.set_paintable(None::<&gdk::Paintable>),
             // Bytes in memory (`picture_data`): decoded by GdkTexture
             // (PNG, JPEG, TIFF; others through gdk-pixbuf's loaders).
             View::Picture(_, p) if text.starts_with("data:") => {
                 let texture = prism_native::images::data_url(text).and_then(|b| {
                     gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(b)).ok()
                 });
-                match texture {
-                    Some(t) => p.set_paintable(Some(&t)),
-                    None => eprintln!("prism-linux: could not decode a data: picture"),
+                if texture.is_none() {
+                    eprintln!("prism-linux: could not decode a data: picture");
                 }
+                p.set_paintable(texture.as_ref());
             }
             View::Check(_, b) => b.set_label((!text.is_empty()).then_some(text)),
+            // A web view's URL (#343).
+            #[cfg(feature = "web-view")]
+            View::Web(_, w) => w.load(text),
             // A video's source (#207): a URL, a file or an asset. GTK's
             // player sends no headers: the first line is the URL.
             View::Video(_, v) => {
@@ -2568,19 +2640,23 @@ impl Widgets for Gtk {
             }
             View::Picture(_, p) => {
                 // Compiled into the binary first, then the assets directory.
+                // One that cannot be read shows nothing (not the previous
+                // picture).
                 if let Some(bytes) = self.embedded.get(text) {
-                    match gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(bytes)) {
-                        Ok(t) => p.set_paintable(Some(&t)),
-                        Err(_) => eprintln!("prism-linux: could not decode the picture {text}"),
+                    let texture = gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(bytes));
+                    if texture.is_err() {
+                        eprintln!("prism-linux: could not decode the picture {text}");
                     }
+                    p.set_paintable(texture.ok().as_ref());
                 } else {
                     let path = if text.starts_with('/') {
                         Some(std::path::PathBuf::from(text))
                     } else {
                         self.assets.as_ref().map(|a| a.join(text))
                     };
-                    if let Some(path) = path.filter(|p| p.exists()) {
-                        p.set_filename(Some(&path));
+                    match path.filter(|p| p.is_file()) {
+                        Some(path) => p.set_filename(Some(&path)),
+                        None => p.set_paintable(None::<&gdk::Paintable>),
                     }
                 }
             }
@@ -2780,9 +2856,28 @@ impl Widgets for Gtk {
         }
     }
 
+    // Web views (#343), with the `web-view` feature.
+    #[cfg(feature = "web-view")]
+    fn post_web_message(&mut self, view: &View, data: &str) {
+        if let View::Web(_, w) = view {
+            w.post(data);
+        }
+    }
+
+    #[cfg(feature = "web-view")]
+    fn reload_web_view(&mut self, view: &View) {
+        if let View::Web(_, w) = view {
+            w.reload();
+        }
+    }
+
     fn destroy(&mut self, view: &View) {
         if let View::Picture(id, _) = view {
             crate::focal::forget(*id);
+        }
+        #[cfg(feature = "web-view")]
+        if let View::Web(_, w) = view {
+            w.teardown();
         }
         let id = view.id();
         TYPED.with(|t| t.borrow_mut().remove(&id));
@@ -3406,6 +3501,9 @@ impl Widgets for Gtk {
                 self.update_text_focus(*id, l);
             }
             View::Radio(id, r) => r.set_options(*id, config),
+            // A web view's options (#343).
+            #[cfg(feature = "web-view")]
+            View::Web(_, w) => w.configure(config),
             View::Overlay(_, o) => o.configure(
                 prism_core::controls::OverlayConfig::decode(config),
                 &self.window,
@@ -4513,7 +4611,7 @@ fn set_accessible_label(w: &gtk::Widget, label: &str) {
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn data_dir(title: &str) -> std::path::PathBuf {
+pub(crate) fn data_dir(title: &str) -> std::path::PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share")))
@@ -4737,8 +4835,11 @@ fn activate(app: &gtk::Application) {
         });
     });
     app.add_action(&respond);
+    // `cx.scale_factor()` (#343), before the first render: the integer
+    // scale until the window has a surface.
+    let init = prism_native::with_scale_factor(init, window_scale(&window));
     let mut runtime = Runtime::with_options(
-        init,
+        &init,
         prism_core::RuntimeOptions {
             path: std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into()),
             storage: Some(Box::new(prism_core::FileStorage::new(data.clone()))),
@@ -4857,8 +4958,15 @@ fn activate(app: &gtk::Application) {
         if let Some(surface) = w.surface() {
             let window = w.clone();
             surface.connect_notify_local(Some("state"), move |_, _| report_lifecycle(&window));
+            // A fractional scale (GTK 4.12 and later): `cx.scale_factor()`.
+            if surface.find_property("scale").is_some() {
+                surface.connect_notify_local(Some("scale"), |_, _| scale_changed());
+            }
+            scale_changed();
         }
     });
+    // Another monitor, another desktop scale (#343).
+    window.connect_scale_factor_notify(|_| scale_changed());
     // Refresh (pull to refresh elsewhere): F5 or Ctrl+R, for the
     // refreshable scroll views shown (not a hidden tab's or screen's); the
     // key stays the app's when there is none.
@@ -5324,11 +5432,10 @@ fn save_png(window: &gtk::Widget, path: &str) {
 // --- Remote pictures (#32) ----------------------------------------------------------------
 
 /// Downloads `src` (a URL, maybe with header lines) off the main thread and
-/// shows it in `p`, unless `p` was given another source meanwhile.
+/// shows it in `p`. The picture keeps its previous image until the new one
+/// is ready (#343), and shows it only if its source (`prism-src`, set by
+/// `set_text`) is still this one; a failure shows nothing.
 fn load_remote_picture(p: &gtk::Picture, src: &str) {
-    p.set_paintable(None::<&gdk::Paintable>);
-    // SAFETY: the key only ever holds a `String`.
-    unsafe { p.set_data("prism-src", src.to_string()) };
     let (picture, src) = (p.clone(), src.to_string());
     glib::spawn_future_local(async move {
         let source = src.clone();
@@ -5337,7 +5444,7 @@ fn load_remote_picture(p: &gtk::Picture, src: &str) {
                 .await
                 .ok()
                 .flatten();
-        // SAFETY: as above, a `String`.
+        // SAFETY: the key only ever holds a `String` (`set_text`).
         let current = unsafe {
             picture
                 .data::<String>("prism-src")
@@ -5348,13 +5455,13 @@ fn load_remote_picture(p: &gtk::Picture, src: &str) {
         }
         let texture =
             bytes.and_then(|b| gdk::Texture::from_bytes(&glib::Bytes::from_owned(b)).ok());
-        match texture {
-            Some(t) => picture.set_paintable(Some(&t)),
-            None => eprintln!(
+        if texture.is_none() {
+            eprintln!(
                 "prism-linux: could not load image {:?}",
                 prism_core::picture_source(&src).0
-            ),
+            );
         }
+        picture.set_paintable(texture.as_ref());
     });
 }
 

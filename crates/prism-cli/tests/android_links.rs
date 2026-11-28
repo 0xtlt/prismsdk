@@ -51,6 +51,26 @@ const POPUPS: &[(bool, Option<&str>, bool)] = &[
     (true, Some(""), false),
 ];
 
+/// (scheme, host, what it is: 0 not an app scheme's, 1 served by the app,
+/// 2 refused with a 404), #343: only the canonical
+/// `https://<host>.<scheme>.prism.invalid` reaches the app, and no other
+/// form of a host under `prism.invalid` reaches DNS.
+const APP_SCHEMES: &[(&str, Option<&str>, u8)] = &[
+    ("https", Some("main.app.prism.invalid"), 1),
+    ("HTTPS", Some("Main.App.Prism.Invalid"), 1),
+    ("https", Some("main.app.prism.invalid."), 2),
+    ("https", Some("main.app.prism.invalid.."), 2),
+    ("http", Some("main.app.prism.invalid"), 2),
+    ("ws", Some("main.app.prism.invalid"), 2),
+    ("https", Some("prism.invalid"), 2),
+    ("https", Some("prism.invalid."), 2),
+    ("https", Some("example.com"), 0),
+    ("https", Some("prism.invalid.example.com"), 0),
+    ("https", Some("notprism.invalid"), 0),
+    ("http", Some("example.com"), 0),
+    ("https", None, 0),
+];
+
 /// `PrismLinks.java` and a `main` answering cases (tab-separated) on stdin,
 /// compiled; `None` without a JDK (macOS has a `javac` that fails without
 /// one).
@@ -80,6 +100,8 @@ public class LinksCheck {
             String[] f = line.split("\t", -1);
             if (f[0].equals("url")) {
                 out.append(PrismLinks.external(f[1]));
+            } else if (f[0].equals("scheme")) {
+                out.append(PrismLinks.appScheme(f[1], f[2].equals("null") ? null : f[2]));
             } else {
                 Set<String> sandbox = null;
                 if (!f[2].equals("none")) {
@@ -133,6 +155,9 @@ fn s41_only_a_tap_opens_and_only_web_mail_and_phone_links() {
     for (gesture, sandbox, _) in POPUPS {
         input += &format!("popup\t{gesture}\t{}\n", sandbox.unwrap_or("none"));
     }
+    for (scheme, host, _) in APP_SCHEMES {
+        input += &format!("scheme\t{scheme}\t{}\n", host.unwrap_or("null"));
+    }
     java.stdin
         .take()
         .unwrap()
@@ -150,6 +175,13 @@ fn s41_only_a_tap_opens_and_only_web_mail_and_phone_links() {
             got.next(),
             Some(opens.to_string().as_str()),
             "gesture {gesture}, sandbox {sandbox:?}"
+        );
+    }
+    for (scheme, host, kind) in APP_SCHEMES {
+        assert_eq!(
+            got.next(),
+            Some(kind.to_string().as_str()),
+            "{scheme}://{host:?}"
         );
     }
 }
@@ -176,5 +208,14 @@ fn s41_the_web_view_applies_the_policy() {
     assert!(
         java[open..intent].contains("PrismLinks.external("),
         "an Intent for any scheme"
+    );
+    // App schemes (#343): every intercepted request asks `appScheme` first.
+    let scheme = java
+        .find("static WebResourceResponse scheme(")
+        .expect("scheme");
+    let ask = scheme + java[scheme..].find("PrismHost.webScheme(").unwrap();
+    assert!(
+        java[scheme..ask].contains("PrismLinks.appScheme(u.getScheme(), u.getHost())"),
+        "a request under prism.invalid reaches the network"
     );
 }

@@ -105,7 +105,7 @@ These values end up in file names, launchers, manifests and package metadata, so
 
 ### Linux
 
-`prism build linux` makes a `.deb`: the release binary and its assets in `/usr/lib/<name>`, a launcher in `/usr/bin`, a desktop entry and icon named after the bundle id (the window uses it as its GTK application id, so desktops match it to its launcher), and AppStream metadata. Dependencies come from `dpkg-shlibdeps`. On Linux it builds directly. Elsewhere it builds inside the `docker/linux-dev.Dockerfile` image, which it builds if needed, with its own target dir under `target/linux`. Install the package with `sudo apt install ./<name>_<version>-<build>_<arch>.deb`.
+`prism build linux` makes a `.deb`: the release binary and its assets in `/usr/lib/<name>`, a launcher in `/usr/bin`, a desktop entry and icon named after the bundle id (the window uses it as its GTK application id, so desktops match it to its launcher), and AppStream metadata. Dependencies come from `dpkg-shlibdeps`: an app built with prismsdk's `web-view` feature depends on `libwebkitgtk-6.0-4` too (WebKitGTK for its web views; the build needs `libwebkitgtk-6.0-dev`, which the Docker image has). On Linux it builds directly. Elsewhere it builds inside the `docker/linux-dev.Dockerfile` image, which it builds if needed, with its own target dir under `target/linux`. Install the package with `sudo apt install ./<name>_<version>-<build>_<arch>.deb`.
 
 ### Windows
 
