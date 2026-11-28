@@ -29,7 +29,7 @@ cx.post_web_message("preview", &serde_json::json!({ "select": "section-2" }));
 cx.reload_web_view("preview");
 ```
 
-- `web_view(url)` takes an absolute URL (`https://…`, `file://…` natively). On the web a path (`/preview/1`) is relative to the app's page. A new URL in a later render loads it in the same view. Other schemes leave the view blank (`prism_core::web_view::is_web_view_url`): a `javascript:` URL would run in the app's own page on the web, and `data:` or `blob:` pages are not ones the app talks to. A URL that comes from users (a link to preview) is safe to pass as it is.
+- `web_view(url)` takes an absolute URL (`https://…`, `file://…` natively, or one of the app's own schemes: see [The app's own pages](#the-apps-own-pages)). On the web a path (`/preview/1`) is relative to the app's page. A new URL in a later render loads it in the same view. Other schemes leave the view blank (`prism_core::web_view::is_web_view_url`): a `javascript:` URL would run in the app's own page on the web, and `data:` or `blob:` pages are not ones the app talks to. A URL that comes from users (a link to preview) is safe to pass as it is.
 - It has no natural size: give it one (`.flex_1()`, `.h(px(…))`). Its background, border and corners are styled like a `div`'s; the background shows while the page loads.
 - `cx.post_web_message(id, &value)` sends any `serde::Serialize` value (`post_web_message_json` takes JSON text). Messages posted before the page finished loading are delivered once it has, in order.
 - `cx.reload_web_view(id)` reloads the page. On the web, a frame showing another origin than the app's cannot be reloaded in place: it loads the URL the app gave again.
@@ -80,6 +80,70 @@ A window the page opens with `popups()` is not sandboxed: on the web it is a nor
 Without `scripts()` there are no messages from the page. A page sandboxed without `same_origin()` has an opaque origin on the web: its messages come from `"null"`, so talk to it with `.allow_origin("*")`.
 
 Changes to the sandbox apply from the next page the view loads (on Apple platforms, a change of `same_origin` makes a new web view).
+
+## The app's own pages
+
+An app that ships its own web content (a canvas editor, a help book, a chart drawn with a JavaScript library) serves it from Rust with a scheme of its own, instead of a local server or files on disk. `Application::web_scheme` answers every request of a page of that scheme: the page, its scripts, styles, fonts and images, and its `fetch` calls.
+
+```rust
+use prism::prelude::*;
+
+static EDITOR_JS: &str = include_str!("../web/editor.js");
+
+fn serve(req: &SchemeRequest) -> SchemeResponse {
+    match req.path().as_str() {
+        "/" | "/index.html" => SchemeResponse::html(include_str!("../web/index.html")),
+        "/editor.js" => SchemeResponse::file("editor.js", EDITOR_JS),
+        "/api/doc" if req.method == "POST" => {
+            save(&req.body);
+            SchemeResponse::json(&serde_json::json!({ "saved": true }))
+        }
+        _ => SchemeResponse::not_found(),
+    }
+}
+
+fn main() {
+    Application::new()
+        .web_scheme("app", serve)
+        .web(|w| w.web_scheme_path("app", "/canvas"))   // the web: see below
+        .run(|cx| cx.new_entity(Editor::new));
+}
+
+// In a view:
+web_view("app://main/index.html").id("canvas").flex_1()
+```
+
+- The handler runs off the main thread (a slow answer never blocks the UI), so it is `Send + Sync`: reach the app's state through what it captures (an `Arc<Mutex<…>>`, a channel), not through `cx`. A panic in it answers `500` and is logged.
+- `SchemeRequest` has the `method`, `url`, `headers` and `body`, with `path()` (decoded), `query_param(name)`, `header(name)` and `origin()`. `SchemeResponse::html`, `text`, `json`, `file(name, bytes)` (its type from the name), `ok(content_type, bytes)` and `not_found()` answer; `with_status` and `with_header` adjust.
+- A scheme is lower-case letters, digits and `-`, starting with a letter. The engines' own (`http`, `https`, `file`, `data`, `blob`, `javascript`, `about`, …) are refused, as is a scheme served twice: `run()` panics at startup with the reason.
+- An app that registers no scheme runs exactly as before.
+- Use relative URLs in the page (`editor.js`, `/fonts/a.woff2`): an absolute `app://…` link does not load on Android or the web.
+
+**The app sees the URL it wrote** on every platform: the request's `url` is `app://main/editor.js`, `WebLoadEvent::url` is `app://main/index.html`, and `WebMessageEvent::origin` is `app://main`, the view's default allowed origin. The page talks to the app as any other (`prismHost.postMessage`, `window.parent.postMessage` on the web).
+
+**Security.** Any frame inside the view may request the scheme, a third-party frame the page embeds too. A handler that hands out private data checks `req.origin()` (the requesting page's origin, `app://main`, when the engine tells it). No CORS header is added: a page of another origin cannot read the answers unless the handler adds `Access-Control-Allow-Origin` itself.
+
+**On the web** the handler is not called: there is no app process next to the browser. The page is an `<iframe>` of a path the app serves with its own routes, declared with `WebApp::web_scheme_path("app", "/canvas")`: `app://main/x?q` loads `/canvas/main/x?q`.
+
+```rust
+let prism = Application::new()
+    .web_scheme("app", serve)
+    .web(|w| w.web_scheme_path("app", "/canvas"))
+    .web_app(|cx| cx.new_entity(Editor::new));
+let app = axum::Router::new()
+    .route("/canvas/main/{*path}", get(canvas_files))
+    .merge(prism.router());
+```
+
+Those routes are the app's own HTTP endpoints, public like any other: check who asks (the session's cookie, its user) before answering with private data. The page is on the app's origin, so it can reach the app's page and cookies: serve only the app's own content there. Only schemes the app registers are rewritten, and no URL leaves the declared path (`..`, escaped `/` or `\`, another host form refuse it). Without a declared path the view stays an empty box, said once on stderr. Messages, loads and origins are still reported in the `app://` form, and messages go to the frame only while it shows a page under `/canvas/main/`.
+
+| | The page is at | Served by |
+|---|---|---|
+| macOS, iOS, iPadOS, visionOS | `app://main/x` | the handler, through a `WKURLSchemeHandler` |
+| Windows | `app://main/x` | the handler, through a WebView2 custom scheme |
+| Android | `https://main.app.prism.invalid/x` (Chromium's `fetch` only knows web schemes; `.invalid` never resolves) | the handler, through `shouldInterceptRequest`; a request's body is not available there |
+| Web | `/canvas/main/x` | the app's own routes (`web_scheme_path`) |
+| tvOS, watchOS, Linux | – | – (no web view) |
 
 ## Platforms
 

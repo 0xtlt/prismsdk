@@ -7,6 +7,26 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- The app's own pages in web views (#343): `Application::web_scheme("app",
+  handler)` serves `web_view("app://main/index.html")` and every request
+  of its page (scripts, styles, fonts, images, `fetch`, POST bodies) from
+  Rust. The handler gets a `SchemeRequest` (method, URL, headers, body,
+  the requesting `origin()`) and returns a `SchemeResponse` (`html`,
+  `text`, `json`, `file`, `not_found`, any status and headers); it runs
+  off the main thread, and a panic answers 500. Scheme names are checked
+  and an engine's own (`http`, `file`, `javascript`, …) or a scheme served
+  twice fails at startup. A `WKURLSchemeHandler` on Apple platforms,
+  `shouldInterceptRequest` on Android (the page is at
+  `https://main.app.prism.invalid`), a WebView2 custom scheme on Windows.
+  The app sees `app://main` as the URL and origin everywhere. No CORS
+  header is added. On the web, `WebApp::web_scheme_path("app", "/canvas")`
+  shows the page from a path the app serves with its own routes (the
+  handler is not called there), and the rewrite never leaves that path.
+  Apps that register no scheme are unchanged. See
+  [Web views](https://prismsdk.dev/guide/web-views.html#the-apps-own-pages).
+
 ## 0.7.0 (2026-11-27)
 
 `svg(markup)` (and `picture_data(bytes, "image/svg+xml")`) now draws full
