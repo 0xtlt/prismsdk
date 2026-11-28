@@ -9,7 +9,8 @@
 //!
 //! Everything re-renders when the window crosses a breakpoint (rotation,
 //! resize, split view) or a width an `.at_width(…)` rule uses;
-//! `on_resize` gets every size change. The breakpoints themselves move with
+//! `on_resize` gets every size change, and every change of the screen's
+//! density ([`App::scale_factor`]). The breakpoints themselves move with
 //! [`App::set_breakpoints`] (`Application::breakpoints([480., 900., 1280.])`).
 
 use std::rc::Rc;
@@ -37,6 +38,9 @@ pub(crate) struct Window {
     pub fullscreen: bool,
     /// The system's window buttons drawn over the content, if any.
     pub controls: Option<WindowControls>,
+    // --- Pixel density (#343) ---
+    /// Pixels per point of the screen the window is on.
+    pub scale_factor: f32,
 }
 
 impl Default for Window {
@@ -52,6 +56,7 @@ impl Default for Window {
             safe_area: crate::style::Edges::default(),
             fullscreen: false,
             controls: None,
+            scale_factor: 1.,
         }
     }
 }
@@ -167,8 +172,37 @@ impl App {
         Breakpoint::for_width_in(self.window.size.0, self.window.breakpoints)
     }
 
+    /// Pixels per point of the screen the window is on (per CSS pixel on
+    /// the web): 2 on a Retina Mac, 3 on most iPhones, 1 on a standard
+    /// desktop screen; often fractional on Windows, Linux, Android and in a
+    /// zoomed browser. 1 until the platform reports.
+    ///
+    /// Content an app rasterizes itself (a chart, a canvas, a document
+    /// drawn with tiny-skia) is sharp at `size × scale_factor` pixels and
+    /// shown at `size` points, without the work of a 2× bitmap on a 1×
+    /// screen. It changes when the window moves to another screen, or the
+    /// browser zooms: the app re-renders and `on_resize` handlers run.
+    ///
+    /// ```ignore
+    /// let (w, h) = cx.viewport();
+    /// let s = cx.scale_factor();
+    /// let png = draw_canvas((w * s).round() as u32, (h * s).round() as u32);
+    /// picture_data(png, "image/png").w(w).h(h)
+    /// ```
+    ///
+    /// Web: `devicePixelRatio`. macOS: the window's `backingScaleFactor`.
+    /// iOS, iPadOS, tvOS, visionOS: the trait collection's `displayScale`.
+    /// watchOS: the screen's scale. Android: `DisplayMetrics.density`.
+    /// Windows: the XAML root's `RasterizationScale`. Linux: the window's
+    /// GTK scale (fractional when GTK provides it, 4.12 and later).
+    pub fn scale_factor(&self) -> f32 {
+        self.window.scale_factor
+    }
+
     /// Runs `f` on every size change (crossing a breakpoint already
-    /// re-renders everything).
+    /// re-renders everything), and when the screen's density changes
+    /// ([`scale_factor`](Self::scale_factor): the window moved to another
+    /// screen, the browser zoomed), with the same size.
     pub fn on_resize(&mut self, f: impl Fn((f32, f32), &mut App) + 'static) {
         self.window.handlers.push(Rc::new(f));
     }
@@ -211,6 +245,23 @@ impl App {
         self.window.fullscreen = fullscreen;
         self.window.controls = controls;
         self.refresh();
+    }
+
+    /// Sets the screen's pixels per point ([`scale_factor`](Self::scale_factor)):
+    /// re-renders and runs the resize handlers when it changes, and ignores
+    /// a value that is not finite and positive. Backends call it (the web
+    /// backend before the app's init, so the first render has it; native
+    /// backends through `Runtime::set_scale_factor`).
+    pub fn set_scale_factor(&mut self, scale: f32) {
+        if !scale.is_finite() || scale <= 0. || scale == self.window.scale_factor {
+            return;
+        }
+        self.window.scale_factor = scale;
+        self.refresh();
+        let size = self.window.size;
+        for handler in self.window.handlers.clone() {
+            handler(size, self);
+        }
     }
 
     pub(crate) fn set_viewport(&mut self, size: (f32, f32)) {

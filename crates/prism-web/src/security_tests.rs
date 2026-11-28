@@ -325,6 +325,68 @@ fn s3_connect_bounds_message_size_and_backlog() {
     wait_until("the permit is freed", || app.session_count() == 0);
 }
 
+// --- The page's pixel ratio (#343) ----------------------------------------------------------
+
+/// `devicePixelRatio` comes from the page: a ratio that is not finite, not
+/// positive or out of 0.25–8 never reaches `cx.scale_factor()`, from the
+/// socket's query, a viewport report or the cookie.
+#[test]
+fn an_invalid_pixel_ratio_is_ignored() {
+    use crate::app::{scale_cookie, scale_factor};
+    for bad in [
+        f32::NAN,
+        f32::INFINITY,
+        -f32::INFINITY,
+        -2.,
+        0.,
+        0.1,
+        8.5,
+        1e30,
+    ] {
+        assert_eq!(scale_factor(bad), None, "{bad}");
+    }
+    for good in [0.25, 1., 1.25, 2., 3., 8.] {
+        assert_eq!(scale_factor(good), Some(good));
+    }
+    assert_eq!(scale_cookie("prism_vw=1280x800x2"), Some(2.));
+    for bad in [
+        "prism_vw=1280x800",
+        "prism_vw=1280x800xNaN",
+        "prism_vw=1280x800xinf",
+        "prism_vw=1280x800x-1",
+        "prism_vw=1280x800x1e9",
+        "prism_vw=1280x800x",
+        "prism_vw=1280x800xabc",
+    ] {
+        assert_eq!(scale_cookie(bad), None, "{bad}");
+    }
+
+    let (app, _dir) = crate::tests::density_app("dpr-bad");
+    for query in ["NaN", "inf", "-1", "0", "1e9", "9", "abc", ""] {
+        let page = crate::tests::Page::open(&app, &format!("/ws?w=400&h=800&dpr={query}"));
+        crate::tests::op_with_text(&page.next()["p"], "scale 1");
+        page.session.close();
+    }
+    let page = crate::tests::Page::open(&app, "/ws?w=400&h=800");
+    crate::tests::op_with_text(&page.next()["p"], "scale 1");
+    // None of these changes it: the next frame is the valid report's.
+    for dpr in [
+        json!(null),
+        json!("NaN"),
+        json!("2"),
+        json!(-2),
+        json!(0),
+        json!(1e30),
+        json!(9),
+        json!(0.1),
+        json!([2]),
+    ] {
+        page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": dpr }));
+    }
+    page.send(json!({ "t": "viewport", "w": 400, "h": 800, "dpr": 2 }));
+    crate::tests::op_with_text(&page.next()["p"], "scale 2");
+}
+
 // --- S6: pictures fetched by the server ------------------------------------------------------
 
 /// An upstream on a loopback port answering every request with `reply`:

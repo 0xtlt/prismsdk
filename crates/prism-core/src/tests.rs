@@ -3619,6 +3619,50 @@ fn the_safe_area_re_renders_and_resize_handlers_see_the_content_area() {
 }
 
 #[test]
+fn the_scale_factor_re_renders_and_runs_resize_handlers_when_it_changes() {
+    use std::sync::Mutex;
+    struct Density;
+    impl Render for Density {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            text(format!("scale {}", cx.scale_factor()))
+        }
+    }
+    let seen: Arc<Mutex<Vec<((f32, f32), f32)>>> = Arc::default();
+    let log = seen.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let root = cx.new_entity(|_| Density);
+        cx.set_root(root);
+        let log = log.clone();
+        cx.on_resize(move |size, cx| log.lock().unwrap().push((size, cx.scale_factor())));
+    });
+    let mut rt = Runtime::new(&init);
+    // 1 until the platform reports.
+    assert_eq!(rt.app.scale_factor(), 1.);
+    find_text(&rt.render(), "scale 1");
+    rt.set_viewport(800., 600.);
+    seen.lock().unwrap().clear();
+    // The window moved to a Retina screen: re-rendered, handlers run with
+    // the same size.
+    find_text(&rt.set_scale_factor(2.), "scale 2");
+    assert_eq!(*seen.lock().unwrap(), vec![((800., 600.), 2.)]);
+    // Unchanged, or not a density: nothing to do.
+    for same in [2., 0., -1., f32::NAN, f32::INFINITY] {
+        assert!(rt.set_scale_factor(same).is_empty(), "{same}");
+    }
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(rt.app.scale_factor(), 2.);
+    // Fractional (Windows at 150 %, a zoomed browser).
+    find_text(&rt.set_scale_factor(1.5), "scale 1.5");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    // A size change keeps it.
+    rt.set_viewport(900., 600.);
+    assert_eq!(
+        seen.lock().unwrap().last().copied(),
+        Some(((900., 600.), 1.5))
+    );
+}
+
+#[test]
 fn platform_specific_elements_and_styles() {
     use crate::Platform;
     struct Page;

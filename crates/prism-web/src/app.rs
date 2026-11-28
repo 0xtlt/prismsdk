@@ -640,6 +640,7 @@ impl WebApp {
                 .and_then(prism_core::Locale::from_accept_language),
             tz: cookies.and_then(time_zone),
             viewport,
+            scale: cookies.and_then(scale_cookie),
             device: Some(crate::device_info::from_request(user_agent, cookies)),
         };
         // The live session of a GET takes this request over (`cx.page_request()`).
@@ -728,10 +729,15 @@ impl WebApp {
         &self,
         request: prism_core::WebRequest,
         page_request: Option<prism_core::WebRequest>,
+        scale: Option<f32>,
     ) -> AppInit {
         let init = self.inner.init.clone();
         Arc::new(move |app: &mut prism_core::App| {
             app.set_request(request.clone());
+            // The page's pixel ratio, so the first render has it (#343).
+            if let Some(scale) = scale {
+                app.set_scale_factor(scale);
+            }
             if let Some(page) = &page_request {
                 app.set_page_request(page.clone());
             }
@@ -770,7 +776,7 @@ impl WebApp {
         let sid = visitor.sid;
         let asset_urls = self.session_asset_urls(sid);
         let mut runtime = Runtime::with_options(
-            &self.init_with(request, None),
+            &self.init_with(request, None, visitor.scale),
             self.options(visitor, path.into()),
         );
         let mut html = HtmlBackend::default();
@@ -877,6 +883,7 @@ impl WebApp {
                 .and_then(prism_core::Locale::from_accept_language),
             tz: param("tz").and_then(|v| v.parse().ok()),
             viewport: num("w").zip(num("h")),
+            scale: num("dpr").and_then(scale_factor),
             device: Some(crate::device_info::from_request(
                 header(header::USER_AGENT).unwrap_or(""),
                 cookies,
@@ -1216,6 +1223,8 @@ pub(crate) struct Visitor<'a> {
     /// UTC offset in seconds.
     pub tz: Option<i32>,
     pub viewport: Option<(f32, f32)>,
+    /// The page's `devicePixelRatio` (`cx.scale_factor()`), checked.
+    pub scale: Option<f32>,
     pub device: Option<prism_core::DeviceInfo>,
 }
 
@@ -1223,6 +1232,7 @@ pub(crate) struct VisitorOwned {
     pub language: Option<prism_core::Locale>,
     pub tz: Option<i32>,
     pub viewport: Option<(f32, f32)>,
+    pub scale: Option<f32>,
     pub device: Option<prism_core::DeviceInfo>,
 }
 
@@ -1233,6 +1243,7 @@ impl VisitorOwned {
             language: self.language,
             tz: self.tz,
             viewport: self.viewport,
+            scale: self.scale,
             device: self.device,
         }
     }
@@ -1369,13 +1380,32 @@ pub(crate) fn time_zone(cookie_header: &str) -> Option<i32> {
         .filter(|v: &i32| v.abs() <= 14 * 3600)
 }
 
-/// The last viewport the page reported (`prism_vw=1280x800`).
+/// The last viewport the page reported (`prism_vw=1280x800`, or
+/// `prism_vw=1280x800x2` with its pixel ratio).
 pub(crate) fn viewport_cookie(cookie_header: &str) -> Option<(f32, f32)> {
+    let mut parts = viewport_cookie_parts(cookie_header)?;
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// The pixel ratio of the last viewport the page reported
+/// (`prism_vw=1280x800x2`), if it is one [`scale_factor`] accepts.
+pub(crate) fn scale_cookie(cookie_header: &str) -> Option<f32> {
+    let ratio = viewport_cookie_parts(cookie_header)?.nth(2)?;
+    scale_factor(ratio.parse().ok()?)
+}
+
+fn viewport_cookie_parts(cookie_header: &str) -> Option<std::str::Split<'_, char>> {
     let v = cookie_header
         .split(';')
         .find_map(|kv| kv.trim().strip_prefix("prism_vw="))?;
-    let (w, h) = v.split_once('x')?;
-    Some((w.parse().ok()?, h.parse().ok()?))
+    Some(v.split('x'))
+}
+
+/// A pixel ratio the page reported (`devicePixelRatio`), if it is one: the
+/// browser's value is untrusted, so only finite ratios from 0.25 to 8 (a
+/// zoomed-out 1× screen to an 8K phone zoomed in) are taken.
+pub(crate) fn scale_factor(ratio: f32) -> Option<f32> {
+    (ratio.is_finite() && (0.25..=8.).contains(&ratio)).then_some(ratio)
 }
 
 /// The browser's environment: `Accept-Language` (`PRISM_LOCALE` overrides it).
