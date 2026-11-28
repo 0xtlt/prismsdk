@@ -470,6 +470,32 @@ test("values, icons, pictures, appearance and environment", () => {
   assert.equal(page.node(4).alt, "");
 });
 
+test("a picture keeps its loaded image while its next source loads (#343)", () => {
+  const page = live([create(1, "view"), create(2, "picture"), children(1, [2]), root(1), textOp(2, "data:image/png;base64,AAAA")]);
+  const img = page.node(2);
+  assert.equal(img.dataset.loaded, undefined, "loading: the gray box");
+  // Loaded (the browser sets these).
+  img.complete = true;
+  img.naturalWidth = 16;
+  img.dispatchEvent({ type: "load", bubbles: false });
+  assert.equal(img.dataset.loaded, "1");
+  // The next source: the browser shows the loaded image until it is ready,
+  // so no gray box flashes behind a transparent one.
+  page.ws.deliver({ t: "patch", p: [textOp(2, "data:image/png;base64,BBBB")] });
+  assert.equal(img.src, "data:image/png;base64,BBBB");
+  assert.equal(img.dataset.loaded, "1");
+  // It fails: the box comes back.
+  img.naturalWidth = 0;
+  img.dispatchEvent({ type: "error", bubbles: false });
+  assert.equal(img.dataset.loaded, undefined);
+  // No source: nothing to keep.
+  img.complete = true;
+  img.naturalWidth = 16;
+  img.dataset.loaded = "1";
+  page.ws.deliver({ t: "patch", p: [textOp(2, "")] });
+  assert.equal(img.dataset.loaded, undefined);
+});
+
 test("styles replace the inline CSS and play enter animations once", () => {
   const page = live([create(1, "view"), root(1)]);
   const motion = { rest: { o: 1, tf: [0, 0, 1, 0] }, enter: { o: 0, tf: [0, 20, 1, 0] }, exit: null, repeat: null, t: { d: 0.3, delay: 0, ease: "ease" }, xt: { d: 0.2, delay: 0, ease: "ease" } };

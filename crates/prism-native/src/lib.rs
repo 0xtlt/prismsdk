@@ -17,6 +17,7 @@ pub mod fonts;
 pub mod gl3d;
 pub mod images;
 mod leftovers;
+pub mod picture_cache;
 pub mod remote;
 pub mod save;
 pub mod table;

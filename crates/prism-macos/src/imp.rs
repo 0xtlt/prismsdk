@@ -34,6 +34,7 @@ use prism_core::{
 use prism_core::{DragEvent, DragPhase, Point, PointerEvent, PointerPhase};
 
 use crate::interact::{MacOverlay, MacRadios};
+use prism_native::picture_cache::{PictureCache, Show, decoded_bytes};
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 // ---------------------------------------------------------------------------
@@ -2928,10 +2929,10 @@ pub struct AppKit {
     timer_after: HashMap<NodeId, String>,
     /// Presented sheets.
     sheets: Vec<Rc<MacSheet>>,
-    /// Pictures waiting for their image, by source.
-    pictures: HashMap<String, Vec<(NodeId, Retained<PrismView>)>>,
-    /// Decoded images by source.
-    image_cache: HashMap<String, Retained<NSImage>>,
+    /// Picture views by node (a load names the nodes it reaches).
+    pictures: HashMap<NodeId, Retained<PrismView>>,
+    /// Decoded images, kept while a node shows them (#343).
+    image_cache: PictureCache<Retained<NSImage>>,
     image_sources: prism_native::images::ImageSources,
     /// Right-to-left language: header buttons swap sides.
     rtl: bool,
@@ -2962,6 +2963,20 @@ pub struct AppKit {
 fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
     let f = |t: objc2_quartz_core::CATransform3D| [t.m11, t.m12, t.m21, t.m22, t.m41, t.m42];
     f(a) == f(b)
+}
+
+/// The bytes a decoded image takes: its largest representation's pixels.
+fn image_bytes(img: &NSImage) -> usize {
+    let (w, h) = img
+        .representations()
+        .iter()
+        .map(|r| (r.pixelsWide().max(0) as f64, r.pixelsHigh().max(0) as f64))
+        .fold((0., 0.), |a, b| if b.0 * b.1 > a.0 * a.1 { b } else { a });
+    if w * h > 0. {
+        return decoded_bytes(w, h);
+    }
+    let size = img.size();
+    decoded_bytes(size.width, size.height)
 }
 
 /// The node a Prism view shows.
@@ -3012,21 +3027,24 @@ impl AppKit {
         }
     }
 
-    /// Shows `src` in `view`: from memory, or loaded on a background thread.
+    /// Shows `src` in `view`: from memory, or loaded on a background thread
+    /// while the view keeps its previous image (#343).
     fn load_picture(&mut self, id: NodeId, view: &Retained<PrismView>, src: &str) {
-        if let Some(img) = self.image_cache.get(src) {
-            *view.ivars().image.borrow_mut() = Some(img.clone());
-            view.setNeedsDisplay(true);
-            return;
-        }
-        *view.ivars().image.borrow_mut() = None;
+        self.pictures.insert(id, view.clone());
+        let image = match self.image_cache.show(id, src) {
+            Show::Ready(img) => Some(img),
+            Show::Clear => None,
+            Show::Wait => return,
+            Show::Load => {
+                self.spawn_picture_load(src);
+                return;
+            }
+        };
+        *view.ivars().image.borrow_mut() = image;
         view.setNeedsDisplay(true);
-        let waiting = self.pictures.entry(src.to_string()).or_default();
-        waiting.retain(|(i, _)| *i != id);
-        waiting.push((id, view.clone()));
-        if waiting.len() > 1 {
-            return; // already loading
-        }
+    }
+
+    fn spawn_picture_load(&self, src: &str) {
         let (src, sources) = (src.to_string(), self.image_sources.clone());
         std::thread::spawn(move || {
             let bytes = prism_native::images::load(&src, &sources);
@@ -3040,23 +3058,25 @@ impl AppKit {
         });
     }
 
+    /// A load finished: the nodes still showing `src` show its image, or
+    /// nothing if it could not be decoded; nodes that moved on to another
+    /// source keep theirs.
     fn picture_loaded(&mut self, src: &str, bytes: Option<Vec<u8>>) {
-        let waiting = self.pictures.remove(src).unwrap_or_default();
         let data = bytes.map(objc2_foundation::NSData::from_vec);
-        let Some(img) =
-            data.and_then(|d| NSImage::initWithData(objc2::AllocAnyThread::alloc(), &d))
-        else {
+        let img = data.and_then(|d| NSImage::initWithData(objc2::AllocAnyThread::alloc(), &d));
+        if img.is_none() {
             eprintln!(
                 "prism-macos: could not load image {:?}",
                 prism_core::picture_source(src).0
             );
-            return;
-        };
-        for (_, view) in waiting {
-            *view.ivars().image.borrow_mut() = Some(img.clone());
-            view.setNeedsDisplay(true);
         }
-        self.image_cache.insert(src.to_string(), img);
+        let stored = img.as_ref().map(|i| (i.clone(), image_bytes(i)));
+        for id in self.image_cache.loaded(src, stored) {
+            if let Some(view) = self.pictures.get(&id) {
+                *view.ivars().image.borrow_mut() = img.clone();
+                view.setNeedsDisplay(true);
+            }
+        }
     }
 
     fn tick(&self) {
@@ -4461,11 +4481,8 @@ impl Widgets for AppKit {
                 self.timer_after.remove(&view.id());
             }
             View::Picture(_) => {
-                let id = view.id();
-                self.pictures.retain(|_, ids| {
-                    ids.retain(|(i, _)| *i != id);
-                    !ids.is_empty()
-                });
+                self.pictures.remove(&view.id());
+                self.image_cache.forget(view.id());
             }
             View::Tab(_) => {
                 self.titles.remove(&view.id());
@@ -5780,7 +5797,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         timer_after: HashMap::new(),
         sheets: Vec::new(),
         pictures: HashMap::new(),
-        image_cache: HashMap::new(),
+        image_cache: PictureCache::default(),
         image_sources: image_sources(config.assets.as_deref(), &config.embedded_assets),
         rtl: false,
         chrome: ("Back".into(), "Close".into()),

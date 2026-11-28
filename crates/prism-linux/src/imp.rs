@@ -2510,6 +2510,12 @@ impl Widgets for Gtk {
     }
 
     fn set_text(&mut self, view: &View, text: &str) {
+        if let View::Picture(_, p) = view {
+            // The source shown now: a remote load that ends after the
+            // picture moved on to another source leaves it alone (#343).
+            // SAFETY: the key only ever holds a `String`.
+            unsafe { p.set_data("prism-src", text.to_string()) };
+        }
         match view {
             View::Text(id, l) => {
                 let state = self.labels.entry(*id).or_default();
@@ -2536,16 +2542,18 @@ impl Widgets for Gtk {
                 let takes = field_takes(*id, text, &t.text());
                 t.set_text(text, takes);
             }
+            // No source: nothing, at once.
+            View::Picture(_, p) if text.is_empty() => p.set_paintable(None::<&gdk::Paintable>),
             // Bytes in memory (`picture_data`): decoded by GdkTexture
             // (PNG, JPEG, TIFF; others through gdk-pixbuf's loaders).
             View::Picture(_, p) if text.starts_with("data:") => {
                 let texture = prism_native::images::data_url(text).and_then(|b| {
                     gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(b)).ok()
                 });
-                match texture {
-                    Some(t) => p.set_paintable(Some(&t)),
-                    None => eprintln!("prism-linux: could not decode a data: picture"),
+                if texture.is_none() {
+                    eprintln!("prism-linux: could not decode a data: picture");
                 }
+                p.set_paintable(texture.as_ref());
             }
             View::Check(_, b) => b.set_label((!text.is_empty()).then_some(text)),
             // A video's source (#207): a URL, a file or an asset. GTK's
@@ -2568,19 +2576,23 @@ impl Widgets for Gtk {
             }
             View::Picture(_, p) => {
                 // Compiled into the binary first, then the assets directory.
+                // One that cannot be read shows nothing (not the previous
+                // picture).
                 if let Some(bytes) = self.embedded.get(text) {
-                    match gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(bytes)) {
-                        Ok(t) => p.set_paintable(Some(&t)),
-                        Err(_) => eprintln!("prism-linux: could not decode the picture {text}"),
+                    let texture = gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(bytes));
+                    if texture.is_err() {
+                        eprintln!("prism-linux: could not decode the picture {text}");
                     }
+                    p.set_paintable(texture.ok().as_ref());
                 } else {
                     let path = if text.starts_with('/') {
                         Some(std::path::PathBuf::from(text))
                     } else {
                         self.assets.as_ref().map(|a| a.join(text))
                     };
-                    if let Some(path) = path.filter(|p| p.exists()) {
-                        p.set_filename(Some(&path));
+                    match path.filter(|p| p.is_file()) {
+                        Some(path) => p.set_filename(Some(&path)),
+                        None => p.set_paintable(None::<&gdk::Paintable>),
                     }
                 }
             }
@@ -5325,10 +5337,11 @@ fn save_png(window: &gtk::Widget, path: &str) {
 
 /// Downloads `src` (a URL, maybe with header lines) off the main thread and
 /// shows it in `p`, unless `p` was given another source meanwhile.
+/// Loads a remote picture off the UI thread. The picture keeps its previous
+/// image until the new one is ready (#343), and shows it only if its source
+/// (`prism-src`, set by `set_text`) is still this one; a failure shows
+/// nothing.
 fn load_remote_picture(p: &gtk::Picture, src: &str) {
-    p.set_paintable(None::<&gdk::Paintable>);
-    // SAFETY: the key only ever holds a `String`.
-    unsafe { p.set_data("prism-src", src.to_string()) };
     let (picture, src) = (p.clone(), src.to_string());
     glib::spawn_future_local(async move {
         let source = src.clone();
@@ -5348,13 +5361,13 @@ fn load_remote_picture(p: &gtk::Picture, src: &str) {
         }
         let texture =
             bytes.and_then(|b| gdk::Texture::from_bytes(&glib::Bytes::from_owned(b)).ok());
-        match texture {
-            Some(t) => picture.set_paintable(Some(&t)),
-            None => eprintln!(
+        if texture.is_none() {
+            eprintln!(
                 "prism-linux: could not load image {:?}",
                 prism_core::picture_source(&src).0
-            ),
+            );
         }
+        picture.set_paintable(texture.as_ref());
     });
 }
 

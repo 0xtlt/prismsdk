@@ -3,10 +3,11 @@
 //! (first frame), BMP, TIFF, ICO, and WebP / HEIF where Windows has the
 //! codecs — into device-independent bitmaps the painter uploads.
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 
+use prism_core::NodeId;
 use prism_native::images::ImageSources;
+use prism_native::picture_cache::{PictureCache, Show};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Imaging::{
     GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICImagingFactory, WICBitmapCacheOnLoad,
@@ -17,20 +18,22 @@ use windows::core::Result;
 
 use crate::win::{WM_PRISM_IMAGE, log};
 
-enum Entry {
-    Loading,
-    Ready {
-        bitmap: IWICBitmap,
-        size: (f32, f32),
-        generation: u64,
-    },
-    Failed,
+/// A decoded picture, or `None` when it could not be loaded or decoded
+/// (kept, so a drawing does not decode it again at every paint).
+type Entry = Option<Decoded>;
+
+#[derive(Clone)]
+struct Decoded {
+    bitmap: IWICBitmap,
+    size: (f32, f32),
+    generation: u64,
 }
 
-/// Decoded pictures by source.
+/// Decoded pictures by source, kept while a node shows them, then in a
+/// small pool bounded by bytes (#343, `prism_native::picture_cache`).
 pub struct Images {
     pub sources: ImageSources,
-    entries: HashMap<String, Entry>,
+    cache: PictureCache<Entry>,
     generation: u64,
 }
 
@@ -41,20 +44,43 @@ impl Images {
     pub fn new(sources: ImageSources) -> Images {
         Images {
             sources,
-            entries: HashMap::new(),
+            cache: PictureCache::default(),
             generation: 0,
         }
     }
 
-    /// Starts loading `src` unless it is known. Local sources decode now;
-    /// remote ones on another thread, then `WM_PRISM_IMAGE` to `hwnd`.
+    /// Starts loading `src` for a drawing or a poster unless it is known.
+    /// Local sources decode now; remote ones on another thread, then
+    /// `WM_PRISM_IMAGE` to `hwnd`.
     pub fn request(&mut self, wic: &IWICImagingFactory, src: &str, hwnd: HWND) {
-        if src.is_empty() || self.entries.contains_key(src) {
+        if src.is_empty() || !self.cache.start_load(src) {
             return;
         }
+        self.load(wic, src, hwnd);
+    }
+
+    /// Picture `id` shows `src` now (its previous source is released).
+    /// Starts loading it when it is not decoded: `Win::show_picture` keeps
+    /// the previous image meanwhile.
+    pub fn show(&mut self, wic: &IWICImagingFactory, id: NodeId, src: &str, hwnd: HWND) {
+        if matches!(self.cache.show(id, src), Show::Load) {
+            self.load(wic, src, hwnd);
+        }
+    }
+
+    /// Picture `id` is gone: its source is released.
+    pub fn forget(&mut self, id: NodeId) {
+        self.cache.forget(id);
+    }
+
+    /// Whether `src` is loading off the UI thread.
+    pub fn is_loading(&self, src: &str) -> bool {
+        self.cache.is_loading(src)
+    }
+
+    fn load(&mut self, wic: &IWICImagingFactory, src: &str, hwnd: HWND) {
         let url = prism_core::picture_source(src).0;
         if prism_native::images::is_remote(url) {
-            self.entries.insert(src.to_string(), Entry::Loading);
             let (src, sources) = (src.to_string(), self.sources.clone());
             let target = hwnd.0 as isize;
             std::thread::spawn(move || {
@@ -75,7 +101,7 @@ impl Images {
             return;
         }
         let bytes = prism_native::images::load(src, &self.sources);
-        self.store(wic, src.to_string(), bytes);
+        self.store(wic, src, bytes);
     }
 
     /// Decodes what the loader threads finished. Returns the sources now
@@ -84,56 +110,55 @@ impl Images {
         let done = std::mem::take(&mut *LOADED.lock().unwrap_or_else(|e| e.into_inner()));
         let mut out = Vec::new();
         for (src, bytes) in done {
-            self.store(wic, src.clone(), bytes);
+            self.store(wic, &src, bytes);
             out.push(src);
         }
         out
     }
 
-    fn store(&mut self, wic: &IWICImagingFactory, src: String, bytes: Option<Vec<u8>>) {
+    fn store(&mut self, wic: &IWICImagingFactory, src: &str, bytes: Option<Vec<u8>>) {
         let entry = match bytes.map(|b| decode(wic, &b)) {
             Some(Ok((bitmap, size))) => {
                 self.generation += 1;
-                Entry::Ready {
+                Some(Decoded {
                     bitmap,
                     size,
                     generation: self.generation,
-                }
+                })
             }
             Some(Err(e)) => {
                 log!(
                     "could not decode image {:?}: {e}",
-                    prism_core::picture_source(&src).0
+                    prism_core::picture_source(src).0
                 );
-                Entry::Failed
+                None
             }
             None => {
                 log!(
                     "could not load image {:?}",
-                    prism_core::picture_source(&src).0
+                    prism_core::picture_source(src).0
                 );
-                Entry::Failed
+                None
             }
         };
-        self.entries.insert(src, entry);
+        let bytes = entry.as_ref().map_or(0, |d| {
+            prism_native::picture_cache::decoded_bytes(d.size.0 as f64, d.size.1 as f64)
+        });
+        self.cache.loaded(src, Some((entry, bytes)));
+    }
+
+    fn decoded(&self, src: &str) -> Option<&Decoded> {
+        self.cache.get(src)?.as_ref()
     }
 
     /// The decoded bitmap of `src` and its generation (bumped per decode).
     pub fn bitmap(&self, src: &str) -> Option<(u64, IWICBitmap)> {
-        match self.entries.get(src)? {
-            Entry::Ready {
-                bitmap, generation, ..
-            } => Some((*generation, bitmap.clone())),
-            _ => None,
-        }
+        self.decoded(src).map(|d| (d.generation, d.bitmap.clone()))
     }
 
     /// Natural size in view units (one pixel per DIP, like CSS).
     pub fn size_of(&self, src: &str) -> Option<(f32, f32)> {
-        match self.entries.get(src)? {
-            Entry::Ready { size, .. } => Some(*size),
-            _ => None,
-        }
+        self.decoded(src).map(|d| d.size)
     }
 }
 

@@ -30,6 +30,7 @@ use prism_core::{
     Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
     Role, Runtime, Style, TextAlign, UiEvent,
 };
+use prism_native::picture_cache::{PictureCache, Show, decoded_bytes};
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 static APP: OnceLock<(AppConfig, AppInit)> = OnceLock::new();
@@ -1448,7 +1449,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         menus: HashMap::new(),
         presented: Vec::new(),
         pictures: HashMap::new(),
-        image_cache: HashMap::new(),
+        image_cache: PictureCache::default(),
         image_sources: image_sources(_config.assets.as_deref(), &_config.embedded_assets),
         semantic: None,
         disclosure_words: ("Expanded".into(), "Collapsed".into()),
@@ -1642,10 +1643,10 @@ pub struct UiKit {
     timer_after: HashMap<NodeId, String>,
     /// Context menus by view id (read by the interaction delegate).
     menus: HashMap<NodeId, prism_core::menu::MenuSpec>,
-    /// Pictures waiting for their image, by source.
-    pictures: HashMap<String, Vec<(NodeId, Retained<UIImageView>)>>,
-    /// Decoded images by source.
-    image_cache: HashMap<String, Retained<UIImage>>,
+    /// Picture views by node (a load names the nodes it reaches).
+    pictures: HashMap<NodeId, Retained<UIImageView>>,
+    /// Decoded images, kept while a node shows them (#343).
+    image_cache: PictureCache<Retained<UIImage>>,
     image_sources: prism_native::images::ImageSources,
     /// Requested corner radius by node (clamped to the frame).
     radii: HashMap<NodeId, f64>,
@@ -1837,20 +1838,24 @@ fn refocus(v: &UIImageView) {
 }
 
 impl UiKit {
-    /// Shows `src` in `view`: from memory, or loaded on a background thread.
+    /// Shows `src` in `view`: from memory, or loaded on a background thread
+    /// while the view keeps its previous image (#343).
     fn load_picture(&mut self, id: NodeId, view: &Retained<UIImageView>, src: &str) {
-        if let Some(img) = self.image_cache.get(src) {
-            view.setImage(Some(img));
-            refocus(view);
-            return;
-        }
-        view.setImage(None);
-        let waiting = self.pictures.entry(src.to_string()).or_default();
-        waiting.retain(|(i, _)| *i != id);
-        waiting.push((id, view.clone()));
-        if waiting.len() > 1 {
-            return; // already loading
-        }
+        self.pictures.insert(id, view.clone());
+        let image = match self.image_cache.show(id, src) {
+            Show::Ready(img) => Some(img),
+            Show::Clear => None,
+            Show::Wait => return,
+            Show::Load => {
+                self.spawn_picture_load(src);
+                return;
+            }
+        };
+        view.setImage(image.as_deref());
+        refocus(view);
+    }
+
+    fn spawn_picture_load(&self, src: &str) {
         let (src, sources) = (src.to_string(), self.image_sources.clone());
         std::thread::spawn(move || {
             let bytes = prism_native::images::load(&src, &sources);
@@ -1864,22 +1869,31 @@ impl UiKit {
         });
     }
 
+    /// A load finished: the nodes still showing `src` show its image, or
+    /// nothing if it could not be decoded; nodes that moved on to another
+    /// source keep theirs.
     fn picture_loaded(&mut self, src: &str, bytes: Option<Vec<u8>>) {
-        let waiting = self.pictures.remove(src).unwrap_or_default();
-        let Some(img) =
-            bytes.and_then(|b| UIImage::imageWithData(&objc2_foundation::NSData::from_vec(b)))
-        else {
+        let img =
+            bytes.and_then(|b| UIImage::imageWithData(&objc2_foundation::NSData::from_vec(b)));
+        if img.is_none() {
             eprintln!(
                 "prism-ios: could not load image {:?}",
                 prism_core::picture_source(src).0
             );
-            return;
-        };
-        for (_, view) in waiting {
-            view.setImage(Some(&img));
-            refocus(&view);
         }
-        self.image_cache.insert(src.to_string(), img);
+        let stored = img.as_ref().map(|i| {
+            let (size, scale) = unsafe { (i.size(), i.scale()) };
+            (
+                i.clone(),
+                decoded_bytes(size.width * scale, size.height * scale),
+            )
+        });
+        for id in self.image_cache.loaded(src, stored) {
+            if let Some(view) = self.pictures.get(&id) {
+                view.setImage(img.as_deref());
+                refocus(view);
+            }
+        }
     }
 
     fn present_sheets(&mut self, sheets: &[View]) {
@@ -2844,10 +2858,9 @@ impl Widgets for UiKit {
         self.a11y_hidden.remove(&id);
         self.layers.retain(|l| l.tag() as NodeId != id);
         crate::interaction::forget(id);
-        self.pictures.retain(|_, ids| {
-            ids.retain(|(i, _)| *i != id);
-            !ids.is_empty()
-        });
+        if self.pictures.remove(&id).is_some() {
+            self.image_cache.forget(id);
+        }
         view.ui().removeFromSuperview();
     }
 

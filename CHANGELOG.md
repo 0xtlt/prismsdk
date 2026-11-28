@@ -7,6 +7,29 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Fixed
+
+- Pictures no longer stay in memory forever (#343). macOS, iOS and Windows
+  kept every decoded picture by its source, so an app showing a new
+  `picture_data` after each gesture grew by one decoded image each time
+  (about 20 MB for 2880×1800, past 2 GB after 57 images). A decoded picture
+  now stays while a node shows it; once none does, it waits in a pool of
+  at most 64 MB, the least recently used going first, so going back to a
+  screen still shows its pictures at once. The bitmaps of `svg()` images on
+  macOS and iOS are bounded the same way (they were 64 at most, whatever
+  their size). In a test app swapping a 2880×1800 `picture_data` every
+  100 ms on macOS, memory stays at about 170 MB instead of reaching 4 GB
+  after 200 images.
+- Changing a picture's source no longer flashes the background (#343): the
+  picture keeps its image until the new one is ready, like `<img>`, on
+  macOS, iOS, Windows and Linux (remote pictures), as it already did on
+  Android and the web. A load that finishes after the picture moved on to
+  another source is dropped (macOS could show an older picture over a
+  newer one, Linux a remote picture over a newer local one). A source that
+  fails to load, or an empty one, shows nothing instead of the previous
+  picture (Linux and Android kept it). On the web a loaded picture keeps
+  no loading background while its next source loads.
+
 ## 0.7.0 (2026-11-27)
 
 `svg(markup)` (and `picture_data(bytes, "image/svg+xml")`) now draws full

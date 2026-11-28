@@ -43,11 +43,16 @@
     document.title = t && t !== baseTitle ? `${t} · ${baseTitle}` : baseTitle;
   }
   // Pictures lose their loading background once loaded (`prism.css`), so a
-  // transparent image shows its parent. `load` does not bubble: capture it.
+  // transparent image shows its parent. `load` and `error` do not bubble:
+  // capture them. A picture that fails gets the background back.
   const markLoaded = (img) => { if (img.naturalWidth) img.dataset.loaded = "1"; };
   document.addEventListener("load", (e) => {
     const img = e.target;
     if (img.tagName === "IMG" && img.classList.contains("prism-picture")) markLoaded(img);
+  }, true);
+  document.addEventListener("error", (e) => {
+    const img = e.target;
+    if (img.tagName === "IMG" && img.classList.contains("prism-picture")) delete img.dataset.loaded;
   }, true);
   // The first render's images may have loaded before this script ran.
   for (const img of document.querySelectorAll("img.prism-picture")) if (img.complete) markLoaded(img);
@@ -3969,10 +3974,14 @@
           return;
         }
         if (kind === "picture") {
-          // The server resolves asset URLs (hashed, maybe on a CDN).
+          // The server resolves asset URLs (hashed, maybe on a CDN). The
+          // browser keeps showing a loaded image until the new one is ready
+          // (and drops a load overtaken by a newer source), so a loaded
+          // picture keeps its mark meanwhile: no loading background flashes
+          // behind a transparent image (#343).
           const src = p.text;
           if (el.getAttribute("src") !== src) {
-            delete el.dataset.loaded;
+            if (!src || !el.complete || !el.naturalWidth) delete el.dataset.loaded;
             el.src = src;
           }
           return;
