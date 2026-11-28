@@ -250,6 +250,15 @@ pub fn relayout(s: &mut State) {
                 prism_core::Backend::apply(&mut s.renderer, &patches);
             }
         }
+        // Another monitor's DPI, a simulated one (`cx.scale_factor()`, #343):
+        // the pixels per DIP XAML rasterizes at (`XamlRoot.RasterizationScale`).
+        let k = s.renderer.widgets.scale();
+        if k != s.runtime.app.scale_factor() {
+            let patches = s.runtime.set_scale_factor(k);
+            if !patches.is_empty() {
+                prism_core::Backend::apply(&mut s.renderer, &patches);
+            }
+        }
         screen_changed(s, false);
         crate::perf::layout(|| s.renderer.layout(w, h, Insets::default()));
         let more = prism_native::report_layout(&mut s.runtime, &mut s.renderer);
@@ -1011,6 +1020,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         let environment = system::environment();
         let device_info = system::device_info(main, k);
         trace("environment");
+        // `cx.scale_factor()` (#343): pixels per DIP, before the first render.
+        let init = prism_native::with_scale_factor(&init, k);
         let mut runtime = Runtime::with_options(
             &init,
             prism_core::RuntimeOptions {

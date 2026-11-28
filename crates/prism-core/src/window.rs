@@ -193,8 +193,8 @@ impl App {
     /// Web: `devicePixelRatio`. macOS: the window's `backingScaleFactor`.
     /// iOS, iPadOS, tvOS, visionOS: the trait collection's `displayScale`.
     /// watchOS: the screen's scale. Android: `DisplayMetrics.density`.
-    /// Windows: the XAML root's `RasterizationScale`. Linux: the window's
-    /// GTK scale (fractional when GTK provides it, 4.12 and later).
+    /// Windows: the window's DPI ÷ 96, what XAML rasterizes at. Linux: the
+    /// window's GTK scale (fractional when GTK provides it, 4.12 and later).
     pub fn scale_factor(&self) -> f32 {
         self.window.scale_factor
     }

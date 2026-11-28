@@ -207,8 +207,10 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeReady(
     // A new Activity: the density or the text size may have changed.
     forget_measures();
     let services = crate::services::AndroidServices::new(&info);
+    // `cx.scale_factor()` (#343): pixels per dp, a Prism point.
+    let init = prism_native::with_scale_factor(init, density);
     let mut runtime = make_runtime(
-        init,
+        &init,
         &info,
         &services,
         Some((width / density, height / density)),
@@ -893,7 +895,17 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeEvent(
                 };
                 s.pad = edges("pad");
                 s.safe = edges("safe");
-                Vec::new()
+                // The screen's density changed (display size setting, another
+                // display; the Activity stays): dp, Prism points, are that
+                // many pixels now (`cx.scale_factor()`, #343).
+                match num("density") {
+                    Some(d) if d.is_finite() && d >= 0.5 && d != s.renderer.zoom() => {
+                        forget_measures();
+                        s.renderer.set_zoom(d);
+                        s.runtime.set_scale_factor(d)
+                    }
+                    _ => Vec::new(),
+                }
             }
             // A video's size, once its player knows it (#207).
             Some("video_size") => {

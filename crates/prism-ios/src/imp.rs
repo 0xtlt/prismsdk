@@ -376,6 +376,7 @@ impl State {
         if w <= 0. {
             return None;
         }
+        self.report_scale_factor();
         let i = self.renderer.widgets.content_insets();
         let safe = prism_core::Edges {
             top: i.top / zoom,
@@ -391,6 +392,29 @@ impl State {
             }
         }
         Some((w, h))
+    }
+
+    /// Tells the app the pixels per Prism point of the screen the window is
+    /// on (`cx.scale_factor()`, #343): the trait collection's display scale
+    /// (visionOS has no `UIScreen`), times the TV zoom.
+    fn report_scale_factor(&mut self) {
+        use objc2_ui_kit::UITraitEnvironment;
+        let traits = self.renderer.widgets.root.traitCollection();
+        // SAFETY: a plain property read on the main thread.
+        let display = unsafe { traits.displayScale() } as f32;
+        // 0 until the view is in a window.
+        if display <= 0. {
+            return;
+        }
+        let scale = display * self.renderer.zoom();
+        if scale == self.runtime.app.scale_factor() {
+            return;
+        }
+        let patches = self.runtime.set_scale_factor(scale);
+        if !patches.is_empty() {
+            self.renderer.apply(&patches);
+            self.window_rerendered = true;
+        }
     }
 
     fn layout_root(&mut self, size: CGSize) {
@@ -1051,6 +1075,11 @@ define_class!(
             // later, at their next layout (#36).
             let traits: Retained<UITraitCollection> = unsafe { msg_send![self, traitCollection] };
             crate::decor::appearance_changed(&traits);
+            // Another screen (an iPad's external display): `cx.scale_factor()`
+            // (#343), told at the next layout, now.
+            if previous.is_some_and(|p| unsafe { p.displayScale() != traits.displayScale() }) {
+                relayout();
+            }
         }
 
         #[unsafe(method(canBecomeFirstResponder))]

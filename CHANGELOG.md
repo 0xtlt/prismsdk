@@ -7,6 +7,19 @@ bumps the minor version). Every crate of the workspace shares one version.
 
 ## Unreleased
 
+### Added
+
+- `cx.scale_factor()`: the pixels per point of the screen the window is on
+  (per CSS pixel on the web), to rasterize content in Rust at the screen's
+  density (#343). macOS `backingScaleFactor`, the trait collection's
+  `displayScale` on iOS, iPadOS, tvOS and visionOS, `screenScale` on watchOS,
+  `DisplayMetrics.density` on Android, the window's DPI on Windows, GTK's
+  scale on Linux (fractional from GTK 4.12), `devicePixelRatio` on the web
+  (checked by the server: 0.25 to 8). It is 1 until the platform reports;
+  when it changes (another screen, browser zoom, Android's display size) the
+  app re-renders and `on_resize` handlers run. `Runtime::set_scale_factor`
+  and `App::set_scale_factor` let backends and tests set it.
+
 ## 0.7.0 (2026-11-27)
 
 `svg(markup)` (and `picture_data(bytes, "image/svg+xml")`) now draws full

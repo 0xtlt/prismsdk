@@ -122,6 +122,16 @@ pub(crate) fn follow_anchors() {
     with_state(|s| s.renderer.widgets.ix.follow_anchors());
 }
 
+/// The window moved to a screen with more or fewer pixels per point (#343):
+/// the app re-renders for it and is laid out again.
+fn sync_scale_factor() {
+    with_state(|s| {
+        if s.sync_scale_factor() {
+            s.relayout();
+        }
+    });
+}
+
 /// Lays everything out again, measures included (a video's size became
 /// known, #207).
 pub(crate) fn relayout_all() {
@@ -538,8 +548,26 @@ impl State {
         true
     }
 
+    /// Tells the app the window's pixels per point (`cx.scale_factor()`,
+    /// #343) if they changed. Returns whether they did.
+    fn sync_scale_factor(&mut self) -> bool {
+        let Some(window) = self.renderer.widgets.root.window() else {
+            return false;
+        };
+        let scale = window.backingScaleFactor() as f32;
+        if scale == self.runtime.app.scale_factor() {
+            return false;
+        }
+        let patches = self.runtime.set_scale_factor(scale);
+        if !patches.is_empty() {
+            self.renderer.apply(&patches);
+        }
+        true
+    }
+
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.frame().size;
+        self.sync_scale_factor();
         // Responsive layouts: tell the app its window size and what covers
         // it (a full-size content view's title bar and toolbar, #28):
         // re-renders when it crosses a breakpoint or the insets move.
@@ -733,12 +761,20 @@ define_class!(
         }
 
         /// Another screen, with more or fewer pixels per point: a drawing's
-        /// picture (#342) is made again for them.
+        /// picture (#342) is made again for them, and the app hears it
+        /// (`cx.scale_factor()`, #343).
         #[unsafe(method(viewDidChangeBackingProperties))]
         fn view_did_change_backing_properties(&self) {
             let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
             if !self.ivars().drawing.borrow().is_empty() {
                 self.setNeedsDisplay(true);
+            }
+            if self
+                .window()
+                .and_then(|w| w.contentView())
+                .is_some_and(|c| *c == *self.as_super())
+            {
+                on_main_after(std::time::Duration::ZERO, sync_scale_factor);
             }
         }
 
@@ -5738,6 +5774,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         config.title.clone(),
     );
     let capabilities = prism_core::PlatformServices::capabilities(&services);
+    // The screen's pixels per point (#343), before the first render.
+    let init = prism_native::with_scale_factor(&init, window.backingScaleFactor() as f32);
     let mut runtime = Runtime::with_options(
         &init,
         prism_core::RuntimeOptions {

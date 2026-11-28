@@ -1416,6 +1416,35 @@ fn load_font(s: &mut State, face: prism_core::FontFace) {
     }
 }
 
+/// The window's pixels per point: its surface's fractional scale when the
+/// running GTK has one (4.12 and later, `scale`), else the integer scale
+/// factor GTK 4.8 has.
+fn window_scale(window: &gtk::ApplicationWindow) -> f32 {
+    if let Some(surface) = window.surface()
+        && surface.find_property("scale").is_some()
+    {
+        let scale = surface.property::<f64>("scale") as f32;
+        if scale > 0. {
+            return scale;
+        }
+    }
+    window.scale_factor().max(1) as f32
+}
+
+/// The window's scale changed (another monitor, the desktop's setting):
+/// the app hears it (`cx.scale_factor()`, #343), outside GTK's notify.
+fn scale_changed() {
+    glib::idle_add_local_once(|| {
+        with_state(|s| {
+            let scale = window_scale(&s.renderer.widgets.window);
+            if scale != s.runtime.app.scale_factor() {
+                let patches = s.runtime.set_scale_factor(scale);
+                commit(s, patches);
+            }
+        })
+    });
+}
+
 fn relayout(s: &mut State) {
     // GTK before 4.12: names from content, no type names (`names.rs`).
     crate::names::schedule();
@@ -4737,8 +4766,11 @@ fn activate(app: &gtk::Application) {
         });
     });
     app.add_action(&respond);
+    // `cx.scale_factor()` (#343), before the first render: the integer
+    // scale until the window has a surface.
+    let init = prism_native::with_scale_factor(init, window_scale(&window));
     let mut runtime = Runtime::with_options(
-        init,
+        &init,
         prism_core::RuntimeOptions {
             path: std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into()),
             storage: Some(Box::new(prism_core::FileStorage::new(data.clone()))),
@@ -4857,8 +4889,15 @@ fn activate(app: &gtk::Application) {
         if let Some(surface) = w.surface() {
             let window = w.clone();
             surface.connect_notify_local(Some("state"), move |_, _| report_lifecycle(&window));
+            // A fractional scale (GTK 4.12 and later): `cx.scale_factor()`.
+            if surface.find_property("scale").is_some() {
+                surface.connect_notify_local(Some("scale"), |_, _| scale_changed());
+            }
+            scale_changed();
         }
     });
+    // Another monitor, another desktop scale (#343).
+    window.connect_scale_factor_notify(|_| scale_changed());
     // Refresh (pull to refresh elsewhere): F5 or Ctrl+R, for the
     // refreshable scroll views shown (not a hidden tab's or screen's); the
     // key stays the app's when there is none.
